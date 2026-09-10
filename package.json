@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src scripts prisma tests",
     "db:dev": "tsx scripts/dev-db.ts",
-    "admin:check": "tsx scripts/admin-check.ts"
+    "admin:check": "tsx scripts/admin-check.ts",
+    "db:probe": "tsx scripts/db-probe.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

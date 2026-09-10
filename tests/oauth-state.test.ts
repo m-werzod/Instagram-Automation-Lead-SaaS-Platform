@@ -44,7 +44,7 @@ describe("password policy", () => {
   it("accepts a strong password", () => {
     expect(checkPasswordPolicy("CorrectHorse42Battery").ok).toBe(true);
   });
-  it("accepts the documented bootstrap credential shape", () => {
+  it("accepts a 9-character mixed-case password with a digit", () => {
     expect(checkPasswordPolicy("Sample123X").ok).toBe(true);
   });
   it("rejects too-short passwords", () => {

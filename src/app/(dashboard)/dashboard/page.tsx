@@ -7,6 +7,8 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { StatusDot, Badge } from "@/components/ui/badge";
 import { useAccounts } from "@/components/shell/account-context";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
+import { InstagramConnectCard } from "@/components/instagram/connect-card";
 
 interface Health {
   status: string;
@@ -45,18 +47,27 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Dashboard</h1>
-        {accounts.length === 0 && (
-          <Button asChild>
-            <Link href="/settings/integrations/instagram">Connect Instagram</Link>
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="Is everything running, and what happened in the last 7 days. Green means healthy; amber or red means something needs your attention."
+        accent="var(--color-mod-overview)"
+        actions={
+          accounts.length === 0 ? (
+            <Button asChild>
+              <Link href="/settings">Connect Instagram</Link>
+            </Button>
+          ) : null
+        }
+      />
+
+      {accounts.length === 0 && <InstagramConnectCard compact />}
 
       {/* system health (spec §38) */}
       <Card>
-        <CardHeader title="System health" description="Live component status — click a card for details" />
+        <CardHeader
+          title="System health"
+          description="Each part of the system and whether it is working right now."
+        />
         <CardBody className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
           <HealthCard label="Database" ok={Boolean(c?.database.healthy)} detail={c?.database.latencyMs != null ? `${c.database.latencyMs}ms` : "—"} />
           <HealthCard
@@ -92,9 +103,9 @@ export default function DashboardPage() {
           <CardBody className="space-y-2">
             {accounts.length === 0 && (
               <p className="text-sm text-[--color-fg-muted]">
-                No Instagram accounts connected yet. Start in{" "}
-                <Link className="text-[--color-accent] underline" href="/settings/integrations/instagram">
-                  Integrations
+                No Instagram account connected yet — use the Connect Instagram card above, or open{" "}
+                <Link className="text-[--color-accent] underline" href="/settings">
+                  Settings
                 </Link>
                 .
               </p>

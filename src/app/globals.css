@@ -1,25 +1,47 @@
 @import "tailwindcss";
 
 /*
- * Control-center theme: fixed dark, high-contrast, zero decorative noise.
- * Semantic tokens so components never hardcode grays.
+ * Control-center theme.
+ * Colour is used as INFORMATION, never decoration:
+ *   green  = on / healthy / success
+ *   red    = off / error / destructive
+ *   amber  = needs attention / costs money
+ *   blue   = primary action / neutral info
+ * Each product module also owns a hue so the sidebar is scannable at a glance.
  */
 @theme {
-  --color-bg: #0b0e14;
-  --color-panel: #12161f;
-  --color-panel-2: #171c27;
-  --color-border: #232a38;
-  --color-border-strong: #2f3948;
-  --color-fg: #e6e9ef;
-  --color-fg-muted: #9aa4b2;
-  --color-fg-faint: #6b7686;
-  --color-accent: #4f8cff;
-  --color-accent-hover: #3b7bff;
-  --color-ok: #34d399;
-  --color-warn: #fbbf24;
-  --color-danger: #f87171;
-  --color-on: #10b981;
-  --color-off: #64748b;
+  /* surfaces — layered, with clear separation between levels */
+  --color-bg: #0d1117;
+  --color-panel: #161b22;
+  --color-panel-2: #1d2431;
+  --color-panel-3: #252d3d;
+  --color-border: #2c3444;
+  --color-border-strong: #3d4759;
+
+  /* text — raised contrast for readability */
+  --color-fg: #f2f5fa;
+  --color-fg-muted: #aeb9c9;
+  --color-fg-faint: #7f8b9e;
+
+  /* semantic */
+  --color-accent: #3b82f6;
+  --color-accent-hover: #2563eb;
+  --color-ok: #22c55e;
+  --color-warn: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #06b6d4;
+  --color-on: #22c55e;
+  --color-off: #6b7280;
+
+  /* module hues (sidebar icons, page accents) */
+  --color-mod-overview: #3b82f6;
+  --color-mod-instagram: #ec4899;
+  --color-mod-ai: #a855f7;
+  --color-mod-content: #06b6d4;
+  --color-mod-leads: #22c55e;
+  --color-mod-ads: #f59e0b;
+  --color-mod-system: #94a3b8;
+
   --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
 }
@@ -45,7 +67,6 @@ body {
   scrollbar-color: var(--color-border-strong) transparent;
 }
 
-/* form reset consistency */
 input,
 select,
 textarea {
@@ -56,4 +77,18 @@ input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
+}
+
+/* Checkboxes inherit the accent so they read as interactive controls. */
+input[type="checkbox"] {
+  accent-color: var(--color-accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+/* Visible keyboard focus everywhere, without doubling up on mouse click. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }

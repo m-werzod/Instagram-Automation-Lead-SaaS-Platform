@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { ToggleRow } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
+import { InstagramConnectCard } from "@/components/instagram/connect-card";
 
 /** Global switches (spec §16, §37), admin management (spec §5), email test. */
 
@@ -69,13 +71,20 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
-      <h1 className="text-lg font-semibold">Settings</h1>
+      <PageHeader
+        title="Settings"
+        description="Connect Instagram, control what the system is allowed to do automatically, and manage who can sign in."
+        accent="var(--color-mod-system)"
+      />
+
+      {/* CONNECT INSTAGRAM — primary setup action */}
+      <InstagramConnectCard />
 
       {/* MASTER SWITCH — spec §37 */}
       <Card className={settings.masterAutomationEnabled ? undefined : "border-[--color-danger]/50"}>
         <CardHeader
           title="Master Automation Switch"
-          description="Emergency control. OFF = no AI replies, no automated outbound messages, no campaign automation across ALL accounts."
+          description="Emergency stop for the whole platform. When OFF, the AI stops replying, automations stop sending, and campaign automation halts — across every connected account."
         />
         <CardBody className="divide-y divide-[--color-border]">
           <ToggleRow

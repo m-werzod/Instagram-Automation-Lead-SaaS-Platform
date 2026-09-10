@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
 
 /** Question builder + one-question-per-step flow config (spec §17–19). */
 
@@ -67,21 +68,23 @@ export default function LeadFlowsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Lead Flows</h1>
-          <p className="text-xs text-[--color-fg-muted]">
-            DM questionnaires — one question per message, answers validated and stored per step. Started by keyword,
-            AI agent, automation, or comment CTA.
-          </p>
-        </div>
-        <Button onClick={() => setEditing("new")}>New flow</Button>
-      </div>
+      <PageHeader
+        title="Lead Forms"
+        description="Questionnaires that run inside Instagram DMs — one question per message, each answer checked and saved before the next is sent. A finished form becomes a lead in your CRM and emails you. Started by a keyword, an AI agent, or an automation."
+        accent="var(--color-mod-ai)"
+        actions={
+          <Button onClick={() => setEditing("new")}>
+            <Plus size={15} /> New form
+          </Button>
+        }
+      />
 
       {flows?.length === 0 && (
-        <Card>
-          <CardBody className="py-10 text-center text-sm text-[--color-fg-muted]">No lead flows yet.</CardBody>
-        </Card>
+        <EmptyState
+          title="No lead forms yet"
+          description="Build the questions you want to ask people who message you — for example name, phone number and which service they want."
+          action={<Button onClick={() => setEditing("new")}>Build your first form</Button>}
+        />
       )}
 
       {flows?.map((flow) => (

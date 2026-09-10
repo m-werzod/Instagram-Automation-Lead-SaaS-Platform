@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { formatDate } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 
@@ -75,16 +76,22 @@ export default function LeadsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold">Leads · CRM</h1>
-          <p className="text-xs text-[--color-fg-muted]">@{selected.username} · {leads?.length ?? "…"} leads</p>
-        </div>
-        <div className="flex gap-2">
-          <Input placeholder="Search name / phone / email" value={q} onChange={(e) => setQ(e.target.value)} className="w-56" />
-          <Button onClick={() => setCreateOpen(true)}>Add lead</Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Leads (CRM)"
+        description={`Everyone who left their details for @${selected.username}. Drag a lead through the stages using the dropdown on its card; click a card to see their answers, notes and notification history.`}
+        accent="var(--color-mod-leads)"
+        actions={
+          <>
+            <Input
+              placeholder="Search name, phone or email"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="w-56"
+            />
+            <Button onClick={() => setCreateOpen(true)}>Add lead</Button>
+          </>
+        }
+      />
 
       <div className="grid grid-cols-1 gap-3 overflow-x-auto md:grid-cols-3 xl:grid-cols-6">
         {STATUSES.map((status) => {

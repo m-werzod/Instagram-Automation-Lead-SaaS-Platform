@@ -6,6 +6,7 @@ import { Card, CardBody } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { formatDate } from "@/lib/utils";
 
 interface LogRow {
@@ -47,13 +48,19 @@ export default function AuditLogsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Audit Logs</h1>
-          <p className="text-xs text-[--color-fg-muted]">Every sensitive admin/AI action, immutable, with before/after snapshots.</p>
-        </div>
-        <Input placeholder="Filter by action (e.g. CAMPAIGN)" value={filter} onChange={(e) => setFilter(e.target.value)} className="w-64" />
-      </div>
+      <PageHeader
+        title="Audit Log"
+        description="A permanent record of every sensitive action — who did it, when, and what changed. Click any row to see the before/after values. Nothing here can be edited or deleted."
+        accent="var(--color-mod-system)"
+        actions={
+          <Input
+            placeholder="Filter by action, e.g. CAMPAIGN"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="w-64"
+          />
+        }
+      />
 
       <Card>
         <CardBody className="p-0">

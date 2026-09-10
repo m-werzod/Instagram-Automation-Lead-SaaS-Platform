@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
+import { Plus } from "lucide-react";
 import { timeAgo } from "@/lib/utils";
 
 /** Automation rules: TRIGGER → CONDITION → ACTION (spec §27). */
@@ -66,20 +68,23 @@ export default function AutomationsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Automations</h1>
-          <p className="text-xs text-[--color-fg-muted]">
-            Outbound actions respect the master switch and Meta&apos;s 24h messaging window.
-          </p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>New automation</Button>
-      </div>
+      <PageHeader
+        title="Automations"
+        description="Simple rules: when something happens (a message, a comment, a new lead), optionally check a condition, then do something. Anything that sends a message respects the master switch and Instagram's 24-hour reply window."
+        accent="var(--color-mod-ai)"
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus size={15} /> New automation
+          </Button>
+        }
+      />
 
       {rows?.length === 0 && (
-        <Card>
-          <CardBody className="py-10 text-center text-sm text-[--color-fg-muted]">No automations yet.</CardBody>
-        </Card>
+        <EmptyState
+          title="No automations yet"
+          description="For example: when a comment contains “price”, send that person a direct message with your lead form."
+          action={<Button onClick={() => setCreateOpen(true)}>Create a rule</Button>}
+        />
       )}
 
       {rows?.map((a) => (

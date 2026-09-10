@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
+import { Plus } from "lucide-react";
 
 interface AgentRow {
   id: string;
@@ -54,20 +56,27 @@ export default function AgentsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">AI Agents</h1>
-          <p className="text-xs text-[--color-fg-muted]">Account: @{selected.username}</p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>New agent</Button>
-      </div>
+      <PageHeader
+        title="AI Agents"
+        description={`Assistants that reply to Instagram DMs for @${selected.username} automatically. Each agent has its own instructions, its own knowledge, and an explicit list of what it is allowed to do. New agents start switched OFF.`}
+        accent="var(--color-mod-ai)"
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus size={15} /> New agent
+          </Button>
+        }
+      />
 
       {agents?.length === 0 && (
-        <Card>
-          <CardBody className="py-10 text-center text-sm text-[--color-fg-muted]">
-            No agents yet for this account. Create the first one — it starts OFF until you enable it.
-          </CardBody>
-        </Card>
+        <EmptyState
+          title="No AI agents yet"
+          description="An agent reads incoming Instagram messages and replies using the instructions and business facts you give it. It stays switched off until you turn it on."
+          action={
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus size={15} /> Create your first agent
+            </Button>
+          }
+        />
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">

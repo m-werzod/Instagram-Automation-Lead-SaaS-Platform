@@ -8,6 +8,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Field, Input, Select } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { formatDate } from "@/lib/utils";
 
 /** Knowledge base (spec §26): upload → extract → chunk → embed → retrieve. */
@@ -79,13 +80,17 @@ export default function KnowledgePage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <div>
-        <h1 className="text-lg font-semibold">Knowledge Base</h1>
-        <p className="text-xs text-[--color-fg-muted]">
-          @{selected.username} · retrieval mode: <b>{retrievalMode || "…"}</b>. Documents are isolated per Instagram
-          account; optionally pin a document to a single agent.
-        </p>
-      </div>
+      <PageHeader
+        title="Knowledge"
+        description={
+          <>
+            Upload your price lists, schedules and policies. This is the <b>only</b> place the AI is allowed to take
+            facts from — it is instructed never to invent prices, addresses or availability. Documents belong to
+            @{selected.username} alone. Search mode: <b>{retrievalMode || "…"}</b>.
+          </>
+        }
+        accent="var(--color-mod-ai)"
+      />
 
       <Card>
         <CardHeader title="Upload document" description="PDF, DOCX, TXT, Markdown — max 15 MB. Processed immediately: extract → chunk → embed (or keyword mode)." />

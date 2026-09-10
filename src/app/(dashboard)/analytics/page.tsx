@@ -6,6 +6,7 @@ import { useAccounts } from "@/components/shell/account-context";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Select } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/ui/page-header";
 
 /** Analytics (spec §28) — real data only; unavailable metrics say why. */
 
@@ -45,17 +46,18 @@ export default function AnalyticsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Analytics</h1>
-          <p className="text-xs text-[--color-fg-muted]">@{selected.username} · platform data + Meta Insights where available</p>
-        </div>
-        <Select value={String(days)} onChange={(e) => setDays(Number(e.target.value))} className="w-36">
-          <option value="7">Last 7 days</option>
-          <option value="30">Last 30 days</option>
-          <option value="90">Last 90 days</option>
-        </Select>
-      </div>
+      <PageHeader
+        title="Analytics"
+        description={`Real numbers only for @${selected.username} — counted from your own data plus Meta Insights where Instagram provides it. Nothing here is estimated or invented; unavailable figures say why.`}
+        accent="var(--color-mod-overview)"
+        actions={
+          <Select value={String(days)} onChange={(e) => setDays(Number(e.target.value))} className="w-36">
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </Select>
+        }
+      />
 
       <Section title="Messaging">
         <Metric label="Inbound messages" value={data?.messages.inbound} />

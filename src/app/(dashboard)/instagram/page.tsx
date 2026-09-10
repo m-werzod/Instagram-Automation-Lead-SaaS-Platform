@@ -6,6 +6,7 @@ import { useAccounts } from "@/components/shell/account-context";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge, StatusDot } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
 
 /**
  * Instagram account control overview (spec §7). Data isolation note: every
@@ -16,23 +17,28 @@ export default function InstagramPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Instagram accounts</h1>
-        <Button asChild variant="secondary">
-          <Link href="/settings/integrations/instagram">Connect / manage integration</Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Instagram Accounts"
+        description="Every connected account keeps its own agents, messages, content, leads and settings — data is never shared between accounts. The ticks below show what Meta actually allows for each one."
+        accent="var(--color-mod-instagram)"
+        actions={
+          <Button asChild>
+            <Link href="/settings/integrations/instagram">Connect / manage</Link>
+          </Button>
+        }
+      />
 
       {loading && <p className="text-sm text-[--color-fg-muted]">Loading…</p>}
       {!loading && accounts.length === 0 && (
-        <Card>
-          <CardBody className="py-10 text-center text-sm text-[--color-fg-muted]">
-            No accounts connected.{" "}
-            <Link href="/settings/integrations/instagram" className="text-[--color-accent] underline">
-              Connect the first one →
-            </Link>
-          </CardBody>
-        </Card>
+        <EmptyState
+          title="No Instagram account connected"
+          description="Connect an Instagram Business or Creator account through Meta's official authorization to start using the platform."
+          action={
+            <Button asChild>
+              <Link href="/settings/integrations/instagram">Connect Instagram</Link>
+            </Button>
+          }
+        />
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">

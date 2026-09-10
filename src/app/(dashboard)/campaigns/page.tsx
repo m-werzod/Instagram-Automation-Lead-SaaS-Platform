@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
+import { Plus } from "lucide-react";
 import { centsToMoney, formatDate } from "@/lib/utils";
 
 interface CampaignRow {
@@ -103,15 +105,16 @@ function CampaignsInner() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold">Campaigns</h1>
-          <p className="text-xs text-[--color-fg-muted]">
-            Marketing API · everything is created PAUSED; activation always needs explicit confirmation.
-          </p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>New campaign draft</Button>
-      </div>
+      <PageHeader
+        title="Ad Campaigns"
+        description="Paid Instagram advertising. Campaigns are always created PAUSED in Meta and never start spending until you type the campaign name to confirm. The AI can suggest campaigns but can never launch one."
+        accent="var(--color-mod-ads)"
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus size={15} /> New campaign draft
+          </Button>
+        }
+      />
 
       {adsCapability && !adsCapability.available && (
         <Card className="border-[--color-warn]/40">
@@ -123,9 +126,11 @@ function CampaignsInner() {
       )}
 
       {campaigns?.length === 0 && (
-        <Card>
-          <CardBody className="py-10 text-center text-sm text-[--color-fg-muted]">No campaigns yet.</CardBody>
-        </Card>
+        <EmptyState
+          title="No campaigns yet"
+          description="A draft lives only in this platform — nothing reaches Meta and nothing is charged until you explicitly create and then publish it."
+          action={<Button onClick={() => setCreateOpen(true)}>Create a draft</Button>}
+        />
       )}
 
       {campaigns?.map((c) => (

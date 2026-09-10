@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Badge, StatusDot } from "@/components/ui/badge";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Select } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
+import { InstagramConnectCard } from "@/components/instagram/connect-card";
 import { formatDate, timeAgo } from "@/lib/utils";
 
 /** Spec §3 — Instagram Integration control page with the capability matrix. */
@@ -48,6 +50,8 @@ function CallbackNotices() {
         missing_params: "Meta returned no authorization code.",
         connect_failed: params.get("detail") ?? "Connection failed — see server logs.",
         meta_error: "Meta reported an authorization error.",
+        not_configured:
+          "This installation has no Meta app credentials yet, so Instagram cannot be opened. Complete the one-time setup shown on this page.",
       };
       toast.error("Instagram connection failed", { description: map[error] ?? error, duration: 10000 });
     }
@@ -100,24 +104,13 @@ export default function InstagramIntegrationPage() {
         <CallbackNotices />
       </React.Suspense>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold">Instagram Integration</h1>
-          <p className="text-xs text-[--color-fg-muted]">
-            Official Meta authorization only — no passwords, no scraping. Two connection modes exist because Meta
-            splits capabilities across products (see docs/META_API.md).
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button asChild>
-            {/* full page navigation (OAuth redirect) — not fetch */}
-            <a href="/api/meta/oauth/start?mode=instagram">Connect Instagram</a>
-          </Button>
-          <Button asChild variant="secondary" title="Required for Campaigns / ads / Instant Forms">
-            <a href="/api/meta/oauth/start?mode=facebook">Connect with Facebook (ads)</a>
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Instagram Integration"
+        description="Official Meta authorization only — no passwords, no scraping. There are two connection modes because Meta splits capabilities across products: Instagram Login covers messages, posts and insights; Facebook Login additionally unlocks paid ads and Instant Forms."
+        accent="var(--color-mod-instagram)"
+      />
+
+      <InstagramConnectCard compact />
 
       {accounts === null && <p className="text-sm text-[--color-fg-muted]">Loading…</p>}
       {accounts?.length === 0 && (

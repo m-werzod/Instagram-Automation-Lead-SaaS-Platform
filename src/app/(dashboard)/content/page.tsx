@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/input";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
+import { RefreshCw } from "lucide-react";
 import { formatDate, truncate } from "@/lib/utils";
 
 interface ContentRow {
@@ -93,25 +95,28 @@ export default function ContentPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">Content</h1>
-          <p className="text-xs text-[--color-fg-muted]">
-            Media retrieved via the official API for @{selected.username}. AI analysis reads caption + metadata (not
-            video frames) and never launches anything by itself.
-          </p>
-        </div>
-        <Button onClick={sync} disabled={busy === "sync"}>
-          {busy === "sync" ? "Syncing…" : "Sync from Instagram"}
-        </Button>
-      </div>
+      <PageHeader
+        title="Posts & Reels"
+        description={`Content published by @${selected.username}, pulled through the official API. "Analyze with AI" reads the caption and engagement numbers (it cannot watch the video) and only ever suggests — it never posts or promotes anything on its own.`}
+        accent="var(--color-mod-content)"
+        actions={
+          <Button onClick={sync} disabled={busy === "sync"}>
+            <RefreshCw size={15} className={busy === "sync" ? "animate-spin" : undefined} />
+            {busy === "sync" ? "Syncing…" : "Sync from Instagram"}
+          </Button>
+        }
+      />
 
       {items?.length === 0 && (
-        <Card>
-          <CardBody className="py-10 text-center text-sm text-[--color-fg-muted]">
-            No content yet. Click &ldquo;Sync from Instagram&rdquo; to pull posts and Reels.
-          </CardBody>
-        </Card>
+        <EmptyState
+          title="No posts loaded yet"
+          description="Pull your published posts and Reels from Instagram to analyse them and attach call-to-action flows."
+          action={
+            <Button onClick={sync} disabled={busy === "sync"}>
+              <RefreshCw size={15} /> Sync from Instagram
+            </Button>
+          }
+        />
       )}
 
       <div className="grid gap-4 md:grid-cols-2">

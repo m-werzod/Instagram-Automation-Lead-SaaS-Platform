@@ -1,4 +1,4 @@
-import { route, ok, type RouteCtx } from "@/lib/api";
+import { route, ok, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { prisma } from "@/lib/prisma";
 import { notFound, metaUnsupported } from "@/lib/errors";
@@ -6,7 +6,7 @@ import { listAdAccounts } from "@/lib/meta/marketing";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
   await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const account = await prisma.instagramAccount.findUnique({ where: { id } });
   if (!account) throw notFound("Instagram account");
   if (account.connectionMode !== "FACEBOOK_LOGIN") {

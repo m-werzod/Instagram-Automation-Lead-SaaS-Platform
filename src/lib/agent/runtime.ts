@@ -24,7 +24,7 @@ export interface ReplyOutcome {
   reason?: string;
 }
 
-export async function generateAndSendReply(conversationId: string, triggerMessageId: string): Promise<ReplyOutcome> {
+export async function generateAndSendReply(conversationId: string, _triggerMessageId: string): Promise<ReplyOutcome> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
     include: { account: true },

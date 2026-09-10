@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { route, ok, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError, metaUnsupported } from "@/lib/errors";
@@ -13,7 +13,7 @@ import { createCampaignInMeta } from "@/lib/meta/marketing";
 export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
 
   const campaign = await prisma.campaign.findUnique({ where: { id }, include: { account: true } });
   if (!campaign) throw notFound("Campaign");

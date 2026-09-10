@@ -86,13 +86,13 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
 
 // ---- embedding storage ----
 
-export function embeddingToBuffer(vec: number[]): Buffer {
-  return Buffer.from(new Float32Array(vec).buffer);
+export function embeddingToBuffer(vec: number[]): Uint8Array<ArrayBuffer> {
+  const f = new Float32Array(vec); // fresh, non-shared ArrayBuffer by construction
+  return new Uint8Array(f.buffer as ArrayBuffer, f.byteOffset, f.byteLength);
 }
 
-export function bufferToEmbedding(buf: Buffer | Uint8Array): Float32Array {
-  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
-  return new Float32Array(b.buffer, b.byteOffset, Math.floor(b.byteLength / 4));
+export function bufferToEmbedding(buf: Uint8Array): Float32Array {
+  return new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
 }
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
@@ -9,7 +9,7 @@ import { questionSchema } from "@/lib/validation/leadflow";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
   await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const flow = await prisma.leadFlow.findUnique({
     where: { id },
     include: {
@@ -35,7 +35,7 @@ const updateSchema = z.object({
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const body = await parseBody(req, updateSchema);
 
   const existing = await prisma.leadFlow.findUnique({ where: { id }, include: { questions: true } });
@@ -89,7 +89,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const existing = await prisma.leadFlow.findUnique({ where: { id } });
   if (!existing) throw notFound("Lead flow");
   await prisma.leadFlow.delete({ where: { id } });

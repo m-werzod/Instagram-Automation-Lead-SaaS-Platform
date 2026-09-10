@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
@@ -28,7 +28,7 @@ const updateSchema = z.object({
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const body = await parseBody(req, updateSchema);
   const existing = await prisma.ctaConfig.findUnique({ where: { id } });
   if (!existing) throw notFound("CTA config");
@@ -56,7 +56,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const existing = await prisma.ctaConfig.findUnique({ where: { id } });
   if (!existing) throw notFound("CTA config");
   await prisma.ctaConfig.delete({ where: { id } });

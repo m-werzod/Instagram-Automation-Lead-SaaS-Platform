@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
@@ -9,7 +9,7 @@ import { TOOLS_BY_ID } from "@/lib/agent/tools";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
   await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const agent = await prisma.aIAgent.findUnique({
     where: { id },
     include: {
@@ -54,7 +54,7 @@ const updateSchema = z.object({
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const body = await parseBody(req, updateSchema);
 
   const existing = await prisma.aIAgent.findUnique({ where: { id } });
@@ -109,7 +109,7 @@ function sanitizeToggles(body: Record<string, unknown>) {
 export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const existing = await prisma.aIAgent.findUnique({ where: { id } });
   if (!existing) throw notFound("Agent");
   await prisma.aIAgent.delete({ where: { id } });

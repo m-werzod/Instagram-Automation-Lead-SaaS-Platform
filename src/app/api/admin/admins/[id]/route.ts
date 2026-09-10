@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireOwner } from "@/lib/auth/guard";
 import { hashPassword, checkPasswordPolicy } from "@/lib/auth/password";
 import { notFound, validationError } from "@/lib/errors";
@@ -18,7 +18,7 @@ const updateSchema = z.object({
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireOwner();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const body = await parseBody(req, updateSchema);
 
   const target = await prisma.admin.findUnique({ where: { id } });

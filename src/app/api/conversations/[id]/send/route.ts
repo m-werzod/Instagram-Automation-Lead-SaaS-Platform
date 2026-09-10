@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, type RouteCtx } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { notFound } from "@/lib/errors";
 import { sendInstagramText } from "@/lib/meta/messaging";
@@ -16,7 +16,7 @@ const sendSchema = z.object({
 export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const body = await parseBody(req, sendSchema);
 
   const conversation = await prisma.conversation.findUnique({ where: { id }, include: { account: true } });

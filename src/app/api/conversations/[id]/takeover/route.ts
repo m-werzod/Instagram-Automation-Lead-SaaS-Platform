@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { route, ok, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
@@ -10,7 +10,7 @@ import { runAutomations } from "@/lib/automation/engine";
 export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const existing = await prisma.conversation.findUnique({ where: { id } });
   if (!existing) throw notFound("Conversation");
 

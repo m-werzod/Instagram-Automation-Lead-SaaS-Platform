@@ -1,12 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { route, ok, type RouteCtx } from "@/lib/api";
+import { route, ok, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { notFound } from "@/lib/errors";
 import { isWithinMessagingWindow } from "@/lib/meta/messaging";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
   await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
   const conversation = await prisma.conversation.findUnique({
     where: { id },
     include: {

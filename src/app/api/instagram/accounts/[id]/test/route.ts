@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { route, ok, assertSameOrigin, clientIp, type RouteCtx } from "@/lib/api";
+import { route, ok, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { testConnection } from "@/lib/meta/accounts";
 import { audit, AuditActions } from "@/lib/audit";
@@ -9,7 +9,7 @@ import { notFound } from "@/lib/errors";
 export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
-  const { id } = await ctx.params;
+  const id = await pathParam(ctx, "id");
 
   const account = await prisma.instagramAccount.findUnique({ where: { id } });
   if (!account) throw notFound("Instagram account");

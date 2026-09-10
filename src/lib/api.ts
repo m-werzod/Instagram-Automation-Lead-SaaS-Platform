@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ZodError, type ZodType } from "zod";
+import { ZodError, type z, type ZodTypeAny } from "zod";
 import { AppError } from "@/lib/errors";
 import { ConfigError, coreEnv } from "@/lib/env";
 import { createLogger, errorFields } from "@/lib/logger";
@@ -88,14 +88,14 @@ export function clientIp(req: NextRequest): string {
   return req.headers.get("x-real-ip") ?? "unknown";
 }
 
-export async function parseBody<T>(req: NextRequest, schema: ZodType<T>): Promise<T> {
+export async function parseBody<S extends ZodTypeAny>(req: NextRequest, schema: S): Promise<z.output<S>> {
   let raw: unknown;
   try {
     raw = await req.json();
   } catch {
     throw new AppError("VALIDATION", "Request body must be valid JSON");
   }
-  return schema.parse(raw);
+  return schema.parse(raw) as z.output<S>;
 }
 
 export function enforceRateLimit(key: string, limit: number, windowMs: number): void {
@@ -121,4 +121,11 @@ export function route(handler: (req: NextRequest, ctx: RouteCtx) => Promise<Next
 
 export interface RouteCtx {
   params: Promise<Record<string, string>>;
+}
+
+/** Extract a required path parameter (noUncheckedIndexedAccess-safe). */
+export async function pathParam(ctx: RouteCtx, name: string): Promise<string> {
+  const value = (await ctx.params)[name];
+  if (!value) throw new AppError("NOT_FOUND", `Missing path parameter: ${name}`);
+  return value;
 }

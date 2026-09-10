@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/*
+ * Control-center theme: fixed dark, high-contrast, zero decorative noise.
+ * Semantic tokens so components never hardcode grays.
+ */
+@theme {
+  --color-bg: #0b0e14;
+  --color-panel: #12161f;
+  --color-panel-2: #171c27;
+  --color-border: #232a38;
+  --color-border-strong: #2f3948;
+  --color-fg: #e6e9ef;
+  --color-fg-muted: #9aa4b2;
+  --color-fg-faint: #6b7686;
+  --color-accent: #4f8cff;
+  --color-accent-hover: #3b7bff;
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-danger: #f87171;
+  --color-on: #10b981;
+  --color-off: #64748b;
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* form reset consistency */
+input,
+select,
+textarea {
+  color: inherit;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

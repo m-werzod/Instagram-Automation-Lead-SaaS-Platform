@@ -12,6 +12,7 @@ const PUBLIC_PREFIXES = [
   "/f/", // public hosted lead-capture landing pages
   "/api/auth/login",
   "/api/webhooks", // Meta webhook (signature-validated in the route)
+  "/api/cron", // scheduler-driven queue drain (CRON_SECRET-validated in the route)
   "/api/health",
   "/api/leads/public", // landing page submissions (rate-limited in route)
   "/_next",

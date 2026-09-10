@@ -1,0 +1,50 @@
+name: Queue worker heartbeat
+
+# Drives the job queue on serverless hosting.
+#
+# Vercel's Hobby plan only permits ONE cron run per day, which is useless for
+# Instagram replies, so this workflow calls the drain endpoint on a schedule
+# instead. It works on any hosting plan.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   APP_URL      https://your-app.vercel.app
+#   CRON_SECRET  the same value set in the app's environment
+#
+# GitHub's shortest cron interval is 5 minutes, and runs can be delayed under
+# load. If you need replies within seconds, run `npm run worker` on a small
+# always-on host against the same database instead — both are safe together.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: worker-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Drain the job queue
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL and CRON_SECRET repository secrets are not set — skipping."
+            exit 0
+          fi
+          # Two passes: a single invocation is time-boxed, so a backlog needs more than one.
+          for i in 1 2; do
+            response=$(curl -sS -m 120 -w "\n%{http_code}" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              "$APP_URL/api/cron/worker") || { echo "request failed"; exit 1; }
+            status=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | sed '$d')
+            echo "pass $i → HTTP $status: $body"
+            [ "$status" = "200" ] || exit 1
+            echo "$body" | grep -q '"truncated":true' || break
+          done

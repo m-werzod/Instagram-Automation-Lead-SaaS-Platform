@@ -83,7 +83,88 @@ npm run build
 
 Migrations are forward-only; take a DB snapshot before deploying schema changes.
 
-## 9. docker-compose (optional infra)
+## 9. Deploying to Vercel
+
+Vercel can host the web app and the API, but **not** the worker: `npm run worker` is a permanent
+polling loop and Vercel functions are short-lived. Without a scheduler the platform still receives
+webhooks, but nothing ever processes them — no AI replies, no lead emails. Plan for this before going live.
+
+### 9.1 Database (do this first)
+
+Vercel has no local database. Create a hosted PostgreSQL — Neon, Supabase and Vercel Postgres all work.
+Use the **pooled** connection string, because each serverless invocation opens its own connection:
+
+```
+DATABASE_URL=postgresql://user:pass@host/db?sslmode=require&pgbouncer=true&connection_limit=1
+```
+
+`vercel.json` runs `prisma migrate deploy` during the build, so the schema is created on first deploy.
+Afterwards seed the first admin once, from your machine, pointed at the same database:
+
+```bash
+DATABASE_URL="<the same URL>" ADMIN_LOGIN=YourLogin ADMIN_PASSWORD='<a long unique password>' npm run db:seed
+```
+
+### 9.2 Import the repository
+
+In Vercel: **Add New → Project → Import Git Repository**, pick this repo, framework auto-detects as
+Next.js. Do not deploy yet — set the environment variables first.
+
+### 9.3 Environment variables
+
+Set these under **Settings → Environment Variables** (Production, and Preview if you use it):
+
+| Variable | Value |
+| --- | --- |
+| `APP_URL` | `https://<your-app>.vercel.app` — must match the real domain exactly, or sign-in is refused |
+| `DATABASE_URL` | pooled connection string from 9.1 |
+| `SESSION_SECRET` | `openssl rand -hex 32` |
+| `TOKEN_ENCRYPTION_KEY` | `openssl rand -hex 32` (64 hex chars) |
+| `CRON_SECRET` | `openssl rand -hex 24` — protects `/api/cron/worker` |
+| `META_APP_ID` / `META_APP_SECRET` | from your Meta app |
+| `META_REDIRECT_URI` | `https://<your-app>.vercel.app/api/meta/oauth/callback` |
+| `META_WEBHOOK_VERIFY_TOKEN` | any random string, also entered in the Meta dashboard |
+| `AI_PROVIDER` + key | e.g. `anthropic` + `ANTHROPIC_API_KEY` |
+| `EMAIL_*`, `LEAD_NOTIFICATION_EMAIL` | SMTP settings for lead notifications |
+
+Then **Deploy**. Afterwards, register the deployed URLs in the Meta app dashboard (redirect URI and the
+webhook callback `https://<your-app>.vercel.app/api/webhooks/instagram`).
+
+### 9.4 Processing the queue (required)
+
+Pick one:
+
+**A — GitHub Actions (any Vercel plan).** `.github/workflows/worker-heartbeat.yml` calls the drain
+endpoint every 5 minutes. Add repository secrets `APP_URL` and `CRON_SECRET`. Simplest option; replies
+arrive within a few minutes.
+
+**B — Vercel Cron (Pro plan).** Add to `vercel.json` and redeploy:
+
+```json
+"crons": [{ "path": "/api/cron/worker", "schedule": "* * * * *" }]
+```
+
+Vercel sends `Authorization: Bearer $CRON_SECRET` automatically. **Hobby plans only allow one cron run
+per day** — do not use this option there.
+
+**C — A real worker (best responsiveness).** Run `npm run worker` on any always-on host (Railway,
+Render, Fly.io, a small VPS) with the same `DATABASE_URL`. Replies go out in seconds. Safe to combine
+with A or B: job claiming uses `FOR UPDATE SKIP LOCKED`, so a job is never processed twice.
+
+Verify whichever you chose:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://<your-app>.vercel.app/api/cron/worker
+```
+
+### 9.5 Before exposing it publicly
+
+A Vercel URL is reachable by anyone who learns it. Sign-in is rate-limited and audit-logged, but the
+account is only as strong as its password — set a long, unique `ADMIN_PASSWORD` when seeding, never a
+memorable default. Uploaded knowledge files are parsed in memory and not persisted to disk, so Vercel's
+read-only filesystem is not a problem.
+
+## 10. docker-compose (optional infra)
 
 `docker-compose.yml` in the repo root provides a UTF-8 PostgreSQL for teams that prefer Docker:
 

@@ -74,6 +74,27 @@ Sign in at http://localhost:3000/login with the Login/Password from your `.env`
 lead appear in Leads (CRM) with an email notification attempt recorded (it fails visibly-but-safely until
 SMTP is configured — the lead is never lost).
 
+### Sign-in troubleshooting
+
+The database must be running before you can sign in — the web app alone is not enough.
+
+| What you see | Cause | Fix |
+| --- | --- | --- |
+| "Cannot reach the database" | PostgreSQL isn't running (or `DATABASE_URL` is wrong) | Start `npm run db:dev` in a **normal, non-Administrator** terminal |
+| "Incorrect login or password" | Wrong credentials, or an admin that doesn't exist in *this* database | `npm run admin:check` — see below |
+| Page won't load at all | Web app not running, or it fell back to port 3001 because 3000 was taken | Check the `npm run dev` output; `APP_URL` must match the address you browse to |
+
+Inspect exactly which accounts exist and whether a password is accepted:
+
+```bash
+npm run admin:check -- YourPasswordHere
+```
+
+It prints the database it read, every admin Login, whether the account is active, and whether the supplied
+password matches. To reset access, set `ADMIN_LOGIN` / `ADMIN_PASSWORD` in `.env` and re-run `npm run db:seed`.
+
+Note: passwords are **not** trimmed, so a trailing space from copy-paste will be rejected.
+
 ## 5. Tests / quality gates
 
 ```bash

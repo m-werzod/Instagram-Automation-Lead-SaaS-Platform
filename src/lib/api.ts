@@ -21,10 +21,34 @@ export function fail(error: AppError): NextResponse {
   return NextResponse.json({ ok: false, error: error.toJSON() }, { status: error.status });
 }
 
+/**
+ * Detect "the database is unreachable" so it is never reported as a generic
+ * failure — most often this means the DB process simply is not running, which
+ * otherwise looks indistinguishable from bad credentials on the sign-in form.
+ */
+function isDatabaseUnreachable(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { name?: string; code?: string; errorCode?: string; message?: string };
+  if (e.name === "PrismaClientInitializationError") return true;
+  const code = e.code ?? e.errorCode;
+  // P1000 auth failed · P1001 can't reach server · P1002 timeout · P1003 db missing · P1017 connection closed
+  return code === "P1000" || code === "P1001" || code === "P1002" || code === "P1003" || code === "P1017";
+}
+
 export function handleApiError(err: unknown): NextResponse {
   if (err instanceof AppError) {
     if (err.status >= 500) log.error("api error", { code: err.code, ...errorFields(err) });
     return fail(err);
+  }
+  if (isDatabaseUnreachable(err)) {
+    log.error("database unreachable", errorFields(err));
+    return fail(
+      new AppError("INTERNAL", "Cannot reach the database", {
+        status: 503,
+        reason: "The application is running but the PostgreSQL server did not respond. This is not a credentials problem.",
+        fix: "Start the database (`npm run db:dev` in a normal, non-Administrator terminal) or check DATABASE_URL, then try again.",
+      }),
+    );
   }
   if (err instanceof ConfigError) {
     return fail(

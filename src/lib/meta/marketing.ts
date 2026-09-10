@@ -199,9 +199,57 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
   return { metaCampaignId: camp.id, metaAdSetId: adset.id, metaCreativeId: creative.id, metaAdId: ad.id };
 }
 
+/**
+ * The call_to_action block that renders the tappable button on the ad.
+ *
+ * Its `value` differs per objective — this is the piece that decides where the
+ * button actually sends someone:
+ *   OUTCOME_LEADS   → opens a Meta Instant Form   (needs metaFormId)
+ *   OUTCOME_TRAFFIC → opens a URL                 (needs destinationUrl)
+ *   OUTCOME_AWARENESS → opens a URL if one is set, otherwise no button
+ *   OUTCOME_ENGAGEMENT → opens an Instagram Direct thread; routing comes from
+ *                        the ad set's destination_type, so no value is sent
+ *
+ * Returns null when no button should be rendered.
+ */
+function buildCallToAction(campaign: Campaign): Record<string, unknown> | null {
+  if (!campaign.ctaType) return null;
+
+  switch (campaign.objective) {
+    case "OUTCOME_LEADS":
+      if (!campaign.metaFormId) {
+        throw new AppError("VALIDATION", `The "${campaign.ctaType}" button needs an Instant Form`, {
+          reason: "A Leads campaign sends people into a Meta lead form, so the form must exist first.",
+          fix: "Attach an Instant Form to this campaign, or switch the objective to Traffic and give it a destination URL.",
+        });
+      }
+      return { type: campaign.ctaType, value: { lead_gen_form_id: campaign.metaFormId } };
+
+    case "OUTCOME_TRAFFIC":
+      if (!campaign.destinationUrl) {
+        throw new AppError("VALIDATION", `The "${campaign.ctaType}" button needs a destination URL`, {
+          reason: "A Traffic campaign's button has to open a web page.",
+          fix: "Set the destination URL — your hosted lead page works well here.",
+        });
+      }
+      return { type: campaign.ctaType, value: { link: campaign.destinationUrl } };
+
+    case "OUTCOME_ENGAGEMENT":
+      // Destination is INSTAGRAM_DIRECT on the ad set; the button opens a DM.
+      return { type: campaign.ctaType };
+
+    case "OUTCOME_AWARENESS":
+      return campaign.destinationUrl ? { type: campaign.ctaType, value: { link: campaign.destinationUrl } } : null;
+
+    default:
+      return null;
+  }
+}
+
 async function buildCreative(account: InstagramAccount, campaign: Campaign): Promise<Record<string, unknown>> {
   // Boost an existing Instagram post/Reel — the verified pattern:
-  // instagram_user_id + source_instagram_media_id (organic post is never modified).
+  // instagram_user_id + source_instagram_media_id (organic post is never modified;
+  // Meta renders a copy of it as an ad, with the CTA button attached).
   if (campaign.contentId) {
     const content = await prisma.contentItem.findUnique({ where: { id: campaign.contentId } });
     if (!content) throw new AppError("NOT_FOUND", "Selected content no longer exists");
@@ -210,19 +258,14 @@ async function buildCreative(account: InstagramAccount, campaign: Campaign): Pro
       instagram_user_id: account.igUserId,
       source_instagram_media_id: content.mediaId,
     };
-    if (campaign.ctaType && campaign.destinationUrl && campaign.objective === "OUTCOME_TRAFFIC") {
-      creative.call_to_action = { type: campaign.ctaType, value: { link: campaign.destinationUrl } };
-    }
+    const cta = buildCallToAction(campaign);
+    if (cta) creative.call_to_action = cta;
     return creative;
   }
 
   // Lead ads creative (Instant Form required)
   if (campaign.objective === "OUTCOME_LEADS") {
-    if (!campaign.metaFormId) {
-      throw new AppError("VALIDATION", "Lead campaigns need an Instant Form", {
-        fix: "Create or select an Instant Form for this campaign before creating it in Meta.",
-      });
-    }
+    const cta = buildCallToAction({ ...campaign, ctaType: campaign.ctaType ?? "SIGN_UP" });
     return {
       name: `${campaign.name} — creative`,
       object_story_spec: {
@@ -230,10 +273,7 @@ async function buildCreative(account: InstagramAccount, campaign: Campaign): Pro
         link_data: {
           link: "https://fb.me/",
           message: (campaign.creativeSpec as { message?: string } | null)?.message ?? campaign.name,
-          call_to_action: {
-            type: campaign.ctaType ?? "SIGN_UP",
-            value: { lead_gen_form_id: campaign.metaFormId },
-          },
+          call_to_action: cta,
         },
       },
     };
@@ -249,9 +289,8 @@ async function buildCreative(account: InstagramAccount, campaign: Campaign): Pro
     message: spec.message ?? campaign.name,
   };
   if (spec.imageUrl) linkData.picture = spec.imageUrl;
-  if (campaign.ctaType) {
-    linkData.call_to_action = { type: campaign.ctaType, value: { link: campaign.destinationUrl } };
-  }
+  const linkCta = buildCallToAction(campaign);
+  if (linkCta) linkData.call_to_action = linkCta;
   return {
     name: `${campaign.name} — creative`,
     object_story_spec: { page_id: account.fbPageId, link_data: linkData },

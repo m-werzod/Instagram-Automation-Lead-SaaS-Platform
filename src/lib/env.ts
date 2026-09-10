@@ -65,6 +65,11 @@ export function coreEnv() {
   return coreCache;
 }
 
+/** Test hook: drop the cached core env so a changed process.env is re-read. */
+export function _resetCoreEnvCache() {
+  coreCache = null;
+}
+
 export function metaEnv() {
   return parse(metaSchema, "Meta integration");
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ZodError, type z, type ZodTypeAny } from "zod";
 import { AppError } from "@/lib/errors";
-import { ConfigError, coreEnv } from "@/lib/env";
+import { ConfigError, coreEnv, isProd } from "@/lib/env";
 import { createLogger, errorFields } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
 
@@ -74,35 +74,81 @@ export function handleApiError(err: unknown): NextResponse {
   );
 }
 
+/** Hosts explicitly accepted for state-changing requests. */
+export function trustedHosts(): Set<string> {
+  const hosts = new Set<string>();
+  try {
+    hosts.add(new URL(coreEnv().APP_URL).host);
+  } catch {
+    /* APP_URL validated elsewhere */
+  }
+  for (const entry of (process.env.TRUSTED_ORIGINS ?? "").split(",")) {
+    const value = entry.trim();
+    if (!value) continue;
+    try {
+      hosts.add(new URL(value.includes("://") ? value : `http://${value}`).host);
+    } catch {
+      /* ignore malformed entries */
+    }
+  }
+  return hosts;
+}
+
 /**
- * CSRF defence for state-changing requests: the Origin (or Referer) host must
- * match APP_URL's host. Browsers always send Origin on cross-site POSTs.
- * Requests without either header (curl, server-to-server with the session
- * cookie absent) are allowed only when they carry no cookies.
+ * Loopback / private-network hostnames. Serving the same app as `localhost`,
+ * `127.0.0.1` or a LAN IP is routine in development; a remote attacker's page
+ * can never present one of these as its Origin.
+ */
+export function isLocalHostname(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || h === "0.0.0.0") return true;
+  if (/^127\./.test(h)) return true;
+  if (/^10\./.test(h) || /^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  return false;
+}
+
+/**
+ * CSRF defence for state-changing requests.
+ *
+ * Accepted: the APP_URL host, anything listed in TRUSTED_ORIGINS, and — outside
+ * production only — any loopback/private-network host so the app keeps working
+ * when opened as 127.0.0.1, a LAN IP, or on a fallback port. Cross-site
+ * requests from real remote origins are always rejected (and the session cookie
+ * is SameSite=Lax, so it is not even sent on those).
  */
 export function assertSameOrigin(req: NextRequest): void {
   const method = req.method.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
 
-  const appHost = new URL(coreEnv().APP_URL).host;
-  const origin = req.headers.get("origin");
-  const referer = req.headers.get("referer");
-
-  const candidate = origin ?? referer;
+  const candidate = req.headers.get("origin") ?? req.headers.get("referer");
   if (candidate) {
+    let url: URL;
     try {
-      if (new URL(candidate).host === appHost) return;
+      url = new URL(candidate);
     } catch {
-      /* fallthrough */
+      throw new AppError("FORBIDDEN", "Request rejected: malformed Origin header", {
+        reason: `Origin/Referer could not be parsed: ${candidate.slice(0, 100)}`,
+        fix: "Use the application UI in a normal browser.",
+      });
     }
+
+    if (trustedHosts().has(url.host)) return;
+    if (!isProd() && isLocalHostname(url.hostname)) return;
+
+    log.warn("cross-origin request rejected", { origin: url.origin, expected: [...trustedHosts()] });
     throw new AppError("FORBIDDEN", "Cross-origin request rejected", {
-      reason: "The request Origin does not match APP_URL.",
-      fix: "Use the app UI, or set APP_URL to the address you are browsing from.",
+      reason: `This request came from ${url.origin}, which is not an approved address for this installation (expected ${[...trustedHosts()].join(", ") || "APP_URL"}).`,
+      fix: `Open the app at ${coreEnv().APP_URL}, or add ${url.origin} to TRUSTED_ORIGINS in .env and restart.`,
     });
   }
+
   // No Origin/Referer: only allow if the request is cookie-less (non-browser client).
   if (req.headers.get("cookie")) {
-    throw new AppError("FORBIDDEN", "Missing Origin header on state-changing request");
+    throw new AppError("FORBIDDEN", "Missing Origin header on state-changing request", {
+      reason: "A browser request carrying session cookies must include an Origin or Referer header.",
+      fix: "Use the application UI rather than a custom client.",
+    });
   }
 }
 

@@ -82,7 +82,8 @@ The database must be running before you can sign in — the web app alone is not
 | --- | --- | --- |
 | "Cannot reach the database" | PostgreSQL isn't running (or `DATABASE_URL` is wrong) | Start `npm run db:dev` in a **normal, non-Administrator** terminal |
 | "Incorrect login or password" | Wrong credentials, or an admin that doesn't exist in *this* database | `npm run admin:check` — see below |
-| Page won't load at all | Web app not running, or it fell back to port 3001 because 3000 was taken | Check the `npm run dev` output; `APP_URL` must match the address you browse to |
+| "Cross-origin request rejected" | You opened the app at an address that isn't approved for this installation | The message names the address it saw. In development, `localhost`, `127.0.0.1` and LAN IPs are accepted automatically; anywhere else, add it to `TRUSTED_ORIGINS` in `.env` and restart |
+| Page won't load at all | Web app not running, or it fell back to port 3001 because 3000 was taken | Check the `npm run dev` output |
 
 Inspect exactly which accounts exist and whether a password is accepted:
 

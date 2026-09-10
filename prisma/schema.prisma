@@ -1,0 +1,729 @@
+// Instagram Automation Platform — relational schema
+// Multi-account (tenant) isolation rule: every domain table carries
+// instagramAccountId (named accountId) with an FK + index. Cross-account
+// queries are forbidden in the data layer (see src/lib/tenancy.ts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- enums ----------
+
+enum AdminRole {
+  OWNER
+  ADMIN
+}
+
+enum ConnectionMode {
+  INSTAGRAM_LOGIN // Business Login for Instagram (graph.instagram.com)
+  FACEBOOK_LOGIN // Facebook Login for Business (graph.facebook.com, ads-capable)
+}
+
+enum AccountStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum TokenStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum AIProviderType {
+  ANTHROPIC
+  OPENAI
+  GOOGLE
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+enum MessageSender {
+  CUSTOMER
+  AI
+  ADMIN
+  SYSTEM
+}
+
+enum ConversationStatus {
+  OPEN // AI eligible
+  HUMAN // human takeover active
+  CLOSED
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  IN_PROGRESS
+  WON
+  LOST
+}
+
+enum QuestionType {
+  TEXT
+  PHONE
+  EMAIL
+  NUMBER
+  SINGLE_SELECT
+  MULTI_SELECT
+  DATE
+  TIME
+  BOOLEAN
+}
+
+enum FlowSessionStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED // will be retried
+  DEAD // exhausted retries
+}
+
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum DocStatus {
+  PENDING
+  PROCESSING
+  READY
+  ERROR
+}
+
+enum CampaignStatus {
+  DRAFT // local only, editable
+  READY // reviewed, ready to create in Meta
+  CREATED // exists in Meta, PAUSED
+  ACTIVE // running (spending money)
+  PAUSED // paused in Meta after being active
+  ARCHIVED
+  ERROR
+}
+
+enum CtaKind {
+  AD_NATIVE // real Meta ad CTA button (Marketing API, mode B only)
+  CREATIVE_OVERLAY // CTA rendered into the creative before publishing (visual, not a button)
+  EXTERNAL_LINK // hosted landing page on this platform / external URL
+  MESSAGING // keyword/comment → DM lead flow
+}
+
+enum AutomationTriggerType {
+  MESSAGE_RECEIVED
+  COMMENT_RECEIVED
+  LEAD_SUBMITTED
+  LEAD_STATUS_CHANGED
+  CONVERSATION_HANDOFF
+}
+
+// ---------- auth ----------
+
+model Admin {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         AdminRole @default(ADMIN)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions  Session[]
+  auditLogs AuditLog[]
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  adminId    String
+  admin      Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique // sha256(token + SESSION_SECRET); raw token only in cookie
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime // absolute lifetime
+  lastSeenAt DateTime  @default(now()) // idle timeout basis
+  ip         String?
+  userAgent  String?
+  revokedAt  DateTime?
+
+  @@index([adminId])
+  @@index([expiresAt])
+}
+
+// Single-row global switches (id always 1)
+model GlobalSettings {
+  id                        Int      @id @default(1)
+  masterAutomationEnabled   Boolean  @default(true)
+  autoCampaignLaunchEnabled Boolean  @default(false) // spec §16 — default OFF
+  leadAutomationWhenOff     Boolean  @default(true) // lead capture may continue while master is OFF
+  updatedAt                 DateTime @updatedAt
+}
+
+// ---------- Instagram accounts & tokens ----------
+
+model InstagramAccount {
+  id                String         @id @default(cuid())
+  igUserId          String         @unique // Instagram professional account ID
+  username          String
+  name              String?
+  accountType       String? // BUSINESS | MEDIA_CREATOR
+  profilePictureUrl String?
+  followersCount    Int?
+  mediaCount        Int?
+  connectionMode    ConnectionMode
+  fbPageId          String? // mode B
+  fbPageName        String? // mode B
+  adAccountId       String? // mode B, "act_..." — required for campaigns
+  status            AccountStatus  @default(CONNECTED)
+  webhookSubscribed Boolean        @default(false)
+  lastSyncAt        DateTime?
+  isDemo            Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  tokens        InstagramToken[]
+  permissions   InstagramPermission[]
+  agents        AIAgent[]
+  content       ContentItem[]
+  conversations Conversation[]
+  documents     KnowledgeDocument[]
+  chunks        KnowledgeChunk[]
+  leadFlows     LeadFlow[]
+  flowSessions  LeadFlowSession[]
+  leads         Lead[]
+  ctaConfigs    CtaConfig[]
+  campaigns     Campaign[]
+  automations   Automation[]
+  aiUsage       AIUsage[]
+}
+
+model InstagramToken {
+  id            String           @id @default(cuid())
+  accountId     String
+  account       InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  kind          String // "user" | "page"
+  encrypted     String // AES-256-GCM {iv,tag,data} base64 blob — see src/lib/crypto.ts
+  status        TokenStatus      @default(ACTIVE)
+  scopes        String[]
+  issuedAt      DateTime         @default(now())
+  expiresAt     DateTime?
+  lastRefreshAt DateTime?
+  lastCheckedAt DateTime?
+
+  @@index([accountId])
+  @@index([status, expiresAt])
+}
+
+model InstagramPermission {
+  id        String           @id @default(cuid())
+  accountId String
+  account   InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  permission String
+  granted   Boolean          @default(true)
+  checkedAt DateTime         @default(now())
+
+  @@unique([accountId, permission])
+}
+
+// ---------- content ----------
+
+model ContentItem {
+  id               String           @id @default(cuid())
+  accountId        String
+  account          InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  mediaId          String // Instagram media ID
+  mediaType        String // IMAGE | VIDEO | CAROUSEL_ALBUM
+  mediaProductType String? // FEED | REELS | STORY
+  caption          String?          @db.Text
+  mediaUrl         String?
+  thumbnailUrl     String?
+  permalink        String?
+  timestamp        DateTime?
+  likeCount        Int?
+  commentsCount    Int?
+  insights         Json? // last fetched media insights (views era — never "impressions")
+  isDemo           Boolean          @default(false)
+  syncedAt         DateTime         @default(now())
+
+  analysis   ContentAnalysis?
+  ctaConfigs CtaConfig[]
+  campaigns  Campaign[]
+  leads      Lead[]
+
+  @@unique([accountId, mediaId])
+  @@index([accountId, timestamp])
+}
+
+model ContentAnalysis {
+  id                   String      @id @default(cuid())
+  contentId            String      @unique
+  content              ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  provider             String
+  model                String
+  topic                String?
+  audience             String?
+  salesIntent          String?
+  leadPotential        String? // LOW | MEDIUM | HIGH
+  recommendedCta       String?
+  recommendedObjective String?
+  recommendedCopy      String?     @db.Text
+  captionQuality       String?
+  reasoning            String?     @db.Text
+  raw                  Json?
+  createdAt            DateTime    @default(now())
+}
+
+// ---------- AI agents ----------
+
+model AIAgent {
+  id          String         @id @default(cuid())
+  accountId   String
+  account     InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  enabled     Boolean        @default(false)
+  provider    AIProviderType @default(ANTHROPIC)
+  model       String
+  temperature Float          @default(0.7)
+  maxTokens   Int            @default(1024)
+
+  systemPrompt      String  @db.Text
+  tone              String?
+  language          String?
+  businessContext   String? @db.Text // ONLY source of prices/addresses/policies for the AI
+  salesStrategy     String? @db.Text
+  conversationRules String? @db.Text
+  escalationRules   String? @db.Text
+
+  // feature toggles — each is enforced in the worker pipeline, not decorative
+  autoReply              Boolean @default(true)
+  leadQualification      Boolean @default(true)
+  knowledgeEnabled       Boolean @default(true)
+  humanHandoffEnabled    Boolean @default(true)
+  autoFollowUp           Boolean @default(false)
+  commentReplyEnabled    Boolean @default(false)
+  maxRepliesPerUserPerHour Int   @default(20)
+
+  // tool permission system (spec §34/§35): ids from src/lib/agent/tools.ts
+  allowedTools String[]
+
+  defaultLeadFlowId String?
+  isDemo            Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  conversations Conversation[]
+  documents     KnowledgeDocument[]
+  aiUsage       AIUsage[]
+
+  @@index([accountId])
+}
+
+// ---------- conversations ----------
+
+model Conversation {
+  id                 String             @id @default(cuid())
+  accountId          String
+  account            InstagramAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  igsid              String // Instagram-scoped user id of the customer
+  username           String?
+  status             ConversationStatus @default(OPEN)
+  aiEnabled          Boolean            @default(true)
+  takenOverByAdminId String?
+  agentId            String?
+  agent              AIAgent?           @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  leadId             String?
+  lastUserMessageAt  DateTime? // 24h messaging-window anchor
+  lastMessageAt      DateTime?
+  lastMessagePreview String?
+  isDemo             Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  messages     Message[]
+  flowSessions LeadFlowSession[]
+
+  @@unique([accountId, igsid])
+  @@index([accountId, lastMessageAt])
+}
+
+model Message {
+  id               String           @id @default(cuid())
+  conversationId   String
+  conversation     Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  mid              String?          @unique // Meta message id — webhook dedupe anchor
+  direction        MessageDirection
+  sender           MessageSender
+  text             String?          @db.Text
+  attachments      Json?
+  quickReplyPayload String?
+  sentByAdminId    String?
+  aiLatencyMs      Int?
+  raw              Json?
+  createdAt        DateTime         @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// ---------- knowledge base ----------
+
+model KnowledgeDocument {
+  id                String           @id @default(cuid())
+  accountId         String
+  account           InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  agentId           String? // null = shared across the account's agents
+  agent             AIAgent?         @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  title             String
+  filename          String?
+  mimeType          String?
+  sizeBytes         Int?
+  status            DocStatus        @default(PENDING)
+  error             String?
+  chunkCount        Int              @default(0)
+  embeddingProvider String? // "none" → keyword retrieval
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  chunks KnowledgeChunk[]
+
+  @@index([accountId])
+}
+
+model KnowledgeChunk {
+  id         String            @id @default(cuid())
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    InstagramAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  idx        Int
+  text       String            @db.Text
+  embedding  Bytes? // Float32Array buffer; null in keyword mode
+
+  @@index([documentId])
+  @@index([accountId])
+}
+
+// ---------- lead flows ----------
+
+model LeadFlow {
+  id                String           @id @default(cuid())
+  accountId         String
+  account           InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name              String
+  description       String?
+  enabled           Boolean          @default(true)
+  triggerKeywords   String[] // DM keywords that start this flow
+  completionMessage String?          @db.Text
+  isDemo            Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  questions LeadFlowQuestion[]
+  sessions  LeadFlowSession[]
+  leads     Lead[]
+
+  @@index([accountId])
+}
+
+model LeadFlowQuestion {
+  id              String       @id @default(cuid())
+  flowId          String
+  flow            LeadFlow     @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  order           Int
+  title           String // "Full Name"
+  prompt          String       @db.Text // exact text sent to the user
+  type            QuestionType
+  required        Boolean      @default(true)
+  options         String[] // SINGLE_SELECT / MULTI_SELECT
+  mapTo           String? // "name" | "phone" | "email" → lead columns
+  validationRegex String?
+
+  answers LeadAnswer[]
+
+  @@unique([flowId, order])
+}
+
+model LeadFlowSession {
+  id                String            @id @default(cuid())
+  flowId            String
+  flow              LeadFlow          @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  accountId         String
+  account           InstagramAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  conversationId    String
+  conversation      Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  status            FlowSessionStatus @default(ACTIVE)
+  currentQuestionId String?
+  askedAt           DateTime? // when current question was sent
+  leadId            String?
+  startedAt         DateTime          @default(now())
+  completedAt       DateTime?
+
+  answers LeadAnswer[]
+
+  @@index([conversationId, status])
+  @@index([accountId, status])
+}
+
+model LeadAnswer {
+  id         String           @id @default(cuid())
+  sessionId  String
+  session    LeadFlowSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId String
+  question   LeadFlowQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  value      String           @db.Text
+  createdAt  DateTime         @default(now())
+
+  @@unique([sessionId, questionId])
+}
+
+// ---------- CRM ----------
+
+model Lead {
+  id             String           @id @default(cuid())
+  accountId      String
+  account        InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  igsid          String? // instagram user (if from DM)
+  conversationId String?
+  name           String?
+  phone          String?
+  email          String?
+  answers        Json? // [{question, answer}] snapshot at submission
+  source         String           @default("instagram_dm") // instagram_dm | instagram_comment | landing_page | lead_ad | manual
+  campaignId     String?
+  campaign       Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  contentId      String?
+  content        ContentItem?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  flowId         String?
+  flow           LeadFlow?        @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  status         LeadStatus       @default(NEW)
+  notes          String?          @db.Text
+  isDemo         Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  events LeadEvent[]
+
+  @@index([accountId, status])
+  @@index([accountId, createdAt])
+}
+
+model LeadEvent {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type      String // CREATED | STATUS_CHANGED | NOTE_ADDED | EMAIL_SENT | EMAIL_FAILED
+  data      Json?
+  adminId   String?
+  createdAt DateTime @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+// ---------- CTA ----------
+
+model CtaConfig {
+  id               String           @id @default(cuid())
+  accountId        String
+  account          InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contentId        String?
+  content          ContentItem?     @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  name             String
+  kind             CtaKind
+  enabled          Boolean          @default(true)
+  ctaType          String? // AD_NATIVE: Meta enum value (SIGN_UP, LEARN_MORE, ...)
+  url              String? // EXTERNAL_LINK destination (or hosted page)
+  landingSlug      String?          @unique // hosted landing page /f/{slug}
+  leadFlowId       String?
+  overlaySpec      Json? // CREATIVE_OVERLAY: {text, position, bgColor, textColor} — visual only
+  messagingKeyword String? // MESSAGING: comment/DM keyword trigger
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([accountId])
+}
+
+// ---------- campaigns ----------
+
+model Campaign {
+  id                  String           @id @default(cuid())
+  accountId           String
+  account             InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name                String
+  objective           String // OUTCOME_LEADS | OUTCOME_TRAFFIC | OUTCOME_ENGAGEMENT | OUTCOME_SALES | OUTCOME_AWARENESS
+  status              CampaignStatus   @default(DRAFT)
+  dailyBudgetCents    Int?
+  lifetimeBudgetCents Int?
+  currency            String           @default("USD")
+  startTime           DateTime?
+  endTime             DateTime?
+  targeting           Json? // {countries, ageMin, ageMax, genders, instagramPositions}
+  ctaType             String?
+  destinationType     String? // WEBSITE | INSTAGRAM_DIRECT | LEAD_FORM
+  destinationUrl      String?
+  leadFlowId          String?
+  contentId           String? // boost existing media (source_instagram_media_id)
+  content             ContentItem?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  creativeSpec        Json?
+  createdByAi         Boolean          @default(false)
+  createdByAdminId    String?
+  metaCampaignId      String?
+  metaAdSetId         String?
+  metaCreativeId      String?
+  metaAdId            String?
+  metaFormId          String? // lead ads instant form
+  lastError           String?
+  publishedAt         DateTime?
+  publishedByAdminId  String?
+  isDemo              Boolean          @default(false)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  leads Lead[]
+
+  @@index([accountId, status])
+}
+
+// ---------- automations ----------
+
+model Automation {
+  id          String                @id @default(cuid())
+  accountId   String
+  account     InstagramAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  enabled     Boolean               @default(false)
+  trigger     AutomationTriggerType
+  conditions  Json // [{field, op, value}] — AND-combined
+  actions     Json // [{type, params}] — executed in order
+  runCount    Int                   @default(0)
+  lastRunAt   DateTime?
+  isDemo      Boolean               @default(false)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  runs AutomationRun[]
+
+  @@index([accountId, trigger, enabled])
+}
+
+model AutomationRun {
+  id           String     @id @default(cuid())
+  automationId String
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  status       String // SUCCESS | FAILED | SKIPPED
+  triggerData  Json?
+  result       Json?
+  error        String?
+  durationMs   Int?
+  createdAt    DateTime   @default(now())
+
+  @@index([automationId, createdAt])
+}
+
+// ---------- infrastructure ----------
+
+model WebhookEvent {
+  id             String    @id @default(cuid())
+  object         String // "instagram" | "page"
+  dedupeKey      String    @unique
+  payload        Json
+  signatureValid Boolean   @default(true)
+  status         String    @default("RECEIVED") // RECEIVED | QUEUED | PROCESSED | FAILED | IGNORED
+  error          String?
+  processedAt    DateTime?
+  receivedAt     DateTime  @default(now())
+
+  @@index([status, receivedAt])
+}
+
+// DB-backed job queue (FOR UPDATE SKIP LOCKED claiming — see src/lib/queue)
+model Job {
+  id             String    @id @default(cuid())
+  type           String
+  payload        Json
+  status         JobStatus @default(PENDING)
+  priority       Int       @default(0)
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5)
+  runAt          DateTime  @default(now())
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastError      String?
+  idempotencyKey String?   @unique
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, runAt, priority])
+}
+
+model AIUsage {
+  id           String            @id @default(cuid())
+  accountId    String?
+  account      InstagramAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  agentId      String?
+  agent        AIAgent?          @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  provider     String
+  model        String
+  purpose      String // reply | content_analysis | embedding | campaign_draft
+  inputTokens  Int               @default(0)
+  outputTokens Int               @default(0)
+  costUsd      Float?
+  latencyMs    Int?
+  success      Boolean           @default(true)
+  error        String?
+  createdAt    DateTime          @default(now())
+
+  @@index([accountId, createdAt])
+}
+
+model EmailEvent {
+  id        String      @id @default(cuid())
+  to        String
+  subject   String
+  template  String // lead_notification | admin_alert | test
+  payload   Json?
+  status    EmailStatus @default(PENDING)
+  attempts  Int         @default(0)
+  lastError String?
+  sentAt    DateTime?
+  leadId    String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  adminId      String?
+  admin        Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  action       String // CONNECTED_INSTAGRAM, CHANGED_AGENT_PROMPT, PUBLISHED_CAMPAIGN, ...
+  resourceType String?
+  resourceId   String?
+  before       Json?
+  after        Json?
+  ip           String?
+  success      Boolean  @default(true)
+  error        String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([adminId, createdAt])
+  @@index([action, createdAt])
+}

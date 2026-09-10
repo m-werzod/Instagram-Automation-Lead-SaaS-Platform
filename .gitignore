@@ -40,3 +40,8 @@ coverage/
 *.swp
 
 # prisma generated client lives in node_modules; migrations ARE committed
+.pgdata/
+cookies.txt
+devdb.log
+devserver.log
+worker.log

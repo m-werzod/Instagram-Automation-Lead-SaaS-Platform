@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src scripts prisma tests"
+    "lint": "eslint src scripts prisma tests",
+    "db:dev": "tsx scripts/dev-db.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -56,6 +57,7 @@
     "@types/pdf-parse": "^1.1.4",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "embedded-postgres": "^18.4.0-beta.17",
     "eslint": "^9.20.0",
     "eslint-config-next": "^15.5.0",
     "postcss": "^8.5.0",

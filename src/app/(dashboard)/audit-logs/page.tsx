@@ -19,7 +19,7 @@ interface LogRow {
   success: boolean;
   error: string | null;
   createdAt: string;
-  admin: { email: string; name: string } | null;
+  admin: { login: string; name: string } | null;
 }
 
 export default function AuditLogsPage() {
@@ -75,7 +75,7 @@ export default function AuditLogsPage() {
                     onClick={() => setExpanded(expanded === l.id ? null : l.id)}
                   >
                     <td className="whitespace-nowrap px-4 py-2 text-[--color-fg-muted]">{formatDate(l.createdAt)}</td>
-                    <td className="px-4 py-2">{l.admin?.email ?? "system"}</td>
+                    <td className="px-4 py-2">{l.admin?.login ?? "system"}</td>
                     <td className="px-4 py-2 font-mono text-[11px]">{l.action}</td>
                     <td className="px-4 py-2 text-[--color-fg-muted]">
                       {l.resourceType ?? ""} {l.resourceId ? `· ${l.resourceId.slice(0, 8)}…` : ""}

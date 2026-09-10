@@ -44,11 +44,16 @@ If you use the embedded dev DB, set:
 ```bash
 npm run db:dev        # terminal 1 — embedded PostgreSQL (skip if you have your own)
 npm run db:migrate    # apply committed migrations
-npm run db:seed       # OWNER admin (from ADMIN_EMAIL/ADMIN_PASSWORD) + clearly-marked DEMO data
+npm run db:seed       # OWNER admin (from ADMIN_LOGIN/ADMIN_PASSWORD) + clearly-marked DEMO data
 ```
 
-The seed prints the admin login. Demo data (`@demo_driving_school`) is labeled DEMO everywhere and
-**never calls the Meta API** — it exists so every module is explorable before connecting a real account.
+**Sign-in uses a Login (username), not an email address.** The seed creates the OWNER admin from
+`ADMIN_LOGIN` / `ADMIN_PASSWORD` and prints the resulting login. Logins are case-insensitive
+(`Admin` == `admin`). Re-running the seed with `ADMIN_PASSWORD` set resets that admin's password, so you
+can always recover access.
+
+Demo data (`@demo_driving_school`) is labeled DEMO everywhere and **never calls the Meta API** — it
+exists so every module is explorable before connecting a real account.
 
 ## 4. Run
 
@@ -60,7 +65,9 @@ npm run worker        # terminal 3 — queue worker (webhooks, AI replies, flows
 Alternative for quick dev without a third terminal: set `QUEUE_INLINE=true` in `.env` — jobs run inside
 the web process (the standalone worker is the production mode).
 
-Log in at http://localhost:3000/login.
+Sign in at http://localhost:3000/login with the Login/Password from your `.env`
+(`ADMIN_LOGIN` / `ADMIN_PASSWORD`). Additional administrators are created by an OWNER under
+**Settings → Administrators** — there is no public registration.
 
 **Try the full pipeline with zero external services**: open Conversations → pick the demo conversation →
 "Simulate inbound" → type `kurs`. The lead flow asks its questions one by one; answer them and watch the
@@ -100,7 +107,9 @@ docs/META_API.md §9 for App Review requirements if you ever need public access.
   spend acknowledgement; AI-drafted campaigns additionally require the global "Automatic Campaign
   Launch" toggle (default OFF). The AI has **no** code path that can spend money or publish content.
 - Instagram tokens are AES-256-GCM encrypted at rest and never reach the browser.
-- Every sensitive action is audit-logged with before/after snapshots.
+- Every sensitive action is audit-logged with before/after snapshots (including failed sign-ins).
+- Passwords are bcrypt-hashed (cost 12); sign-in responses are identical for unknown login, wrong
+  password and disabled account, so the form cannot be used to enumerate valid logins.
 - Meta's 24-hour DM window is enforced locally — the platform refuses out-of-policy sends.
 
 ## 8. Project map

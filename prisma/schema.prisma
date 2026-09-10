@@ -137,8 +137,11 @@ enum AutomationTriggerType {
 // ---------- auth ----------
 
 model Admin {
-  id           String    @id @default(cuid())
-  email        String    @unique
+  id String @id @default(cuid())
+  /// Username used to sign in (case-insensitive: always stored lowercased).
+  login        String    @unique
+  /// Optional contact address — NOT used for authentication.
+  email        String?   @unique
   name         String
   passwordHash String
   role         AdminRole @default(ADMIN)

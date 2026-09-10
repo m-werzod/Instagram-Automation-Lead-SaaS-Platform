@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildState, verifyState, instagramAuthorizeUrl, facebookAuthorizeUrl, IG_LOGIN_SCOPES } from "@/lib/meta/oauth";
-import { checkPasswordPolicy } from "@/lib/auth/password";
+import { checkLoginFormat, checkPasswordPolicy, normalizeLogin } from "@/lib/auth/password";
 import { rateLimit, _resetRateLimiter } from "@/lib/rate-limit";
 
 describe("OAuth state (CSRF)", () => {
@@ -44,11 +44,36 @@ describe("password policy", () => {
   it("accepts a strong password", () => {
     expect(checkPasswordPolicy("CorrectHorse42Battery").ok).toBe(true);
   });
-  it("lists concrete problems", () => {
-    const res = checkPasswordPolicy("short");
+  it("accepts the documented bootstrap credential shape", () => {
+    expect(checkPasswordPolicy("Sample123X").ok).toBe(true);
+  });
+  it("rejects too-short passwords", () => {
+    const res = checkPasswordPolicy("Ab1");
     expect(res.ok).toBe(false);
-    expect(res.problems.join(" ")).toMatch(/12 characters/);
-    expect(res.problems.join(" ")).toMatch(/digit/);
+    expect(res.problems.join(" ")).toMatch(/8 characters/);
+  });
+  it("requires mixed case and a digit", () => {
+    expect(checkPasswordPolicy("alllowercase").problems.join(" ")).toMatch(/upper and lower/);
+    expect(checkPasswordPolicy("NoDigitsHere").problems.join(" ")).toMatch(/digit/);
+  });
+});
+
+describe("login (username) handling", () => {
+  it("normalizes case and whitespace so Admin === admin", () => {
+    expect(normalizeLogin("  Admin ")).toBe("admin");
+    expect(normalizeLogin("ADMIN")).toBe(normalizeLogin("admin"));
+  });
+
+  it("accepts valid logins", () => {
+    for (const value of ["Admin", "operator1", "a.b_c-d"]) {
+      expect(checkLoginFormat(value).ok).toBe(true);
+    }
+  });
+
+  it("rejects invalid logins with reasons", () => {
+    expect(checkLoginFormat("ab").problems.join(" ")).toMatch(/3–40/);
+    expect(checkLoginFormat("has space").problems.join(" ")).toMatch(/letters, digits/);
+    expect(checkLoginFormat("bad@char").ok).toBe(false);
   });
 });
 

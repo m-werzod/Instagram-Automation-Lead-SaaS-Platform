@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { verifyPassword } from "@/lib/auth/password";
+import { normalizeLogin, verifyPassword } from "@/lib/auth/password";
 import { createSession, sessionCookieOptions, SESSION_COOKIE } from "@/lib/auth/session";
 import { route, parseBody, clientIp, assertSameOrigin, enforceRateLimit } from "@/lib/api";
 import { AppError } from "@/lib/errors";
@@ -9,19 +9,19 @@ import { audit, AuditActions } from "@/lib/audit";
 import { LIMITS } from "@/lib/rate-limit";
 
 const loginSchema = z.object({
-  email: z.string().email().max(200),
-  password: z.string().min(1).max(200),
+  login: z.string().min(1, "Login is required").max(64),
+  password: z.string().min(1, "Password is required").max(200),
 });
 
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
   const ip = clientIp(req);
   const body = await parseBody(req, loginSchema);
-  const email = body.email.trim().toLowerCase();
+  const login = normalizeLogin(body.login);
 
-  enforceRateLimit(`login:${ip}:${email}`, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs);
+  enforceRateLimit(`login:${ip}:${login}`, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs);
 
-  const admin = await prisma.admin.findUnique({ where: { email } });
+  const admin = await prisma.admin.findUnique({ where: { login } });
   const valid = admin && admin.isActive && (await verifyPassword(body.password, admin.passwordHash));
 
   if (!valid) {
@@ -31,11 +31,12 @@ export const POST = route(async (req: NextRequest) => {
       resourceId: admin?.id,
       ip,
       success: false,
-      error: admin ? (admin.isActive ? "bad password" : "account disabled") : "unknown email",
+      error: admin ? (admin.isActive ? "bad password" : "account disabled") : "unknown login",
+      after: { login },
     });
-    // identical response for unknown email / bad password / disabled account
-    throw new AppError("UNAUTHORIZED", "Invalid email or password", {
-      fix: "Check your credentials. Accounts lock for 5 minutes after 5 failed attempts.",
+    // identical response for unknown login / bad password / disabled account
+    throw new AppError("UNAUTHORIZED", "Incorrect login or password", {
+      fix: "Check your credentials. Sign-in locks for 5 minutes after 5 failed attempts.",
     });
   }
 
@@ -44,7 +45,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const res = NextResponse.json({
     ok: true,
-    data: { admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role } },
+    data: { admin: { id: admin.id, login: admin.login, name: admin.name, role: admin.role } },
   });
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions(session.expiresAt));
   return res;

@@ -20,7 +20,8 @@ interface GlobalSettings {
 
 interface AdminRow {
   id: string;
-  email: string;
+  login: string;
+  email: string | null;
   name: string;
   role: "OWNER" | "ADMIN";
   isActive: boolean;
@@ -142,7 +143,10 @@ export default function SettingsPage() {
                   <Badge tone={a.role === "OWNER" ? "accent" : "default"}>{a.role}</Badge>
                   {!a.isActive && <Badge tone="danger">disabled</Badge>}
                 </div>
-                <div className="text-[11px] text-[--color-fg-faint]">{a.email}</div>
+                <div className="text-[11px] text-[--color-fg-faint]">
+                Login: <span className="font-mono">{a.login}</span>
+                {a.email ? ` · ${a.email}` : ""}
+              </div>
               </div>
               {me?.role === "OWNER" && a.id !== me.id && (
                 <Button
@@ -199,6 +203,7 @@ export default function SettingsPage() {
 
 function CreateAdminDialog({ onCreated }: { onCreated: () => Promise<void> }) {
   const [open, setOpen] = React.useState(false);
+  const [login, setLogin] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [name, setName] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -209,10 +214,10 @@ function CreateAdminDialog({ onCreated }: { onCreated: () => Promise<void> }) {
     e.preventDefault();
     setBusy(true);
     try {
-      await api("/api/admin/admins", { method: "POST", json: { email, name, password, role } });
-      toast.success(`Admin ${email} created`);
+      await api("/api/admin/admins", { method: "POST", json: { login, email: email || undefined, name, password, role } });
+      toast.success(`Admin "${login}" created`);
       setOpen(false);
-      setEmail(""); setName(""); setPassword("");
+      setLogin(""); setEmail(""); setName(""); setPassword("");
       await onCreated();
     } finally {
       setBusy(false);
@@ -224,13 +229,26 @@ function CreateAdminDialog({ onCreated }: { onCreated: () => Promise<void> }) {
       <Button size="sm" onClick={() => setOpen(true)}>
         Add admin
       </Button>
-      <DialogContent title="Add administrator" description="Password policy: 12+ chars, upper+lower case, a digit.">
+      <DialogContent
+        title="Add administrator"
+        description="Sign-in uses the Login (username). Password: 8+ chars with upper- and lower-case letters and a digit."
+      >
         <form onSubmit={submit} className="space-y-3">
-          <Field label="Email">
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Field label="Login (username used to sign in)" hint="3–40 characters: letters, digits, dot, underscore or hyphen. Case-insensitive.">
+            <Input
+              value={login}
+              onChange={(e) => setLogin(e.target.value)}
+              required
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder="operator1"
+            />
           </Field>
           <Field label="Name">
             <Input value={name} onChange={(e) => setName(e.target.value)} required />
+          </Field>
+          <Field label="Email (optional — for contact only, not sign-in)">
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </Field>
           <Field label="Password">
             <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />

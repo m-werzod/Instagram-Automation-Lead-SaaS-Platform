@@ -16,7 +16,7 @@ export const GET = route(async (req: NextRequest) => {
       ...(action ? { action: { contains: action.toUpperCase() } } : {}),
       ...(adminId ? { adminId } : {}),
     },
-    include: { admin: { select: { email: true, name: true } } },
+    include: { admin: { select: { login: true, name: true } } },
     orderBy: { createdAt: "desc" },
     take: take + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

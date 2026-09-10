@@ -75,7 +75,13 @@ function MasterSwitchPill() {
   );
 }
 
-function Shell({ admin, children }: { admin: { name: string; email: string; role: string }; children: React.ReactNode }) {
+interface AdminIdentity {
+  name: string;
+  login: string;
+  role: string;
+}
+
+function Shell({ admin, children }: { admin: AdminIdentity; children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { accounts, selectedId, setSelectedId } = useAccounts();
@@ -140,7 +146,7 @@ function Shell({ admin, children }: { admin: { name: string; email: string; role
             <div className="min-w-0">
               <div className="truncate text-xs font-medium">{admin.name}</div>
               <div className="truncate text-[10px] text-[--color-fg-faint]">
-                {admin.email} · {admin.role}
+                {admin.login} · {admin.role}
               </div>
             </div>
             <button
@@ -189,7 +195,7 @@ function Shell({ admin, children }: { admin: { name: string; email: string; role
   );
 }
 
-export function AppShell(props: { admin: { name: string; email: string; role: string }; children: React.ReactNode }) {
+export function AppShell(props: { admin: AdminIdentity; children: React.ReactNode }) {
   return (
     <AccountProvider>
       <Shell {...props} />

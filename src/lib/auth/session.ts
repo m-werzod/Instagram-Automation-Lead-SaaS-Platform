@@ -13,7 +13,7 @@ const IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 h
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface AuthContext {
-  admin: Pick<Admin, "id" | "email" | "name" | "role">;
+  admin: Pick<Admin, "id" | "login" | "email" | "name" | "role">;
   session: Pick<Session, "id" | "expiresAt">;
 }
 
@@ -49,7 +49,7 @@ export async function getAuth(): Promise<AuthContext | null> {
 
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashSessionToken(token) },
-    include: { admin: { select: { id: true, email: true, name: true, role: true, isActive: true } } },
+    include: { admin: { select: { id: true, login: true, email: true, name: true, role: true, isActive: true } } },
   });
   if (!session || session.revokedAt) return null;
 
@@ -68,6 +68,7 @@ export async function getAuth(): Promise<AuthContext | null> {
   return {
     admin: {
       id: session.admin.id,
+      login: session.admin.login,
       email: session.admin.email,
       name: session.admin.name,
       role: session.admin.role,

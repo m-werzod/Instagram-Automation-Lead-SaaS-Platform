@@ -19,26 +19,45 @@ async function main() {
   await prisma.globalSettings.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
 
   // ---- bootstrap OWNER admin ----
-  const email = (process.env.ADMIN_EMAIL ?? "admin@example.com").toLowerCase();
+  // Sign-in uses ADMIN_LOGIN (a username), NOT an email address.
+  const login = (process.env.ADMIN_LOGIN ?? "admin").trim().toLowerCase();
+  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase() || null;
   let password = process.env.ADMIN_PASSWORD ?? "";
   let generated = false;
   if (!password) {
     password = randomBytes(9).toString("base64url") + "A1"; // meets policy
     generated = true;
   }
-  const existingAdmin = await prisma.admin.findUnique({ where: { email } });
+
+  // Match on login first; fall back to the email (covers upgrading an older
+  // email-authenticated admin to the login scheme without creating a duplicate).
+  const existingAdmin =
+    (await prisma.admin.findUnique({ where: { login } })) ??
+    (email ? await prisma.admin.findUnique({ where: { email } }) : null);
+
   if (!existingAdmin) {
     await prisma.admin.create({
-      data: { email, name: "Owner", passwordHash: await bcrypt.hash(password, 12), role: "OWNER" },
+      data: { login, email, name: "Owner", passwordHash: await bcrypt.hash(password, 12), role: "OWNER" },
     });
-    console.log(`\n✔ OWNER admin created: ${email}`);
-    if (generated) {
-      console.log(`  One-time password (change it after login): ${password}\n`);
-    } else {
-      console.log("  Password: from ADMIN_PASSWORD env var\n");
-    }
+    console.log(`\n✔ OWNER admin created — Login: ${login}`);
+    console.log(
+      generated
+        ? `  One-time password (change it after signing in): ${password}\n`
+        : "  Password: taken from ADMIN_PASSWORD\n",
+    );
+  } else if (!generated) {
+    // Explicit ADMIN_PASSWORD → re-apply it so the documented credentials always work.
+    await prisma.admin.update({
+      where: { id: existingAdmin.id },
+      data: { login, email, passwordHash: await bcrypt.hash(password, 12), isActive: true, role: "OWNER" },
+    });
+    console.log(
+      `\n✔ OWNER admin ready — Login: ${login}` +
+        (existingAdmin.login !== login ? ` (renamed from "${existingAdmin.login}")` : "") +
+        "\n  Password reset from ADMIN_PASSWORD\n",
+    );
   } else {
-    console.log(`✔ Admin ${email} already exists — skipping (password unchanged)`);
+    console.log(`✔ Admin "${existingAdmin.login}" already exists — left untouched (no ADMIN_PASSWORD set)`);
   }
 
   // ---- demo Instagram account (clearly marked, never contacts Meta) ----

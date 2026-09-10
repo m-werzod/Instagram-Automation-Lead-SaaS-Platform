@@ -14,6 +14,7 @@ const PUBLIC_PREFIXES = [
   "/api/webhooks", // Meta webhook (signature-validated in the route)
   "/api/cron", // scheduler-driven queue drain (CRON_SECRET-validated in the route)
   "/api/health",
+  "/api/setup-status", // readiness probe — must work before the app is configured
   "/api/leads/public", // landing page submissions (rate-limited in route)
   "/_next",
   "/favicon.ico",

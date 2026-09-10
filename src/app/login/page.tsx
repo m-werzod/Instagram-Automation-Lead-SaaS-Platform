@@ -18,12 +18,19 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { cn } from "@/lib/utils";
+import { SetupRequired, type MissingCheck } from "@/components/setup-required";
 
 /**
  * Sign-in page. Authentication uses a LOGIN (username), not an email address.
  * Split layout: product/brand panel + focused credential form. The brand panel
  * collapses into a compact header on small screens.
  */
+
+interface SetupStatus {
+  configured: boolean;
+  missing: MissingCheck[];
+  platform: string | null;
+}
 
 function SignInForm() {
   const router = useRouter();
@@ -35,11 +42,37 @@ function SignInForm() {
   const [capsLock, setCapsLock] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [setup, setSetup] = React.useState<SetupStatus | null>(null);
 
   const loginRef = React.useRef<HTMLInputElement>(null);
-  React.useEffect(() => loginRef.current?.focus(), []);
+
+  // Check the installation is usable before offering a form that cannot work.
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch("/api/setup-status", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((body: { data?: SetupStatus }) => {
+        if (cancelled) return;
+        const status = body.data ?? { configured: true, missing: [], platform: null };
+        setSetup(status);
+        if (status.configured) loginRef.current?.focus();
+      })
+      .catch(() => {
+        if (!cancelled) setSetup({ configured: true, missing: [], platform: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const expired = params.get("expired") === "1";
+
+  if (setup === null) {
+    return <div className="h-[248px] animate-pulse rounded-md bg-[--color-panel-2]" aria-hidden />;
+  }
+  if (!setup.configured) {
+    return <SetupRequired missing={setup.missing} platform={setup.platform} />;
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

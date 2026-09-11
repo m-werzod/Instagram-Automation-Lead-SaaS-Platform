@@ -7,13 +7,21 @@ import { listAdAccounts } from "@/lib/meta/marketing";
 export const GET = route(async (_req, ctx: RouteCtx) => {
   await requireAdmin();
   const id = await pathParam(ctx, "id");
-  const account = await prisma.instagramAccount.findUnique({ where: { id } });
+  const account = await prisma.instagramAccount.findUnique({
+    where: { id },
+    include: { tokens: { where: { kind: "ads", status: "ACTIVE" }, take: 1 } },
+  });
   if (!account) throw notFound("Instagram account");
-  if (account.connectionMode !== "FACEBOOK_LOGIN") {
+
+  // Ads readiness is decided by the advertising authorization, not by how
+  // Instagram itself was connected — an Instagram-Login account gains ads once
+  // it has an ads token (or was connected via Facebook Login directly).
+  const adsConnected = account.tokens.length > 0 || account.connectionMode === "FACEBOOK_LOGIN";
+  if (!adsConnected) {
     throw metaUnsupported(
       "Ad accounts",
-      "Listing ad accounts requires the Facebook Login connection mode.",
-      "Reconnect via 'Connect with Facebook (ads)'.",
+      "Advertising is not connected for this account yet.",
+      "Use 'Connect with Facebook (for ads)' on the Integrations page.",
     );
   }
   const adAccounts = await listAdAccounts(account);

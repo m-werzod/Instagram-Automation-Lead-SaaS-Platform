@@ -56,9 +56,10 @@ export const POST = route(async (req: NextRequest) => {
 
   // Honest kind-specific validation (spec §12–13):
   if (body.kind === "AD_NATIVE") {
-    if (account.connectionMode !== "FACEBOOK_LOGIN") {
+    // A native button only renders on a paid placement, so an ad account must exist.
+    if (!account.adAccountId) {
       throw validationError(
-        "Native Meta CTA buttons only exist on ads (Marketing API), which requires the Facebook Login connection mode for this account. Use a Creative Overlay, External Link, or Messaging CTA instead.",
+        "A native Meta button (Sign Up, Learn More…) only exists on ads, so this account needs a Meta ad account first. Use 'Connect with Facebook (ads)' on the Integrations page — or pick External Link / Messaging to capture leads without paying.",
       );
     }
     if (!body.ctaType || !SUPPORTED_CTA_TYPES.some((c) => c.value === body.ctaType)) {

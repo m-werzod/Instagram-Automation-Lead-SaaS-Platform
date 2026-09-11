@@ -20,17 +20,20 @@ export const IG_LOGIN_SCOPES = [
   "instagram_business_manage_insights",
 ] as const;
 
+/**
+ * Facebook Login is used for ONE job here: advertising (Marketing API).
+ *
+ * It deliberately does NOT request instagram_basic / instagram_manage_* /
+ * pages_manage_metadata. Those belong to the older "Instagram API with Facebook
+ * Login" product; an app configured for Instagram Login does not have them, and
+ * Facebook rejects the ENTIRE authorization dialog with "Invalid Scopes" if any
+ * single unavailable permission is requested. Organic features (messages,
+ * comments, publishing, insights) come from the Instagram Login connection.
+ */
 export const FB_LOGIN_SCOPES = [
-  "instagram_basic",
-  "instagram_manage_messages",
-  "instagram_manage_comments",
-  "instagram_content_publish",
-  "instagram_manage_insights",
   "pages_show_list",
   "pages_read_engagement",
-  "pages_manage_metadata",
   "business_management",
-  // advertising (development access works for app-role admins' own ad accounts)
   "ads_management",
   "ads_read",
   "pages_manage_ads",

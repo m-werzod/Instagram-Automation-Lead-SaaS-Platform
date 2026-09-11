@@ -15,9 +15,19 @@ export interface ResolvedAccess {
   tokenRow: InstagramToken;
 }
 
+/**
+ * Token kinds stored per account:
+ *   user — the organic-features token (Instagram Login, or FB user token in mode B)
+ *   page — Facebook Page token (webhooks, Instant Forms)
+ *   ads  — Facebook user token carrying ads_management, kept SEPARATE so
+ *          connecting Facebook for advertising never revokes the Instagram
+ *          Login token that messaging depends on.
+ */
+export type TokenKind = "user" | "page" | "ads";
+
 export async function storeToken(opts: {
   accountId: string;
-  kind: "user" | "page";
+  kind: TokenKind;
   token: string;
   scopes: string[];
   expiresAt: Date | null;
@@ -41,7 +51,7 @@ export async function storeToken(opts: {
 
 export async function getActiveToken(
   accountId: string,
-  kind: "user" | "page",
+  kind: TokenKind,
 ): Promise<{ token: string; row: InstagramToken } | null> {
   const row = await prisma.instagramToken.findFirst({
     where: { accountId, kind, status: "ACTIVE" },
@@ -72,11 +82,21 @@ export async function resolveAccess(account: InstagramAccount): Promise<Resolved
   return { accessToken: t.token, host: "graph.facebook.com", tokenRow: t.row };
 }
 
-/** Marketing API calls require the mode-B USER token. */
+/**
+ * Marketing API calls use the dedicated ads token when one exists (an account
+ * connected with Instagram Login that later added Facebook for advertising),
+ * falling back to the user token for accounts connected entirely through
+ * Facebook Login.
+ */
 export async function resolveAdsAccess(account: InstagramAccount): Promise<ResolvedAccess> {
-  const t = await getActiveToken(account.id, "user");
-  if (!t) throw tokenExpired();
-  return { accessToken: t.token, host: "graph.facebook.com", tokenRow: t.row };
+  const ads = await getActiveToken(account.id, "ads");
+  if (ads) return { accessToken: ads.token, host: "graph.facebook.com", tokenRow: ads.row };
+
+  if (account.connectionMode === "FACEBOOK_LOGIN") {
+    const user = await getActiveToken(account.id, "user");
+    if (user) return { accessToken: user.token, host: "graph.facebook.com", tokenRow: user.row };
+  }
+  throw tokenExpired();
 }
 
 export async function markTokenExpired(tokenId: string): Promise<void> {

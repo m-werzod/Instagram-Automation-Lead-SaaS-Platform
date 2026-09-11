@@ -71,16 +71,18 @@ export interface CampaignTargeting {
   instagramPositions?: string[];
 }
 
+/**
+ * Advertising readiness is decided by the ad account link, not by how Instagram
+ * was connected — an Instagram Login account gains campaigns as soon as the
+ * admin completes the separate Facebook (ads) authorization.
+ */
 export function assertAdsCapable(account: InstagramAccount): void {
-  if (account.connectionMode !== "FACEBOOK_LOGIN") {
+  if (!account.adAccountId) {
     throw metaUnsupported(
       "Campaigns",
-      "The Marketing API requires the Facebook Login connection mode; this account was connected with Instagram Login.",
-      "Reconnect this account via 'Connect with Facebook (ads)' in Settings → Integrations → Instagram.",
+      "No Meta ad account is linked to this Instagram account yet.",
+      "Open Settings → Integrations → Instagram and use 'Connect with Facebook (ads)'. It adds advertising without affecting your Instagram messaging connection.",
     );
-  }
-  if (!account.adAccountId) {
-    throw metaUnsupported("Campaigns", "No ad account is linked to this Instagram account.", "Select an ad account in the account settings.");
   }
 }
 

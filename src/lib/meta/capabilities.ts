@@ -36,7 +36,7 @@ function hasScope(acc: AccountWithAuth, ...names: string[]): boolean {
   return names.some((n) => granted.has(n));
 }
 
-function activeToken(acc: AccountWithAuth, kind: "user" | "page"): boolean {
+function activeToken(acc: AccountWithAuth, kind: "user" | "page" | "ads"): boolean {
   return acc.tokens.some(
     (t) => t.kind === kind && t.status === "ACTIVE" && (!t.expiresAt || t.expiresAt.getTime() > Date.now()),
   );
@@ -45,7 +45,6 @@ function activeToken(acc: AccountWithAuth, kind: "user" | "page"): boolean {
 export function detectCapabilities(acc: AccountWithAuth): Capability[] {
   const modeA = acc.connectionMode === "INSTAGRAM_LOGIN";
   const tokenOk = modeA ? activeToken(acc, "user") : activeToken(acc, "page");
-  const userTokenOk = activeToken(acc, "user");
   const caps: Capability[] = [];
 
   const noToken = "Access token expired or revoked — reconnect the account.";
@@ -94,36 +93,34 @@ export function detectCapabilities(acc: AccountWithAuth): Capability[] {
         : "The insights permission was not granted.",
   });
 
+  // Advertising is independent of how Instagram itself was connected: it needs
+  // an ads-capable Facebook token plus an ad account, both supplied by the
+  // separate "Connect with Facebook (ads)" authorization.
+  const adsTokenOk = activeToken(acc, "ads") || (!modeA && activeToken(acc, "user"));
   const adsScopes = hasScope(acc, "ads_management");
   caps.push({
     key: "ads",
     label: "Advertising (Campaigns)",
-    available: !modeA && userTokenOk && adsScopes && Boolean(acc.adAccountId),
-    reason: modeA
-      ? "Advertising requires the Facebook Login connection mode (Marketing API). Reconnect via 'Connect with Facebook (ads)'."
-      : !userTokenOk
-        ? noToken
-        : !adsScopes
-          ? "The ads_management permission was not granted."
-          : !acc.adAccountId
-            ? "No ad account selected — choose one in the account settings."
-            : undefined,
+    available: adsTokenOk && adsScopes && Boolean(acc.adAccountId),
+    reason:
+      adsTokenOk && adsScopes && acc.adAccountId
+        ? undefined
+        : !adsScopes || !adsTokenOk
+          ? "Advertising is not connected yet. Use 'Connect with Facebook (ads)' on the Integrations page — it adds campaigns to this account without affecting messaging."
+          : "No ad account is linked. Create one in Meta Business settings, then reconnect Facebook.",
   });
 
   const leadScopes = hasScope(acc, "leads_retrieval") && hasScope(acc, "pages_manage_ads");
   caps.push({
     key: "lead_forms",
     label: "Lead Forms (Instant Forms)",
-    available: !modeA && userTokenOk && leadScopes && Boolean(acc.fbPageId),
-    reason: modeA
-      ? "Instant Forms are a Meta lead-ads product and require the Facebook Login mode."
-      : !userTokenOk
-        ? noToken
-        : !leadScopes
-          ? "leads_retrieval / pages_manage_ads permissions were not granted."
-          : !acc.fbPageId
-            ? "No linked Facebook Page found."
-            : undefined,
+    available: adsTokenOk && leadScopes && Boolean(acc.fbPageId),
+    reason:
+      adsTokenOk && leadScopes && acc.fbPageId
+        ? undefined
+        : !adsTokenOk || !leadScopes
+          ? "Requires the Facebook (ads) connection with lead permissions granted."
+          : "No Facebook Page is linked — Instant Forms belong to a Page.",
   });
 
   caps.push({

@@ -35,8 +35,34 @@ describe("OAuth state (CSRF)", () => {
 
     const fb = new URL(facebookAuthorizeUrl(state));
     expect(fb.host).toBe("www.facebook.com");
-    expect(fb.searchParams.get("scope")).toContain("ads_management");
-    expect(fb.searchParams.get("scope")).toContain("instagram_manage_messages");
+    const fbScopes = (fb.searchParams.get("scope") ?? "").split(",");
+    expect(fbScopes).toContain("ads_management");
+    expect(fbScopes).toContain("leads_retrieval");
+  });
+
+  /**
+   * Regression guard. Facebook rejects the ENTIRE authorization dialog with
+   * "Invalid Scopes" if one requested permission is unavailable to the app.
+   * An app set up for Instagram Login does not have the instagram_* or
+   * pages_manage_metadata permissions on the Facebook side, so the ads flow
+   * must never ask for them.
+   */
+  it("the Facebook (ads) dialog never requests Instagram-Login-incompatible scopes", () => {
+    const forbidden = [
+      "instagram_basic",
+      "instagram_manage_messages",
+      "instagram_manage_comments",
+      "instagram_content_publish",
+      "instagram_manage_insights",
+      "pages_manage_metadata",
+    ];
+    const scopes = (new URL(facebookAuthorizeUrl(buildState({ mode: "FACEBOOK_LOGIN", adminId: "a", nonce: "n" }))).searchParams.get(
+      "scope",
+    ) ?? "").split(",");
+
+    for (const scope of forbidden) {
+      expect(scopes, `${scope} would break the whole dialog`).not.toContain(scope);
+    }
   });
 });
 

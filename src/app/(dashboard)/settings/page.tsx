@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { Languages, Mail, Plus, ScrollText, Settings2, Users } from "lucide-react";
+import { Languages, Mail, Plus, ScrollText, Send, Settings2, Users } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
@@ -65,7 +65,7 @@ interface LogRow {
 export default function SettingsPage() {
   const { d } = useI18n();
   return (
-    <React.Suspense fallback={<div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>}>
+    <React.Suspense fallback={<div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>}>
       <SettingsInner />
     </React.Suspense>
   );
@@ -126,7 +126,7 @@ function TabBar({ tab, onSelect, labels }: { tab: TabId; onSelect: (t: TabId) =>
   return (
     <div
       role="tablist"
-      className="mb-5 flex w-fit max-w-full gap-1 overflow-x-auto rounded-lg border border-[--color-border] bg-[--color-panel-2] p-1"
+      className="mb-5 flex w-fit max-w-full gap-1 overflow-x-auto rounded-lg border border-(--color-border) bg-(--color-panel-2) p-1"
     >
       {TABS.map((t) => (
         <button
@@ -137,7 +137,7 @@ function TabBar({ tab, onSelect, labels }: { tab: TabId; onSelect: (t: TabId) =>
           onClick={() => onSelect(t)}
           className={cn(
             "flex items-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors",
-            tab === t ? "bg-white text-[--color-fg] shadow-sm" : "text-[--color-fg-muted] hover:text-[--color-fg]",
+            tab === t ? "bg-white text-(--color-fg) shadow-sm" : "text-(--color-fg-muted) hover:text-(--color-fg)",
           )}
         >
           {icons[t]} {labels[t]}
@@ -195,7 +195,7 @@ function GeneralTab({ settings, onSettings }: { settings: GlobalSettings | null;
   }
 
   if (!settings) {
-    return <p className="py-10 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>;
+    return <p className="py-10 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
   }
 
   return (
@@ -218,9 +218,12 @@ function GeneralTab({ settings, onSettings }: { settings: GlobalSettings | null;
         </CardBody>
       </Card>
 
+      {/* Telegram — the PRIMARY lead receiver */}
+      <TelegramCard />
+
       {/* master switch — spec §37 */}
-      <Card className={settings.masterAutomationEnabled ? undefined : "border-[--color-danger]/50"}>
-        <CardBody className="divide-y divide-[--color-border] py-1">
+      <Card className={settings.masterAutomationEnabled ? undefined : "border-(--color-danger)/50"}>
+        <CardBody className="divide-y divide-(--color-border) py-1">
           <ToggleRow
             label={d.settings.master}
             description={d.settings.masterHint}
@@ -303,6 +306,133 @@ function GeneralTab({ settings, onSettings }: { settings: GlobalSettings | null;
 
 /* ---------- ADMINS ---------- */
 
+interface TelegramStatus {
+  configured: boolean;
+  enabled: boolean;
+  botUsername: string | null;
+  chatId: string | null;
+  source: "db" | "env" | null;
+}
+
+/** Telegram lead notifications — bot status, token entry, chat auto-detect, test. */
+function TelegramCard() {
+  const { d } = useI18n();
+  const [status, setStatus] = React.useState<TelegramStatus | null>(null);
+  const [tokenInput, setTokenInput] = React.useState("");
+  const [busy, setBusy] = React.useState<"save" | "test" | null>(null);
+
+  const load = React.useCallback(async () => {
+    try {
+      const data = await api<{ telegram: TelegramStatus }>("/api/settings/telegram", { silent: true });
+      setStatus(data.telegram);
+    } catch {
+      /* leave null */
+    }
+  }, []);
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function saveToken() {
+    if (!tokenInput.trim()) return;
+    setBusy("save");
+    try {
+      const data = await api<{ telegram: TelegramStatus }>("/api/settings/telegram", {
+        method: "PUT",
+        json: { token: tokenInput.trim() },
+      });
+      setStatus(data.telegram);
+      setTokenInput("");
+      toast.success(d.settings.telegram.tokenSaved);
+    } catch {
+      /* toast from api() */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setEnabled(v: boolean) {
+    const prev = status;
+    setStatus((s) => (s ? { ...s, enabled: v } : s));
+    try {
+      await api("/api/settings/telegram", { method: "PUT", json: { enabled: v } });
+      toast.success(d.common.saved);
+    } catch {
+      setStatus(prev);
+    }
+  }
+
+  async function sendTest() {
+    setBusy("test");
+    try {
+      await api<{ sent: boolean }>("/api/settings/telegram/test", { method: "POST" });
+      toast.success(d.settings.telegram.testOk);
+      await load();
+    } catch {
+      /* toast from api() */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        icon={<IconChip color="#229ED9"><Send size={16} /></IconChip>}
+        title={d.settings.telegram.title}
+        description={d.settings.telegram.text}
+        actions={
+          status?.configured ? (
+            <Badge tone={status.botUsername ? "ok" : "danger"}>
+              {d.settings.telegram.bot}: {status.botUsername ? `@${status.botUsername}` : "?"}
+            </Badge>
+          ) : undefined
+        }
+      />
+      <CardBody className="space-y-3">
+        {status?.configured && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Badge tone={status.chatId ? "ok" : "warn"}>
+              {d.settings.telegram.chat}: {status.chatId ? d.settings.telegram.chatDetected : "—"}
+            </Badge>
+            {!status.chatId && <span className="text-(--color-fg-muted)">{d.settings.telegram.chatMissing}</span>}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label={d.settings.telegram.token} className="min-w-0 flex-1 sm:max-w-md">
+            <Input
+              type="password"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder={status?.configured ? "••••••••  (" + d.settings.telegram.tokenSaved + ")" : d.settings.telegram.tokenPh}
+              autoComplete="off"
+            />
+          </Field>
+          <Button variant="secondary" onClick={() => void saveToken()} disabled={busy !== null || !tokenInput.trim()}>
+            {busy === "save" ? d.common.saving : d.common.save}
+          </Button>
+          <Button onClick={() => void sendTest()} disabled={busy !== null || !status?.configured}>
+            <Send size={14} /> {busy === "test" ? d.common.loading : d.settings.telegram.test}
+          </Button>
+        </div>
+
+        {status?.configured && (
+          <div className="border-t border-(--color-border) pt-1">
+            <ToggleRow
+              label={d.settings.telegram.enabled}
+              checked={status.enabled}
+              onCheckedChange={(v) => void setEnabled(v)}
+              onLabel={d.common.on}
+              offLabel={d.common.off}
+            />
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 function AdminsTab({ admins, me, reload }: { admins: AdminRow[]; me: Me | null; reload: () => Promise<void> }) {
   const { d } = useI18n();
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -322,7 +452,7 @@ function AdminsTab({ admins, me, reload }: { admins: AdminRow[]; me: Me | null; 
   }
 
   if (!me) {
-    return <p className="py-10 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>;
+    return <p className="py-10 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
   }
 
   return (
@@ -334,22 +464,22 @@ function AdminsTab({ admins, me, reload }: { admins: AdminRow[]; me: Me | null; 
       />
       <CardBody className="space-y-2">
         {admins.map((a) => (
-          <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[--color-border] px-3 py-2.5">
+          <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-(--color-border) px-3 py-2.5">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
                 {a.name}
-                {a.id === me.id && <span className="font-normal text-[--color-fg-muted]">({d.settings.admins.you})</span>}
+                {a.id === me.id && <span className="font-normal text-(--color-fg-muted)">({d.settings.admins.you})</span>}
                 <Badge tone={a.role === "OWNER" ? "accent" : "default"}>{a.role}</Badge>
                 {!a.isActive && <Badge tone="danger">{d.common.disabled}</Badge>}
               </div>
-              <div className="mt-0.5 text-[11px] text-[--color-fg-faint]">
+              <div className="mt-0.5 text-[11px] text-(--color-fg-faint)">
                 {d.settings.admins.login}: <span className="font-mono">{a.login}</span>
                 {a.email ? ` · ${a.email}` : ""}
               </div>
             </div>
             {isOwner && a.id !== me.id && (
               <div className="flex shrink-0 items-center gap-2">
-                <span className="text-xs text-[--color-fg-muted]">{d.settings.admins.activeQ}</span>
+                <span className="text-xs text-(--color-fg-muted)">{d.settings.admins.activeQ}</span>
                 <Switch checked={a.isActive} disabled={busyId === a.id} onCheckedChange={(v) => void setActive(a, v)} />
               </div>
             )}
@@ -473,7 +603,7 @@ function AuditTab() {
         <CardBody className="p-0">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-[--color-border] text-[--color-fg-faint]">
+              <thead className="border-b border-(--color-border) text-(--color-fg-faint)">
                 <tr>
                   <th className="px-4 py-2 font-medium">{d.settings.audit.when}</th>
                   <th className="px-4 py-2 font-medium">{d.settings.audit.admin}</th>
@@ -484,10 +614,10 @@ function AuditTab() {
                 {logs.map((l) => (
                   <React.Fragment key={l.id}>
                     <tr
-                      className="cursor-pointer border-b border-[--color-border] last:border-0 hover:bg-[--color-panel-2]"
+                      className="cursor-pointer border-b border-(--color-border) last:border-0 hover:bg-(--color-panel-2)"
                       onClick={() => setExpanded(expanded === l.id ? null : l.id)}
                     >
-                      <td className="whitespace-nowrap px-4 py-2 text-[--color-fg-muted]">{formatDate(l.createdAt)}</td>
+                      <td className="whitespace-nowrap px-4 py-2 text-(--color-fg-muted)">{formatDate(l.createdAt)}</td>
                       <td className="px-4 py-2">{l.admin?.login ?? "system"}</td>
                       <td className="px-4 py-2">
                         <span className="font-mono text-[11px]">{l.action}</span>
@@ -497,7 +627,7 @@ function AuditTab() {
                           </Badge>
                         )}
                         {(l.resourceType || l.resourceId) && (
-                          <span className="ml-2 text-[10px] text-[--color-fg-faint]">
+                          <span className="ml-2 text-[10px] text-(--color-fg-faint)">
                             {l.resourceType ?? ""}
                             {l.resourceId ? ` · ${l.resourceId.slice(0, 8)}…` : ""}
                           </span>
@@ -505,14 +635,14 @@ function AuditTab() {
                       </td>
                     </tr>
                     {expanded === l.id && (
-                      <tr className="border-b border-[--color-border] bg-[--color-panel-2]">
+                      <tr className="border-b border-(--color-border) bg-(--color-panel-2)">
                         <td colSpan={3} className="px-4 py-2">
                           <div className="grid gap-2 sm:grid-cols-2">
                             <JsonBlock label="before" value={l.before} />
                             <JsonBlock label="after" value={l.after} />
                           </div>
-                          {l.error && <p className="mt-1 text-[11px] text-[--color-danger]">{l.error}</p>}
-                          {l.ip && <p className="mt-1 text-[10px] text-[--color-fg-faint]">IP: {l.ip}</p>}
+                          {l.error && <p className="mt-1 text-[11px] text-(--color-danger)">{l.error}</p>}
+                          {l.ip && <p className="mt-1 text-[10px] text-(--color-fg-faint)">IP: {l.ip}</p>}
                         </td>
                       </tr>
                     )}
@@ -520,7 +650,7 @@ function AuditTab() {
                 ))}
                 {logs.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="px-4 py-8 text-center text-[--color-fg-muted]">
+                    <td colSpan={3} className="px-4 py-8 text-center text-(--color-fg-muted)">
                       {d.settings.audit.empty}
                     </td>
                   </tr>
@@ -545,8 +675,8 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value == null) return null;
   return (
     <div>
-      <div className="mb-1 font-mono text-[10px] font-semibold uppercase text-[--color-fg-faint]">{label}</div>
-      <pre className="overflow-x-auto rounded bg-[--color-bg] p-2 font-mono text-[10px] leading-4">
+      <div className="mb-1 font-mono text-[10px] font-semibold uppercase text-(--color-fg-faint)">{label}</div>
+      <pre className="overflow-x-auto rounded bg-(--color-bg) p-2 font-mono text-[10px] leading-4">
         {JSON.stringify(value, null, 2)}
       </pre>
     </div>

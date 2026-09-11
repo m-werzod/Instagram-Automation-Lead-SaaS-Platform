@@ -223,7 +223,7 @@ export default function LeadButtonPage() {
   /* ---------- guards ---------- */
 
   if (accountsLoading || (selected && loading)) {
-    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+    return <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>;
   }
 
   if (!selected) {
@@ -268,11 +268,11 @@ export default function LeadButtonPage() {
       <Card className="mb-5 overflow-hidden">
         <CardBody className="flex flex-wrap items-center justify-between gap-3">
           <HowStep icon={<Film size={16} />} color="var(--color-mod-content)" n={1} text={d.leadButton.how1} />
-          <ArrowRight size={14} className="hidden shrink-0 text-[--color-fg-faint] md:block" />
+          <ArrowRight size={14} className="hidden shrink-0 text-(--color-fg-faint) md:block" />
           <HowStep icon={<MousePointerClick size={16} />} color="var(--color-accent)" n={2} text={d.leadButton.how2} />
-          <ArrowRight size={14} className="hidden shrink-0 text-[--color-fg-faint] md:block" />
+          <ArrowRight size={14} className="hidden shrink-0 text-(--color-fg-faint) md:block" />
           <HowStep icon={<MessageCircleQuestion size={16} />} color="var(--color-mod-ai)" n={3} text={d.leadButton.how3} />
-          <ArrowRight size={14} className="hidden shrink-0 text-[--color-fg-faint] md:block" />
+          <ArrowRight size={14} className="hidden shrink-0 text-(--color-fg-faint) md:block" />
           <HowStep icon={<UserCheck size={16} />} color="var(--color-mod-leads)" n={4} text={d.leadButton.how4} />
         </CardBody>
       </Card>
@@ -280,7 +280,7 @@ export default function LeadButtonPage() {
       <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">
         {/* LEFT: live phone preview */}
         <div className="lg:sticky lg:top-0 lg:self-start">
-          <h2 className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-[--color-fg-muted]">
+          <h2 className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-(--color-fg-muted)">
             {d.leadButton.preview.title}
           </h2>
           <PhonePreview
@@ -328,9 +328,9 @@ export default function LeadButtonPage() {
                 ]}
               />
               {draft.contentId === null ? (
-                <p className="text-xs text-[--color-fg-muted]">{d.leadButton.target.allHint} — {d.leadButton.target.appliesToAll.toLowerCase()}.</p>
+                <p className="text-xs text-(--color-fg-muted)">{d.leadButton.target.allHint} — {d.leadButton.target.appliesToAll.toLowerCase()}.</p>
               ) : reels.length === 0 ? (
-                <div className="rounded-lg bg-[--color-warn-soft] p-3 text-xs leading-5 text-[--color-warn]">
+                <div className="rounded-lg bg-(--color-warn-soft) p-3 text-xs leading-5 text-(--color-warn)">
                   {d.leadButton.target.noContent}{" "}
                   <Link href="/instagram" className="font-semibold underline underline-offset-2">
                     {d.leadButton.target.syncFirst}
@@ -373,7 +373,7 @@ export default function LeadButtonPage() {
               </div>
 
               <div>
-                <div className="mb-1.5 text-xs font-medium text-[--color-fg-muted]">{d.leadButton.appearance.presets}</div>
+                <div className="mb-1.5 text-xs font-medium text-(--color-fg-muted)">{d.leadButton.appearance.presets}</div>
                 <div className="flex flex-wrap items-center gap-2">
                   {COLOR_PRESETS.map((p, i) => (
                     <button
@@ -383,8 +383,8 @@ export default function LeadButtonPage() {
                       className={cn(
                         "h-8 w-8 rounded-full border-2 transition-transform hover:scale-110",
                         draft.buttonSpec.bg === p.bg && draft.buttonSpec.fg === p.fg
-                          ? "border-[--color-accent] ring-2 ring-[--color-accent-soft]"
-                          : "border-[--color-border-strong]",
+                          ? "border-(--color-accent) ring-2 ring-(--color-accent-soft)"
+                          : "border-(--color-border-strong)",
                       )}
                       style={{ background: p.bg }}
                       aria-label={p.bg}
@@ -483,11 +483,11 @@ export default function LeadButtonPage() {
             />
             <CardBody className="space-y-2">
               {draft.questions.length === 0 && (
-                <p className="py-4 text-center text-xs text-[--color-fg-muted]">{d.leadButton.questionsB.empty}</p>
+                <p className="py-4 text-center text-xs text-(--color-fg-muted)">{d.leadButton.questionsB.empty}</p>
               )}
               {draft.questions.map((q, i) => (
-                <div key={i} className="flex items-center gap-2.5 rounded-lg border border-[--color-border] bg-[--color-panel-2] px-3 py-2">
-                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[--color-accent-soft] text-[11px] font-bold text-[--color-accent]">
+                <div key={i} className="flex items-center gap-2.5 rounded-lg border border-(--color-border) bg-(--color-panel-2) px-3 py-2">
+                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-(--color-accent-soft) text-[11px] font-bold text-(--color-accent)">
                     {i + 1}
                   </span>
                   <button
@@ -497,9 +497,9 @@ export default function LeadButtonPage() {
                     title={d.leadButton.questionsB.editQuestion}
                   >
                     <div className="truncate text-[13px] font-medium">{q.prompt}</div>
-                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-[--color-fg-faint]">
+                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-(--color-fg-faint)">
                       <Badge className="px-1 py-0">{d.leadButton.questionsB.types[q.type]}</Badge>
-                      {q.required ? <span className="text-[--color-danger]">*</span> : <span>{d.common.optional}</span>}
+                      {q.required ? <span className="text-(--color-danger)">*</span> : <span>{d.common.optional}</span>}
                       {q.mapTo && <Badge tone="accent" className="px-1 py-0">{q.mapTo === "name" ? d.leadButton.questionsB.mapName : q.mapTo === "phone" ? d.leadButton.questionsB.mapPhone : d.leadButton.questionsB.mapEmail}</Badge>}
                     </div>
                   </button>
@@ -512,7 +512,7 @@ export default function LeadButtonPage() {
                       onClick={() => patch({ questions: move(draft.questions, i, i + 1) })}>
                       <ChevronDown size={14} />
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-[--color-danger]" title={d.common.delete}
+                    <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-(--color-danger)" title={d.common.delete}
                       onClick={() => patch({ questions: draft.questions.filter((_, j) => j !== i) })}>
                       <Trash2 size={14} />
                     </Button>
@@ -533,7 +533,7 @@ export default function LeadButtonPage() {
               <DeliveryBlock icon={<Link2 size={15} />} color="var(--color-mod-leads)" title={d.leadButton.delivery.linkTitle} text={d.leadButton.delivery.linkText}>
                 {leadButton?.landingUrl ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <code className="min-w-0 flex-1 truncate rounded-lg bg-[--color-panel-2] px-2.5 py-1.5 text-xs">{leadButton.landingUrl}</code>
+                    <code className="min-w-0 flex-1 truncate rounded-lg bg-(--color-panel-2) px-2.5 py-1.5 text-xs">{leadButton.landingUrl}</code>
                     <Button size="sm" variant="secondary" onClick={() => { void navigator.clipboard.writeText(leadButton.landingUrl!); toast.success(d.common.copied); }}>
                       <Copy size={13} /> {d.common.copy}
                     </Button>
@@ -544,7 +544,7 @@ export default function LeadButtonPage() {
                     </Button>
                   </div>
                 ) : (
-                  <p className="text-xs italic text-[--color-fg-faint]">{d.leadButton.delivery.saveFirst}</p>
+                  <p className="text-xs italic text-(--color-fg-faint)">{d.leadButton.delivery.saveFirst}</p>
                 )}
               </DeliveryBlock>
 
@@ -552,7 +552,7 @@ export default function LeadButtonPage() {
               <DeliveryBlock icon={<KeyRound size={15} />} color="var(--color-mod-ai)" title={d.leadButton.delivery.keywordTitle} text={d.leadButton.delivery.keywordText}>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {draft.triggerKeywords.map((k) => (
-                    <span key={k} className="inline-flex items-center gap-1 rounded-full bg-[--color-accent-soft] px-2.5 py-1 text-xs font-semibold text-[--color-accent]">
+                    <span key={k} className="inline-flex items-center gap-1 rounded-full bg-(--color-accent-soft) px-2.5 py-1 text-xs font-semibold text-(--color-accent)">
                       {k.toUpperCase()}
                       <button type="button" onClick={() => patch({ triggerKeywords: draft.triggerKeywords.filter((x) => x !== k) })} aria-label={d.common.delete}>
                         <X size={12} />
@@ -599,13 +599,13 @@ export default function LeadButtonPage() {
                       </Link>
                     </Button>
                   ) : (
-                    <p className="text-xs text-[--color-warn]">
+                    <p className="text-xs text-(--color-warn)">
                       {d.leadButton.delivery.adNeedsFacebook}{" "}
                       <Link href="/instagram" className="font-semibold underline underline-offset-2">{d.nav.instagram} →</Link>
                     </p>
                   )}
                 </div>
-                <p className="mt-2 text-[11px] text-[--color-fg-faint]">{d.leadButton.delivery.adNote}</p>
+                <p className="mt-2 text-[11px] text-(--color-fg-faint)">{d.leadButton.delivery.adNote}</p>
               </DeliveryBlock>
             </CardBody>
           </Card>
@@ -645,7 +645,7 @@ function HowStep({ icon, color, n, text }: { icon: React.ReactNode; color: strin
     <div className="flex min-w-0 flex-1 basis-40 items-center gap-2.5">
       <IconChip color={color} size={34}>{icon}</IconChip>
       <div className="min-w-0">
-        <div className="text-[10px] font-bold uppercase tracking-wide text-[--color-fg-faint]">{n}</div>
+        <div className="text-[10px] font-bold uppercase tracking-wide text-(--color-fg-faint)">{n}</div>
         <div className="truncate text-xs font-medium">{text}</div>
       </div>
     </div>
@@ -661,7 +661,7 @@ function ReelThumb({ item, selected, onSelect }: { item: ContentItemLite; select
       onClick={onSelect}
       className={cn(
         "relative aspect-[9/16] w-20 shrink-0 overflow-hidden rounded-lg border-2 transition-all",
-        selected ? "border-[--color-accent] ring-2 ring-[--color-accent-soft]" : "border-transparent opacity-80 hover:opacity-100",
+        selected ? "border-(--color-accent) ring-2 ring-(--color-accent-soft)" : "border-transparent opacity-80 hover:opacity-100",
       )}
       title={item.caption ?? ""}
     >
@@ -673,7 +673,7 @@ function ReelThumb({ item, selected, onSelect }: { item: ContentItemLite; select
           <Film size={18} />
         </span>
       )}
-      {selected && <span className="absolute inset-x-0 bottom-0 bg-[--color-accent] py-0.5 text-center text-[9px] font-bold text-white">✓</span>}
+      {selected && <span className="absolute inset-x-0 bottom-0 bg-(--color-accent) py-0.5 text-center text-[9px] font-bold text-white">✓</span>}
     </button>
   );
 }
@@ -682,7 +682,7 @@ function ColorField({ label, value, onChange, clearable }: { label: string; valu
   const valid = /^#[0-9a-fA-F]{6}$/.test(value);
   return (
     <div>
-      <div className="mb-1.5 text-xs font-medium text-[--color-fg-muted]">{label}</div>
+      <div className="mb-1.5 text-xs font-medium text-(--color-fg-muted)">{label}</div>
       <div className="flex items-center gap-1.5">
         <input
           type="color"
@@ -705,12 +705,12 @@ function ColorField({ label, value, onChange, clearable }: { label: string; valu
 
 function DeliveryBlock({ icon, color, title, text, children }: { icon: React.ReactNode; color: string; title: string; text: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-[--color-border] p-3.5">
+    <div className="rounded-xl border border-(--color-border) p-3.5">
       <div className="mb-1 flex items-center gap-2">
         <IconChip color={color} size={26}>{icon}</IconChip>
         <span className="text-[13px] font-semibold">{title}</span>
       </div>
-      <p className="mb-2.5 text-xs leading-5 text-[--color-fg-muted]">{text}</p>
+      <p className="mb-2.5 text-xs leading-5 text-(--color-fg-muted)">{text}</p>
       {children}
     </div>
   );

@@ -177,7 +177,7 @@ function CampaignsInner() {
   /* ---------- guards ---------- */
 
   if (accountsLoading || (selected && campaigns === null)) {
-    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+    return <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>;
   }
 
   if (!selected) {
@@ -212,7 +212,7 @@ function CampaignsInner() {
 
       {/* No ad account connected — campaigns can be drafted but never reach Meta. */}
       {!selected.adAccountId && (
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[--color-warn]/30 bg-[--color-warn-soft] px-4 py-3 text-xs leading-5 text-[--color-warn]">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-(--color-warn)/30 bg-(--color-warn-soft) px-4 py-3 text-xs leading-5 text-(--color-warn)">
           <AlertTriangle size={14} className="shrink-0" />
           <span className="font-medium">{d.campaigns.needsAds}</span>
           <Link href="/instagram" className="font-semibold underline underline-offset-2">
@@ -225,9 +225,9 @@ function CampaignsInner() {
       <Card className="overflow-hidden">
         <CardBody className="flex flex-wrap items-center justify-between gap-3 py-3">
           <FlowStep n={1} color="var(--color-fg-muted)" icon={<PencilLine size={15} />} label={d.campaigns.statuses.DRAFT} />
-          <ArrowRight size={14} className="hidden shrink-0 text-[--color-fg-faint] md:block" />
+          <ArrowRight size={14} className="hidden shrink-0 text-(--color-fg-faint) md:block" />
           <FlowStep n={2} color="var(--color-mod-ads)" icon={<PauseCircle size={15} />} label={d.campaigns.statuses.CREATED} />
-          <ArrowRight size={14} className="hidden shrink-0 text-[--color-fg-faint] md:block" />
+          <ArrowRight size={14} className="hidden shrink-0 text-(--color-fg-faint) md:block" />
           <FlowStep n={3} color="var(--color-ok)" icon={<Rocket size={15} />} label={d.campaigns.statuses.ACTIVE} />
         </CardBody>
       </Card>
@@ -280,7 +280,7 @@ function FlowStep({ n, color, icon, label }: { n: number; color: string; icon: R
     <div className="flex min-w-0 flex-1 basis-40 items-center gap-2.5">
       <IconChip color={color} size={34}>{icon}</IconChip>
       <div className="min-w-0">
-        <div className="text-[10px] font-bold uppercase tracking-wide text-[--color-fg-faint]">{n}</div>
+        <div className="text-[10px] font-bold uppercase tracking-wide text-(--color-fg-faint)">{n}</div>
         <div className="truncate text-xs font-medium">{label}</div>
       </div>
     </div>
@@ -333,14 +333,14 @@ function CampaignCard({
                 <Badge tone="accent"><Sparkles size={11} /> AI</Badge>
               )}
             </div>
-            <p className="mt-0.5 truncate text-xs text-[--color-fg-muted]">
+            <p className="mt-0.5 truncate text-xs text-(--color-fg-muted)">
               {objectiveLabel} · {formatDate(c.createdAt)}
-              {c.metaCampaignId && <span className="text-[--color-fg-faint]"> · #{c.metaCampaignId}</span>}
+              {c.metaCampaignId && <span className="text-(--color-fg-faint)"> · #{c.metaCampaignId}</span>}
             </p>
           </div>
           <div className="shrink-0 text-right">
             <div className="text-sm font-bold tabular-nums">{budgetLabel}</div>
-            <div className="text-[10px] font-medium uppercase tracking-wide text-[--color-fg-faint]">{d.campaigns.budget}</div>
+            <div className="text-[10px] font-medium uppercase tracking-wide text-(--color-fg-faint)">{d.campaigns.budget}</div>
           </div>
         </div>
 
@@ -351,10 +351,10 @@ function CampaignCard({
               href={c.destinationUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 rounded-md bg-[--color-panel-2] px-2 py-1 text-[11px] leading-4 hover:bg-[--color-accent-soft] hover:text-[--color-accent]"
+              className="inline-flex items-center gap-1 rounded-md bg-(--color-panel-2) px-2 py-1 text-[11px] leading-4 hover:bg-(--color-accent-soft) hover:text-(--color-accent)"
               title={c.destinationUrl}
             >
-              <span className="text-[--color-fg-faint]">{d.campaigns.fields.destination}:</span>
+              <span className="text-(--color-fg-faint)">{d.campaigns.fields.destination}:</span>
               <span className="font-medium">{truncate(c.destinationUrl.replace(/^https?:\/\//, ""), 34)}</span>
               <ExternalLink size={11} />
             </a>
@@ -367,22 +367,22 @@ function CampaignCard({
           )}
           <span
             className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] leading-4 ${
-              c._count.leads > 0 ? "bg-[--color-ok-soft] text-[--color-ok]" : "bg-[--color-panel-2]"
+              c._count.leads > 0 ? "bg-(--color-ok-soft) text-(--color-ok)" : "bg-(--color-panel-2)"
             }`}
           >
-            <span className={c._count.leads > 0 ? "" : "text-[--color-fg-faint]"}>{leadsWord}:</span>
+            <span className={c._count.leads > 0 ? "" : "text-(--color-fg-faint)"}>{leadsWord}:</span>
             <span className="font-semibold tabular-nums">{c._count.leads}</span>
           </span>
         </div>
 
         {c.lastError && (
-          <div className="flex items-start gap-2 rounded-lg bg-[--color-danger-soft] px-3 py-2 text-[11px] leading-4 text-[--color-danger]">
+          <div className="flex items-start gap-2 rounded-lg bg-(--color-danger-soft) px-3 py-2 text-[11px] leading-4 text-(--color-danger)">
             <AlertTriangle size={13} className="mt-px shrink-0" />
             <span className="min-w-0 break-words">{c.lastError}</span>
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2 border-t border-[--color-border] pt-3">
+        <div className="flex flex-wrap items-center gap-2 border-t border-(--color-border) pt-3">
           {(c.status === "DRAFT" || c.status === "READY" || c.status === "ERROR") && (
             <Button
               size="sm"
@@ -436,8 +436,8 @@ function CampaignThumb({ content }: { content: CampaignRow["content"] }) {
 
 function FactChip({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-md bg-[--color-panel-2] px-2 py-1 text-[11px] leading-4">
-      <span className="text-[--color-fg-faint]">{label}:</span>
+    <span className="inline-flex items-center gap-1 rounded-md bg-(--color-panel-2) px-2 py-1 text-[11px] leading-4">
+      <span className="text-(--color-fg-faint)">{label}:</span>
       <span className="font-medium">{value}</span>
     </span>
   );
@@ -497,12 +497,12 @@ function PublishDialog({
       </Button>
       <DialogContent title={d.campaigns.publishConfirm.title}>
         <div className="space-y-3 text-sm">
-          <div className="rounded-lg border border-[--color-danger]/30 bg-[--color-danger-soft] p-3 text-xs leading-5">
-            <p className="flex items-start gap-2 font-semibold text-[--color-danger]">
+          <div className="rounded-lg border border-(--color-danger)/30 bg-(--color-danger-soft) p-3 text-xs leading-5">
+            <p className="flex items-start gap-2 font-semibold text-(--color-danger)">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               {d.campaigns.publishConfirm.text}
             </p>
-            <div className="mt-2 space-y-0.5 text-[--color-fg]">
+            <div className="mt-2 space-y-0.5 text-(--color-fg)">
               <SummaryRow k={d.campaigns.fields.name} v={campaign.name} />
               <SummaryRow k={d.campaigns.objective} v={objectiveLabel} />
               <SummaryRow k={d.campaigns.budget} v={budgetLabel} />
@@ -546,7 +546,7 @@ function PublishDialog({
 function SummaryRow({ k, v }: { k: string; v: string }) {
   return (
     <div className="flex gap-2">
-      <span className="shrink-0 text-[--color-fg-muted]">{k}:</span>
+      <span className="shrink-0 text-(--color-fg-muted)">{k}:</span>
       <span className="min-w-0 break-words font-medium">{v}</span>
     </div>
   );
@@ -626,7 +626,7 @@ function CreateCampaignDialog({
       <DialogContent wide title={d.campaigns.create} description={d.campaigns.subtitle}>
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
           {prefill?.fromLeadButton && (
-            <div className="flex items-start gap-2 rounded-lg bg-[--color-accent-soft] px-3 py-2.5 text-xs leading-5 text-[--color-accent] sm:col-span-2">
+            <div className="flex items-start gap-2 rounded-lg bg-(--color-accent-soft) px-3 py-2.5 text-xs leading-5 text-(--color-accent) sm:col-span-2">
               <MousePointerClick size={14} className="mt-0.5 shrink-0" />
               <span>{d.campaigns.leadButtonBanner}</span>
             </div>
@@ -657,7 +657,7 @@ function CreateCampaignDialog({
           <Field label={d.campaigns.fields.age}>
             <div className="flex items-center gap-2">
               <Input type="number" min="18" max="65" value={ageMin} onChange={(e) => setAgeMin(e.target.value)} aria-label={`${d.campaigns.fields.age} min`} />
-              <span className="shrink-0 text-xs text-[--color-fg-faint]">–</span>
+              <span className="shrink-0 text-xs text-(--color-fg-faint)">–</span>
               <Input type="number" min="18" max="65" value={ageMax} onChange={(e) => setAgeMax(e.target.value)} aria-label={`${d.campaigns.fields.age} max`} />
             </div>
           </Field>

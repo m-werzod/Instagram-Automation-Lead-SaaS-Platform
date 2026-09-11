@@ -25,7 +25,7 @@ export function PageHeader({
         {accent && <span className="mt-1 h-9 w-1.5 shrink-0 rounded-full" style={{ background: accent }} aria-hidden />}
         <div className="min-w-0">
           <h1 className="text-xl font-bold leading-tight tracking-tight">{title}</h1>
-          {description && <p className="mt-1 max-w-2xl text-[13px] leading-5 text-[--color-fg-muted]">{description}</p>}
+          {description && <p className="mt-1 max-w-2xl text-[13px] leading-5 text-(--color-fg-muted)">{description}</p>}
         </div>
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -46,10 +46,10 @@ export function EmptyState({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-dashed border-[--color-border-strong] bg-white px-6 py-12 text-center">
+    <div className="rounded-xl border border-dashed border-(--color-border-strong) bg-white px-6 py-12 text-center">
       {icon && <div className="mb-3 flex justify-center">{icon}</div>}
       <p className="text-sm font-semibold">{title}</p>
-      {description && <p className="mx-auto mt-1.5 max-w-md text-xs leading-5 text-[--color-fg-muted]">{description}</p>}
+      {description && <p className="mx-auto mt-1.5 max-w-md text-xs leading-5 text-(--color-fg-muted)">{description}</p>}
       {action && <div className="mt-4 flex justify-center gap-2">{action}</div>}
     </div>
   );

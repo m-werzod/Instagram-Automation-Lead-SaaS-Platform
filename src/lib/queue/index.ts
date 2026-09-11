@@ -19,6 +19,7 @@ export type JobType =
   | "ai.reply"
   | "lead.process"
   | "email.send"
+  | "telegram.send"
   | "leadgen.fetch"
   | "tokens.refresh"
   | "analytics.sync"

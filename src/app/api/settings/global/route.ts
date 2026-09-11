@@ -8,8 +8,10 @@ import { getGlobalSettings } from "@/lib/settings";
 
 export const GET = route(async () => {
   await requireAdmin();
-  const settings = await getGlobalSettings();
-  return ok({ settings });
+  // Never ship the (encrypted) bot token to the browser — /api/settings/telegram
+  // reports connection status without the secret.
+  const { telegramBotToken: _telegramBotToken, ...settings } = await getGlobalSettings();
+  return ok({ settings: { ...settings, telegramConfigured: Boolean(_telegramBotToken) } });
 });
 
 const updateSchema = z.object({

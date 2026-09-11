@@ -6,6 +6,7 @@ import { generateAndSendReply } from "@/lib/agent/runtime";
 import { getActiveSession, handleFlowAnswer, findFlowByKeyword, startFlowSession } from "@/lib/leadflow/engine";
 import { sendInstagramText } from "@/lib/meta/messaging";
 import { deliverEmailEvent, notifyLeadSubmitted } from "@/lib/email";
+import { deliverLeadToTelegram } from "@/lib/telegram";
 import { refreshExpiringTokens } from "@/lib/meta/accounts";
 import { syncMedia } from "@/lib/meta/media";
 import { getGlobalSettings } from "@/lib/settings";
@@ -261,6 +262,9 @@ registerHandler("lead.process", async (payload) => {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, include: { account: true } });
   if (!lead) return;
 
+  // Telegram is the primary receiver; it runs as its OWN job so a Telegram
+  // outage never blocks (or double-sends) the email path, and vice versa.
+  await enqueue("telegram.send", { leadId: lead.id }, { maxAttempts: 5 });
   await notifyLeadSubmitted(lead, lead.account);
   await runAutomations("LEAD_SUBMITTED", {
     accountId: lead.accountId,
@@ -270,6 +274,14 @@ registerHandler("lead.process", async (payload) => {
     source: lead.source,
     text: lead.name ?? "",
   });
+});
+
+// ---------- telegram.send ----------
+
+registerHandler("telegram.send", async (payload) => {
+  const leadId = String(payload.leadId ?? "");
+  if (!leadId) return;
+  await deliverLeadToTelegram(leadId);
 });
 
 // ---------- email.send ----------

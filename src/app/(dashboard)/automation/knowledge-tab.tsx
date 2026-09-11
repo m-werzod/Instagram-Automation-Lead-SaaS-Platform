@@ -115,7 +115,7 @@ export function KnowledgeTab({ accountId }: { accountId: string }) {
   }
 
   if (docs === null) {
-    return <p className="py-8 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>;
+    return <p className="py-8 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
   }
 
   return (
@@ -190,7 +190,7 @@ export function KnowledgeTab({ accountId }: { accountId: string }) {
           />
           <CardBody className="overflow-x-auto p-0">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-[--color-border] text-[--color-fg-faint]">
+              <thead className="border-b border-(--color-border) text-(--color-fg-faint)">
                 <tr>
                   <th className="px-4 py-2 font-medium">{d.automation.knowledge.docTitle}</th>
                   <th className="px-4 py-2 font-medium">{d.common.status}</th>
@@ -201,10 +201,10 @@ export function KnowledgeTab({ accountId }: { accountId: string }) {
               </thead>
               <tbody>
                 {docs.map((doc) => (
-                  <tr key={doc.id} className="border-b border-[--color-border] last:border-0">
+                  <tr key={doc.id} className="border-b border-(--color-border) last:border-0">
                     <td className="px-4 py-2">
                       <div className="font-medium">{doc.title}</div>
-                      <div className="text-[10px] text-[--color-fg-faint]">
+                      <div className="text-[10px] text-(--color-fg-faint)">
                         {doc.filename}
                         {doc.sizeBytes ? ` · ${Math.round(doc.sizeBytes / 1024)} KB` : ""}
                       </div>
@@ -214,14 +214,14 @@ export function KnowledgeTab({ accountId }: { accountId: string }) {
                         <Badge tone={doc.status === "READY" ? "ok" : doc.status === "ERROR" ? "danger" : "warn"}>
                           {statusLabel(d, doc.status)}
                         </Badge>
-                        <span className="text-[--color-fg-faint]">{d.automation.knowledge.chunks(doc.chunkCount)}</span>
+                        <span className="text-(--color-fg-faint)">{d.automation.knowledge.chunks(doc.chunkCount)}</span>
                       </div>
-                      {doc.error && <div className="mt-0.5 max-w-52 text-[10px] text-[--color-danger]">{doc.error}</div>}
+                      {doc.error && <div className="mt-0.5 max-w-52 text-[10px] text-(--color-danger)">{doc.error}</div>}
                     </td>
                     <td className="px-4 py-2">{doc.agent ? doc.agent.name : d.automation.knowledge.allAgents}</td>
                     <td className="px-4 py-2">{formatDate(doc.createdAt)}</td>
                     <td className="px-4 py-2 text-right">
-                      <Button size="sm" variant="ghost" className="hover:text-[--color-danger]" onClick={() => setDeleteFor(doc)}>
+                      <Button size="sm" variant="ghost" className="hover:text-(--color-danger)" onClick={() => setDeleteFor(doc)}>
                         {d.common.delete}
                       </Button>
                     </td>
@@ -236,7 +236,7 @@ export function KnowledgeTab({ accountId }: { accountId: string }) {
       <Dialog open={deleteFor !== null} onOpenChange={(v) => !v && setDeleteFor(null)}>
         {deleteFor && (
           <DialogContent title={d.common.delete}>
-            <p className="text-sm text-[--color-fg-muted]">{d.common.confirmDelete(deleteFor.title)}</p>
+            <p className="text-sm text-(--color-fg-muted)">{d.common.confirmDelete(deleteFor.title)}</p>
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setDeleteFor(null)}>
                 {d.common.cancel}

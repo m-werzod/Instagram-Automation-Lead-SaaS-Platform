@@ -41,7 +41,7 @@ function AutomationInner() {
   const tab: Tab = (TABS as readonly string[]).includes(raw ?? "") ? (raw as Tab) : "agents";
 
   if (loading) {
-    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+    return <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>;
   }
 
   return (

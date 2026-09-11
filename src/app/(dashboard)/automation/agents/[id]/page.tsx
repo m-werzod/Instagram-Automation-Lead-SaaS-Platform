@@ -106,7 +106,7 @@ export default function AgentSettingsPage() {
   }
 
   if (!agent) {
-    return <p className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>;
+    return <p className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
   }
 
   return (
@@ -126,7 +126,7 @@ export default function AgentSettingsPage() {
               <span className="truncate">{agent.name}</span>
               <Badge tone={agent.enabled ? "ok" : "default"}>{agent.enabled ? d.common.on : d.common.off}</Badge>
             </h1>
-            <p className="text-xs text-[--color-fg-muted]">
+            <p className="text-xs text-(--color-fg-muted)">
               @{agent.account.username} · {agent.model}
             </p>
           </div>
@@ -134,7 +134,7 @@ export default function AgentSettingsPage() {
       </div>
 
       {/* master switch — the agent does nothing while OFF */}
-      <Card className={agent.enabled ? "border-[--color-ok]/40" : undefined}>
+      <Card className={agent.enabled ? "border-(--color-ok)/40" : undefined}>
         <CardBody className="py-1">
           <ToggleRow
             label={agent.enabled ? d.common.enabled : d.common.disabled}
@@ -157,7 +157,7 @@ export default function AgentSettingsPage() {
           }
           title={d.automation.agents.behavior}
         />
-        <CardBody className="divide-y divide-[--color-border]">
+        <CardBody className="divide-y divide-(--color-border)">
           <ToggleRow
             label={d.automation.agents.autoReply}
             checked={agent.autoReply}
@@ -344,7 +344,7 @@ export default function AgentSettingsPage() {
           }
           title={d.common.actions}
         />
-        <CardBody className="divide-y divide-[--color-border]">
+        <CardBody className="divide-y divide-(--color-border)">
           {tools.map((tool) => (
             <ToggleRow
               key={tool.id}
@@ -364,7 +364,7 @@ export default function AgentSettingsPage() {
       </Card>
 
       {/* danger zone */}
-      <Card className="border-[--color-danger]/40">
+      <Card className="border-(--color-danger)/40">
         <CardHeader title={d.automation.agents.dangerZone} />
         <CardBody className="flex justify-end">
           <Button variant="danger" onClick={() => setDeleteOpen(true)}>
@@ -373,11 +373,11 @@ export default function AgentSettingsPage() {
         </CardBody>
       </Card>
 
-      {busy && <p className="text-xs text-[--color-fg-faint]">{d.common.saving}</p>}
+      {busy && <p className="text-xs text-(--color-fg-faint)">{d.common.saving}</p>}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent title={d.automation.agents.deleteAgent}>
-          <p className="text-sm text-[--color-fg-muted]">{d.common.confirmDelete(agent.name)}</p>
+          <p className="text-sm text-(--color-fg-muted)">{d.common.confirmDelete(agent.name)}</p>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setDeleteOpen(false)}>
               {d.common.cancel}
@@ -407,7 +407,7 @@ function SaveOnBlurInput({
   React.useEffect(() => setLocal(value), [value]);
   return (
     <div>
-      <div className="mb-1.5 block text-xs font-medium text-[--color-fg-muted]">{label}</div>
+      <div className="mb-1.5 block text-xs font-medium text-(--color-fg-muted)">{label}</div>
       <Input
         aria-label={ariaLabel}
         value={local}
@@ -442,12 +442,12 @@ function PromptEditor({
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-[--color-fg-muted]">{label}</span>
+        <span className="text-xs font-medium text-(--color-fg-muted)">{label}</span>
         <Button size="sm" variant={dirty ? "default" : "ghost"} disabled={!dirty || (required && !local.trim())} onClick={() => onSave(local)}>
           {d.common.save}
         </Button>
       </div>
-      {hint && <p className="mb-1.5 text-[11px] leading-4 text-[--color-fg-faint]">{hint}</p>}
+      {hint && <p className="mb-1.5 text-[11px] leading-4 text-(--color-fg-faint)">{hint}</p>}
       <Textarea rows={rows} value={local} onChange={(e) => setLocal(e.target.value)} />
     </div>
   );

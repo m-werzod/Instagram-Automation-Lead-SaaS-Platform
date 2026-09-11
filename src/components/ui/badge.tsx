@@ -2,12 +2,12 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const styles: Record<string, string> = {
-  default: "bg-[--color-panel-2] text-[--color-fg-muted] border-[--color-border-strong]",
-  ok: "bg-[--color-ok-soft] text-[--color-ok] border-[--color-ok]/25",
-  warn: "bg-[--color-warn-soft] text-[--color-warn] border-[--color-warn]/25",
-  danger: "bg-[--color-danger-soft] text-[--color-danger] border-[--color-danger]/25",
-  accent: "bg-[--color-accent-soft] text-[--color-accent] border-[--color-accent]/25",
-  info: "bg-[--color-info-soft] text-[--color-info] border-[--color-info]/25",
+  default: "bg-(--color-panel-2) text-(--color-fg-muted) border-(--color-border-strong)",
+  ok: "bg-(--color-ok-soft) text-(--color-ok) border-(--color-ok)/25",
+  warn: "bg-(--color-warn-soft) text-(--color-warn) border-(--color-warn)/25",
+  danger: "bg-(--color-danger-soft) text-(--color-danger) border-(--color-danger)/25",
+  accent: "bg-(--color-accent-soft) text-(--color-accent) border-(--color-accent)/25",
+  info: "bg-(--color-info-soft) text-(--color-info) border-(--color-info)/25",
 };
 
 export function Badge({
@@ -34,10 +34,10 @@ export function StatusDot({ ok, label, warn }: { ok: boolean; label: string; war
       <span
         className={cn(
           "h-2 w-2 rounded-full",
-          warn ? "bg-[--color-warn]" : ok ? "bg-[--color-ok]" : "bg-[--color-fg-faint]",
+          warn ? "bg-(--color-warn)" : ok ? "bg-(--color-ok)" : "bg-(--color-fg-faint)",
         )}
       />
-      <span className={ok || warn ? "text-[--color-fg]" : "text-[--color-fg-muted]"}>{label}</span>
+      <span className={ok || warn ? "text-(--color-fg)" : "text-(--color-fg-muted)"}>{label}</span>
     </span>
   );
 }

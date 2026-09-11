@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("rounded-xl border border-[--color-border] bg-[--color-panel] shadow-[--shadow-card]", className)}
+      className={cn("rounded-xl border border-(--color-border) bg-(--color-panel) shadow-(--shadow-card)", className)}
       {...props}
     />
   );
@@ -25,12 +25,12 @@ export function CardHeader({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className={cn("flex items-start justify-between gap-3 border-b border-[--color-border] px-4 py-3.5", className)} {...props}>
+    <div className={cn("flex items-start justify-between gap-3 border-b border-(--color-border) px-4 py-3.5", className)} {...props}>
       <div className="flex min-w-0 items-start gap-2.5">
         {icon}
         <div className="min-w-0">
           {title !== undefined && <h3 className="text-sm font-semibold leading-6">{title}</h3>}
-          {description !== undefined && <p className="mt-0.5 text-xs text-[--color-fg-muted]">{description}</p>}
+          {description !== undefined && <p className="mt-0.5 text-xs text-(--color-fg-muted)">{description}</p>}
           {props.children}
         </div>
       </div>

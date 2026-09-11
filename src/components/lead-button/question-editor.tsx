@@ -122,7 +122,7 @@ export function QuestionEditor({
             </Select>
           </Field>
 
-          <div className="rounded-lg border border-[--color-border] px-3">
+          <div className="rounded-lg border border-(--color-border) px-3">
             <ToggleRow
               label={d.leadButton.questionsB.qRequired}
               checked={required}

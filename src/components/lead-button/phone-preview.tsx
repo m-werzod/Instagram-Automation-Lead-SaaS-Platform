@@ -124,7 +124,7 @@ export function PhonePreview({
         )}
       </div>
 
-      <p className="max-w-[280px] text-center text-[11px] leading-4 text-[--color-fg-faint]">
+      <p className="max-w-[280px] text-center text-[11px] leading-4 text-(--color-fg-faint)">
         {surface === "ad" ? d.leadButton.preview.surfaceAd : d.leadButton.preview.surfaceLanding}
         {" · "}
         {d.leadButton.preview.tapToDemo}

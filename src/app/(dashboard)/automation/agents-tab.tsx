@@ -54,7 +54,7 @@ export function AgentsTab({ accountId }: { accountId: string }) {
   }
 
   if (agents === null) {
-    return <p className="py-8 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>;
+    return <p className="py-8 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
   }
 
   return (
@@ -100,7 +100,7 @@ export function AgentsTab({ accountId }: { accountId: string }) {
                   actions={
                     <div className="flex items-center gap-2">
                       <span
-                        className={`text-[10px] font-semibold ${agent.enabled ? "text-[--color-on]" : "text-[--color-off]"}`}
+                        className={`text-[10px] font-semibold ${agent.enabled ? "text-(--color-on)" : "text-(--color-off)"}`}
                       >
                         {agent.enabled ? d.common.on : d.common.off}
                       </span>

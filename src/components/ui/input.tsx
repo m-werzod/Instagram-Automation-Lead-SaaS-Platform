@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const baseField =
-  "w-full rounded-lg border border-[--color-border-strong] bg-white px-3 text-sm text-[--color-fg] placeholder:text-[--color-fg-faint] focus:outline-2 focus:outline-offset-0 focus:outline-[--color-accent] disabled:opacity-50 disabled:bg-[--color-panel-2]";
+  "w-full rounded-lg border border-(--color-border-strong) bg-white px-3 text-sm text-(--color-fg) placeholder:text-(--color-fg-faint) focus:outline-2 focus:outline-offset-0 focus:outline-(--color-accent) disabled:opacity-50 disabled:bg-(--color-panel-2)";
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => <input ref={ref} className={cn(baseField, "h-9", className)} {...props} />,
@@ -33,7 +33,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
 Select.displayName = "Select";
 
 export function Label({ className, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) {
-  return <label className={cn("mb-1.5 block text-xs font-medium text-[--color-fg-muted]", className)} {...props} />;
+  return <label className={cn("mb-1.5 block text-xs font-medium text-(--color-fg-muted)", className)} {...props} />;
 }
 
 export function Field({ label, hint, children, className }: { label: string; hint?: string; children: React.ReactNode; className?: string }) {
@@ -41,7 +41,7 @@ export function Field({ label, hint, children, className }: { label: string; hin
     <div className={className}>
       <Label>{label}</Label>
       {children}
-      {hint && <p className="mt-1 text-[11px] leading-4 text-[--color-fg-faint]">{hint}</p>}
+      {hint && <p className="mt-1 text-[11px] leading-4 text-(--color-fg-faint)">{hint}</p>}
     </div>
   );
 }
@@ -59,7 +59,7 @@ export function Segmented<T extends string>({
   className?: string;
 }) {
   return (
-    <div className={cn("inline-flex w-full rounded-lg border border-[--color-border-strong] bg-[--color-panel-2] p-0.5", className)}>
+    <div className={cn("inline-flex w-full rounded-lg border border-(--color-border-strong) bg-(--color-panel-2) p-0.5", className)}>
       {options.map((o) => (
         <button
           key={o.value}
@@ -69,8 +69,8 @@ export function Segmented<T extends string>({
           className={cn(
             "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
             value === o.value
-              ? "bg-white text-[--color-fg] shadow-sm"
-              : "text-[--color-fg-muted] hover:text-[--color-fg]",
+              ? "bg-white text-(--color-fg) shadow-sm"
+              : "text-(--color-fg-muted) hover:text-(--color-fg)",
           )}
         >
           {o.label}

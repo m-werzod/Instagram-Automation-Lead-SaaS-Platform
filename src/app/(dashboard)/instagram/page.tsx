@@ -143,7 +143,7 @@ export default function InstagramPage() {
         }
       />
 
-      {accounts === null && <p className="py-10 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>}
+      {accounts === null && <p className="py-10 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>}
 
       {/* not connected yet — the hero connect card */}
       {accounts?.length === 0 && (
@@ -155,20 +155,20 @@ export default function InstagramPage() {
             </span>
             <div>
               <h2 className="text-lg font-bold">{d.instagram.connectTitle}</h2>
-              <p className="mx-auto mt-1.5 max-w-md text-[13px] leading-5 text-[--color-fg-muted]">{d.instagram.connectText}</p>
+              <p className="mx-auto mt-1.5 max-w-md text-[13px] leading-5 text-(--color-fg-muted)">{d.instagram.connectText}</p>
             </div>
             <Button asChild variant="instagram" size="lg">
               <a href="/api/meta/oauth/start?mode=instagram">
                 <Instagram size={18} /> {d.instagram.connectButton}
               </a>
             </Button>
-            <div className="mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-[--color-fg-muted]">
-              <span className="flex items-center gap-1.5"><MessagesSquare size={13} className="text-[--color-mod-content]" /> {d.instagram.capMessages}</span>
-              <span className="flex items-center gap-1.5"><MessageSquareText size={13} className="text-[--color-mod-ai]" /> {d.instagram.capComments}</span>
-              <span className="flex items-center gap-1.5"><Film size={13} className="text-[--color-mod-instagram]" /> {d.instagram.capContent}</span>
-              <span className="flex items-center gap-1.5"><BarChart3 size={13} className="text-[--color-mod-overview]" /> {d.instagram.capInsights}</span>
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-(--color-fg-muted)">
+              <span className="flex items-center gap-1.5"><MessagesSquare size={13} className="text-(--color-mod-content)" /> {d.instagram.capMessages}</span>
+              <span className="flex items-center gap-1.5"><MessageSquareText size={13} className="text-(--color-mod-ai)" /> {d.instagram.capComments}</span>
+              <span className="flex items-center gap-1.5"><Film size={13} className="text-(--color-mod-instagram)" /> {d.instagram.capContent}</span>
+              <span className="flex items-center gap-1.5"><BarChart3 size={13} className="text-(--color-mod-overview)" /> {d.instagram.capInsights}</span>
             </div>
-            <p className="flex items-center gap-1.5 text-[11px] text-[--color-fg-faint]">
+            <p className="flex items-center gap-1.5 text-[11px] text-(--color-fg-faint)">
               <ShieldCheck size={12} /> {d.auth.private}
             </p>
           </CardBody>
@@ -211,16 +211,16 @@ export default function InstagramPage() {
                   label={d.instagram.webhooks}
                   value={
                     acc.webhookSubscribed ? (
-                      <span className="text-[--color-ok]">{d.instagram.webhooksOn}</span>
+                      <span className="text-(--color-ok)">{d.instagram.webhooksOn}</span>
                     ) : (
-                      <span className="text-[--color-warn]">{d.instagram.webhooksOff}</span>
+                      <span className="text-(--color-warn)">{d.instagram.webhooksOff}</span>
                     )
                   }
                 />
                 <Info
                   label="Token"
                   value={
-                    <span className={acc.token.status === "ACTIVE" ? "text-[--color-ok]" : "text-[--color-danger]"}>
+                    <span className={acc.token.status === "ACTIVE" ? "text-(--color-ok)" : "text-(--color-danger)"}>
                       {acc.token.status}
                     </span>
                   }
@@ -229,18 +229,18 @@ export default function InstagramPage() {
 
               {/* what this connection can do */}
               <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[--color-fg-faint]">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-(--color-fg-faint)">
                   {d.instagram.capabilities}
                 </div>
                 <div className="grid gap-1.5 sm:grid-cols-2">
                   {caps.map((cap) => (
-                    <div key={cap.key} className="flex items-center gap-2 rounded-lg bg-[--color-panel-2] px-3 py-2" title={cap.reason}>
+                    <div key={cap.key} className="flex items-center gap-2 rounded-lg bg-(--color-panel-2) px-3 py-2" title={cap.reason}>
                       {cap.available ? (
-                        <CheckCircle2 size={15} className="shrink-0 text-[--color-ok]" />
+                        <CheckCircle2 size={15} className="shrink-0 text-(--color-ok)" />
                       ) : (
-                        <XCircle size={15} className="shrink-0 text-[--color-fg-faint]" />
+                        <XCircle size={15} className="shrink-0 text-(--color-fg-faint)" />
                       )}
-                      <span className={cap.available ? "text-xs font-medium" : "text-xs text-[--color-fg-muted]"}>
+                      <span className={cap.available ? "text-xs font-medium" : "text-xs text-(--color-fg-muted)"}>
                         {CAP_LABEL[cap.key]?.(d) ?? cap.label}
                       </span>
                     </div>
@@ -249,7 +249,7 @@ export default function InstagramPage() {
               </div>
 
               {/* advertising connection */}
-              <div className="rounded-xl border border-[--color-border] bg-[--color-panel-2] p-3.5">
+              <div className="rounded-xl border border-(--color-border) bg-(--color-panel-2) p-3.5">
                 <div className="mb-1 flex items-center gap-2">
                   <IconChip color="var(--color-mod-ads)" size={26}><Megaphone size={14} /></IconChip>
                   <span className="text-[13px] font-semibold">{d.instagram.adsSection}</span>
@@ -259,7 +259,7 @@ export default function InstagramPage() {
                   <AdAccountPicker d={d} account={acc} onSaved={load} />
                 ) : (
                   <>
-                    <p className="mb-2.5 text-xs leading-5 text-[--color-fg-muted]">{d.instagram.adsNotConnected}</p>
+                    <p className="mb-2.5 text-xs leading-5 text-(--color-fg-muted)">{d.instagram.adsNotConnected}</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Button asChild size="sm" variant="secondary">
                         <a href="/api/meta/oauth/start?mode=facebook">
@@ -273,7 +273,7 @@ export default function InstagramPage() {
               </div>
 
               {/* actions */}
-              <div className="flex flex-wrap gap-2 border-t border-[--color-border] pt-3">
+              <div className="flex flex-wrap gap-2 border-t border-(--color-border) pt-3">
                 <Button size="sm" variant="secondary" disabled={busy === `${acc.id}:test`} onClick={() => act(acc.id, "test")}>
                   {busy === `${acc.id}:test` ? d.common.loading : d.instagram.testConnection}
                 </Button>
@@ -304,8 +304,8 @@ export default function InstagramPage() {
 function Info({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 sm:block">
-      <span className="text-[--color-fg-faint]">{label}</span>
-      <div className="text-[--color-fg]">{value}</div>
+      <span className="text-(--color-fg-faint)">{label}</span>
+      <div className="text-(--color-fg)">{value}</div>
     </div>
   );
 }
@@ -399,7 +399,7 @@ function AdAccountPicker({
     <Field label={d.instagram.chooseAdAccount}>
       <div className="flex flex-wrap gap-2">
         {options === null ? (
-          <span className="text-xs text-[--color-fg-muted]">{d.common.loading}</span>
+          <span className="text-xs text-(--color-fg-muted)">{d.common.loading}</span>
         ) : (
           <>
             <Select value={value} onChange={(e) => setValue(e.target.value)} className="max-w-sm">

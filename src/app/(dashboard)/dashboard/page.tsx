@@ -188,18 +188,18 @@ export default function DashboardPage() {
           />
           <CardBody className="p-0">
             {recentLeads.length === 0 ? (
-              <p className="px-4 py-10 text-center text-xs leading-5 text-[--color-fg-muted]">{d.dashboard.noLeadsYet}</p>
+              <p className="px-4 py-10 text-center text-xs leading-5 text-(--color-fg-muted)">{d.dashboard.noLeadsYet}</p>
             ) : (
-              <ul className="divide-y divide-[--color-border]">
+              <ul className="divide-y divide-(--color-border)">
                 {recentLeads.map((l) => (
                   <li key={l.id}>
-                    <Link href="/leads" className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-[--color-panel-2]">
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[--color-ok-soft] text-xs font-bold text-[--color-ok]">
+                    <Link href="/leads" className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-(--color-panel-2)">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-(--color-ok-soft) text-xs font-bold text-(--color-ok)">
                         {(l.name ?? "•").charAt(0).toUpperCase()}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[13px] font-medium">{l.name ?? l.phone ?? l.email ?? "—"}</span>
-                        <span className="block truncate text-[11px] text-[--color-fg-faint]">
+                        <span className="block truncate text-[11px] text-(--color-fg-faint)">
                           {(d.leads.sources as Record<string, string>)[l.source] ?? l.source} · {dateFmt.format(new Date(l.createdAt))}
                         </span>
                       </span>
@@ -313,8 +313,8 @@ function HeroCard({
           <IconChip color={color} size={36}>{icon}</IconChip>
           <Badge tone={state === "ok" ? "ok" : state === "danger" ? "danger" : "default"}>{stateLabel}</Badge>
         </div>
-        <div className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-[--color-fg-faint]">{label}</div>
-        <div className={cn("mt-0.5 truncate text-lg font-bold", loading && "animate-pulse text-[--color-fg-faint]")}>
+        <div className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-(--color-fg-faint)">{label}</div>
+        <div className={cn("mt-0.5 truncate text-lg font-bold", loading && "animate-pulse text-(--color-fg-faint)")}>
           {loading ? "…" : value}
         </div>
         <Link href={href} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold underline-offset-2 hover:underline" style={{ color }}>
@@ -339,9 +339,9 @@ function QuickAction({ href, color, icon, label }: { href: string; color: string
 function HealthRow({ label, ok, okText, badText, warn }: { label: string; ok: boolean; okText: string; badText: string; warn?: boolean }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span className={cn("h-2 w-2 shrink-0 rounded-full", ok ? "bg-[--color-ok]" : warn ? "bg-[--color-warn]" : "bg-[--color-danger]")} />
-      <span className="truncate text-[--color-fg-muted]">{label}</span>
-      <span className={cn("ml-auto shrink-0 font-medium", ok ? "text-[--color-ok]" : warn ? "text-[--color-warn]" : "text-[--color-danger]")}>
+      <span className={cn("h-2 w-2 shrink-0 rounded-full", ok ? "bg-(--color-ok)" : warn ? "bg-(--color-warn)" : "bg-(--color-danger)")} />
+      <span className="truncate text-(--color-fg-muted)">{label}</span>
+      <span className={cn("ml-auto shrink-0 font-medium", ok ? "text-(--color-ok)" : warn ? "text-(--color-warn)" : "text-(--color-danger)")}>
         {ok ? okText : badText}
       </span>
     </div>
@@ -350,8 +350,8 @@ function HealthRow({ label, ok, okText, badText, warn }: { label: string; ok: bo
 
 function Stat({ label, value, accent }: { label: string; value: number | string; accent?: string }) {
   return (
-    <div className="rounded-xl bg-[--color-panel-2] px-3 py-3">
-      <div className="text-[11px] font-medium text-[--color-fg-muted]">{label}</div>
+    <div className="rounded-xl bg-(--color-panel-2) px-3 py-3">
+      <div className="text-[11px] font-medium text-(--color-fg-muted)">{label}</div>
       <div className="mt-0.5 text-xl font-bold" style={accent ? { color: accent } : undefined}>{value}</div>
     </div>
   );

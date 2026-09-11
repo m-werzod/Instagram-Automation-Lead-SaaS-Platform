@@ -107,7 +107,7 @@ export default function ConversationsPage() {
   }, [loadDetail]);
 
   if (accountsLoading) {
-    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+    return <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>;
   }
 
   if (!selected) {
@@ -143,11 +143,11 @@ export default function ConversationsPage() {
             mobileThread ? "hidden md:flex" : "flex",
           )}
         >
-          <div className="shrink-0 space-y-2 border-b border-[--color-border] p-3">
+          <div className="shrink-0 space-y-2 border-b border-(--color-border) p-3">
             <div className="relative">
               <Search
                 size={14}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[--color-fg-faint]"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-(--color-fg-faint)"
                 aria-hidden
               />
               <Input
@@ -170,7 +170,7 @@ export default function ConversationsPage() {
 
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
             {rows === null && (
-              <p className="p-3 text-center text-xs text-[--color-fg-muted]">{d.common.loading}</p>
+              <p className="p-3 text-center text-xs text-(--color-fg-muted)">{d.common.loading}</p>
             )}
             {rows?.length === 0 && (
               <div className="p-1">
@@ -208,7 +208,7 @@ export default function ConversationsPage() {
                 <IconChip color="var(--color-mod-content)" size={44}>
                   <MessagesSquare size={20} />
                 </IconChip>
-                <p className="text-xs text-[--color-fg-muted]">{d.conversations.subtitle}</p>
+                <p className="text-xs text-(--color-fg-muted)">{d.conversations.subtitle}</p>
               </div>
             </div>
           )}
@@ -229,7 +229,7 @@ function InboxHeader() {
       </IconChip>
       <div className="min-w-0">
         <h1 className="text-base font-bold leading-tight tracking-tight">{d.conversations.title}</h1>
-        <p className="truncate text-[11px] text-[--color-fg-muted]">{d.conversations.subtitle}</p>
+        <p className="truncate text-[11px] text-(--color-fg-muted)">{d.conversations.subtitle}</p>
       </div>
     </div>
   );
@@ -247,11 +247,11 @@ function ConversationRow({ c, active, onSelect }: { c: ConvRow; active: boolean;
       onClick={onSelect}
       className={cn(
         "flex w-full items-start gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-colors",
-        active ? "border-[--color-accent]/40 bg-[--color-accent-soft]" : "border-transparent hover:bg-[--color-panel-2]",
+        active ? "border-(--color-accent)/40 bg-(--color-accent-soft)" : "border-transparent hover:bg-(--color-panel-2)",
       )}
     >
       <span
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[--color-accent-soft] text-xs font-bold text-[--color-accent]"
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-(--color-accent-soft) text-xs font-bold text-(--color-accent)"
         aria-hidden
       >
         {name.charAt(0).toUpperCase()}
@@ -259,16 +259,16 @@ function ConversationRow({ c, active, onSelect }: { c: ConvRow; active: boolean;
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
           <span className="truncate text-[13px] font-semibold">{name}</span>
-          <span className="shrink-0 text-[10px] text-[--color-fg-faint]">{timeAgo(c.lastMessageAt)}</span>
+          <span className="shrink-0 text-[10px] text-(--color-fg-faint)">{timeAgo(c.lastMessageAt)}</span>
         </span>
         <span className="mt-0.5 flex items-center gap-1.5">
           <span
             title={human ? d.conversations.youActive : d.conversations.aiActive}
-            className={cn("shrink-0", human ? "text-[--color-warn]" : "text-[--color-mod-ai]")}
+            className={cn("shrink-0", human ? "text-(--color-warn)" : "text-(--color-mod-ai)")}
           >
             {human ? <User size={12} /> : <Bot size={12} />}
           </span>
-          <span className="truncate text-[11px] text-[--color-fg-muted]">{c.lastMessagePreview}</span>
+          <span className="truncate text-[11px] text-(--color-fg-muted)">{c.lastMessagePreview}</span>
         </span>
         {(c.leadId !== null || c.isDemo) && (
           <span className="mt-1 flex flex-wrap items-center gap-1">
@@ -352,7 +352,7 @@ function ConversationThread({
   return (
     <>
       {/* thread header */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-[--color-border] px-3 py-2.5 sm:px-4">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-(--color-border) px-3 py-2.5 sm:px-4">
         <Button
           variant="ghost"
           size="icon"
@@ -363,7 +363,7 @@ function ConversationThread({
           <ChevronLeft size={18} />
         </Button>
         <span
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[--color-accent-soft] text-xs font-bold text-[--color-accent]"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-(--color-accent-soft) text-xs font-bold text-(--color-accent)"
           aria-hidden
         >
           {name.charAt(0).toUpperCase()}
@@ -383,7 +383,7 @@ function ConversationThread({
               </Badge>
             )}
           </div>
-          <div className="truncate text-[11px] text-[--color-fg-faint]">
+          <div className="truncate text-[11px] text-(--color-fg-faint)">
             @{conv.account.username}
             {conv.agent ? ` · ${conv.agent.name}` : ""}
           </div>
@@ -430,7 +430,7 @@ function ConversationThread({
           .map((s) => (
             <div
               key={s.id}
-              className="flex items-center justify-center gap-1.5 rounded-lg border border-[--color-accent]/25 bg-[--color-accent-soft] px-3 py-1.5 text-[11px] font-medium text-[--color-accent]"
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-(--color-accent)/25 bg-(--color-accent-soft) px-3 py-1.5 text-[11px] font-medium text-(--color-accent)"
             >
               <Zap size={12} className="shrink-0" />
               <span className="truncate">{s.flow.name}</span>
@@ -444,9 +444,9 @@ function ConversationThread({
       </div>
 
       {/* composer */}
-      <div className="shrink-0 border-t border-[--color-border] p-3">
+      <div className="shrink-0 border-t border-(--color-border) p-3">
         {!windowOpen && (
-          <div className="mb-2.5 flex items-start gap-2 rounded-lg bg-[--color-warn-soft] px-3 py-2 text-xs leading-5 text-[--color-warn]">
+          <div className="mb-2.5 flex items-start gap-2 rounded-lg bg-(--color-warn-soft) px-3 py-2 text-xs leading-5 text-(--color-warn)">
             <Clock size={14} className="mt-0.5 shrink-0" />
             {d.conversations.windowClosed}
           </div>
@@ -487,14 +487,14 @@ function MessageBubble({ m }: { m: MessageRow }) {
           "max-w-[80%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-5 sm:max-w-[70%]",
           mine
             ? m.sender === "AI"
-              ? "rounded-br-md bg-[--color-mod-ai] text-white"
-              : "rounded-br-md bg-[--color-accent] text-white"
-            : "rounded-bl-md bg-[--color-panel-2] text-[--color-fg]",
+              ? "rounded-br-md bg-(--color-mod-ai) text-white"
+              : "rounded-br-md bg-(--color-accent) text-white"
+            : "rounded-bl-md bg-(--color-panel-2) text-(--color-fg)",
         )}
       >
         {m.text ?? "—"}
       </div>
-      <div className="mt-1 flex items-center gap-1 px-1 text-[10px] text-[--color-fg-faint]">
+      <div className="mt-1 flex items-center gap-1 px-1 text-[10px] text-(--color-fg-faint)">
         <Icon size={11} aria-hidden />
         <span>{formatDate(m.createdAt)}</span>
         {m.aiLatencyMs != null && <span>· {(m.aiLatencyMs / 1000).toFixed(1)}s</span>}

@@ -175,6 +175,10 @@ model GlobalSettings {
   masterAutomationEnabled   Boolean  @default(true)
   autoCampaignLaunchEnabled Boolean  @default(false) // spec §16 — default OFF
   leadAutomationWhenOff     Boolean  @default(true) // lead capture may continue while master is OFF
+  // Telegram lead notifications — the primary CRM receiver.
+  telegramBotToken          String? // AES-256-GCM blob (src/lib/crypto.ts) — never stored in plain text
+  telegramChatId            String? // auto-detected from getUpdates on first use if empty
+  telegramEnabled           Boolean  @default(true)
   updatedAt                 DateTime @updatedAt
 }
 

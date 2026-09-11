@@ -110,7 +110,7 @@ export default function LeadsPage() {
   /* ---------- guards ---------- */
 
   if (accountsLoading) {
-    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+    return <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>;
   }
 
   if (!selected) {
@@ -141,7 +141,7 @@ export default function LeadsPage() {
             <div className="relative">
               <Search
                 size={14}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[--color-fg-faint]"
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--color-fg-faint)"
               />
               <Input
                 className="w-52 pl-8 sm:w-64"
@@ -159,7 +159,7 @@ export default function LeadsPage() {
       />
 
       {leads === null ? (
-        <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>
+        <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>
       ) : leads.length === 0 && q.trim() === "" ? (
         <EmptyState
           icon={<IconChip color="var(--color-mod-leads)" size={48}><Users size={22} /></IconChip>}
@@ -180,7 +180,7 @@ export default function LeadsPage() {
             return (
               <div
                 key={status}
-                className="flex min-h-44 flex-col overflow-hidden rounded-xl border border-[--color-border] bg-[--color-panel-2]/60"
+                className="flex min-h-44 flex-col overflow-hidden rounded-xl border border-(--color-border) bg-(--color-panel-2)/60"
               >
                 {/* colored top bar */}
                 <div className="h-1 shrink-0" style={{ background: meta.color }} aria-hidden />
@@ -207,7 +207,7 @@ export default function LeadsPage() {
                     <LeadCard key={lead.id} lead={lead} d={d} onOpen={() => setDetail(lead)} onMove={(s) => void move(lead, s)} />
                   ))}
                   {col.length === 0 && (
-                    <div className="rounded-lg border border-dashed border-[--color-border-strong] py-6 text-center text-[11px] text-[--color-fg-faint]">
+                    <div className="rounded-lg border border-dashed border-(--color-border-strong) py-6 text-center text-[11px] text-(--color-fg-faint)">
                       {d.common.none}
                     </div>
                   )}
@@ -248,7 +248,7 @@ function LeadCard({
           onOpen();
         }
       }}
-      className="cursor-pointer transition-all hover:-translate-y-px hover:border-[--color-border-strong] hover:shadow-md"
+      className="cursor-pointer transition-all hover:-translate-y-px hover:border-(--color-border-strong) hover:shadow-md"
     >
       <CardBody className="space-y-2 p-3">
         <div className="flex items-center justify-between gap-2">
@@ -263,14 +263,14 @@ function LeadCard({
         {(lead.phone || lead.email) && (
           <div className="space-y-0.5">
             {lead.phone && (
-              <div className="flex items-center gap-1.5 text-[11px] text-[--color-fg-muted]">
-                <Phone size={11} className="shrink-0 text-[--color-fg-faint]" />
+              <div className="flex items-center gap-1.5 text-[11px] text-(--color-fg-muted)">
+                <Phone size={11} className="shrink-0 text-(--color-fg-faint)" />
                 <span className="truncate font-mono">{lead.phone}</span>
               </div>
             )}
             {lead.email && (
-              <div className="flex items-center gap-1.5 text-[11px] text-[--color-fg-muted]">
-                <Mail size={11} className="shrink-0 text-[--color-fg-faint]" />
+              <div className="flex items-center gap-1.5 text-[11px] text-(--color-fg-muted)">
+                <Mail size={11} className="shrink-0 text-(--color-fg-faint)" />
                 <span className="truncate">{lead.email}</span>
               </div>
             )}
@@ -279,7 +279,7 @@ function LeadCard({
 
         <div className="flex items-center justify-between gap-2">
           <Badge className="min-w-0 truncate">{sourceLabel(d, lead.source)}</Badge>
-          <span className="shrink-0 text-[10px] text-[--color-fg-faint]">{shortDate(lead.createdAt)}</span>
+          <span className="shrink-0 text-[10px] text-(--color-fg-faint)">{shortDate(lead.createdAt)}</span>
         </div>
 
         <Select
@@ -374,7 +374,7 @@ function LeadDetailDialog({
               </Select>
             </Field>
 
-            <div className="rounded-xl border border-[--color-border] bg-[--color-panel-2] px-3 py-1.5">
+            <div className="rounded-xl border border-(--color-border) bg-(--color-panel-2) px-3 py-1.5">
               <InfoRow icon={<Phone size={13} />} label={d.leads.detail.phone} value={lead.phone} mono />
               <InfoRow icon={<Mail size={13} />} label={d.leads.detail.email} value={lead.email} />
               <InfoRow icon={<CalendarClock size={13} />} label={d.leads.detail.created} value={formatDate(lead.createdAt)} />
@@ -395,14 +395,14 @@ function LeadDetailDialog({
             )}
 
             {answers.length > 0 && (
-              <div className="overflow-hidden rounded-xl border border-[--color-border]">
-                <div className="flex items-center gap-1.5 border-b border-[--color-border] bg-[--color-panel-2] px-3 py-2 text-xs font-semibold">
-                  <ClipboardList size={13} className="text-[--color-fg-faint]" /> {d.leads.detail.answers}
+              <div className="overflow-hidden rounded-xl border border-(--color-border)">
+                <div className="flex items-center gap-1.5 border-b border-(--color-border) bg-(--color-panel-2) px-3 py-2 text-xs font-semibold">
+                  <ClipboardList size={13} className="text-(--color-fg-faint)" /> {d.leads.detail.answers}
                 </div>
-                <div className="divide-y divide-[--color-border] px-3 text-xs">
+                <div className="divide-y divide-(--color-border) px-3 text-xs">
                   {answers.map((a, i) => (
                     <div key={i} className="flex items-start justify-between gap-3 py-1.5">
-                      <span className="text-[--color-fg-muted]">{a.question}</span>
+                      <span className="text-(--color-fg-muted)">{a.question}</span>
                       <span className="text-right font-medium">{a.answer}</span>
                     </div>
                   ))}
@@ -424,11 +424,11 @@ function LeadDetailDialog({
           <div className="space-y-4 text-xs">
             <div>
               <div className="mb-2 flex items-center gap-1.5 font-semibold">
-                <MailCheck size={13} className="text-[--color-fg-faint]" /> {d.leads.detail.emails}
+                <MailCheck size={13} className="text-(--color-fg-faint)" /> {d.leads.detail.emails}
               </div>
-              {emails.length === 0 && <p className="text-[--color-fg-faint]">{d.common.none}</p>}
+              {emails.length === 0 && <p className="text-(--color-fg-faint)">{d.common.none}</p>}
               {emails.map((e) => (
-                <div key={e.id} className="flex items-center justify-between gap-2 border-b border-[--color-border] py-1.5 last:border-0">
+                <div key={e.id} className="flex items-center justify-between gap-2 border-b border-(--color-border) py-1.5 last:border-0">
                   <span className="min-w-0 truncate" title={e.lastError ?? undefined}>
                     {e.subject}
                   </span>
@@ -439,13 +439,13 @@ function LeadDetailDialog({
 
             <div>
               <div className="mb-2 flex items-center gap-1.5 font-semibold">
-                <History size={13} className="text-[--color-fg-faint]" /> {d.leads.detail.timeline}
+                <History size={13} className="text-(--color-fg-faint)" /> {d.leads.detail.timeline}
               </div>
-              {events.length === 0 && <p className="text-[--color-fg-faint]">{d.common.none}</p>}
+              {events.length === 0 && <p className="text-(--color-fg-faint)">{d.common.none}</p>}
               {events.map((ev) => (
-                <div key={ev.id} className="flex items-center justify-between gap-2 border-b border-[--color-border] py-1.5 last:border-0">
+                <div key={ev.id} className="flex items-center justify-between gap-2 border-b border-(--color-border) py-1.5 last:border-0">
                   <span className="font-medium">{ev.type}</span>
-                  <span className="shrink-0 text-[--color-fg-faint]">{formatDate(ev.createdAt)}</span>
+                  <span className="shrink-0 text-(--color-fg-faint)">{formatDate(ev.createdAt)}</span>
                 </div>
               ))}
             </div>
@@ -459,8 +459,8 @@ function LeadDetailDialog({
 function InfoRow({ icon, label, value, mono }: { icon: React.ReactNode; label: string; value: string | null; mono?: boolean }) {
   return (
     <div className="flex items-center gap-2 py-1.5">
-      <span className="shrink-0 text-[--color-fg-faint]">{icon}</span>
-      <span className="w-20 shrink-0 text-xs text-[--color-fg-muted]">{label}</span>
+      <span className="shrink-0 text-(--color-fg-faint)">{icon}</span>
+      <span className="w-20 shrink-0 text-xs text-(--color-fg-muted)">{label}</span>
       <span className={cn("min-w-0 flex-1 truncate text-[13px] font-medium", mono && "font-mono text-xs")}>{value ?? "—"}</span>
     </div>
   );

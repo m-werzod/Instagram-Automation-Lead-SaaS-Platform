@@ -105,7 +105,7 @@ export function RulesTab({ accountId }: { accountId: string }) {
   }
 
   if (rows === null) {
-    return <p className="py-8 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</p>;
+    return <p className="py-8 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
   }
 
   return (
@@ -149,7 +149,7 @@ export function RulesTab({ accountId }: { accountId: string }) {
                 description={a.description ?? undefined}
                 actions={
                   <div className="flex items-center gap-2">
-                    <span className={`text-[10px] font-semibold ${a.enabled ? "text-[--color-on]" : "text-[--color-off]"}`}>
+                    <span className={`text-[10px] font-semibold ${a.enabled ? "text-(--color-on)" : "text-(--color-off)"}`}>
                       {a.enabled ? d.common.on : d.common.off}
                     </span>
                     <Switch checked={a.enabled} onCheckedChange={(v) => toggle(a, v)} />
@@ -172,13 +172,13 @@ export function RulesTab({ accountId }: { accountId: string }) {
                     </Badge>
                   ))}
                 </div>
-                <div className="flex flex-wrap items-center gap-3 text-[11px] text-[--color-fg-faint]">
+                <div className="flex flex-wrap items-center gap-3 text-[11px] text-(--color-fg-faint)">
                   <span>{d.automation.rules.runs(a.runCount)}</span>
                   <span>{a.lastRunAt ? timeAgo(a.lastRunAt) : "—"}</span>
                   <Button size="sm" variant="ghost" onClick={() => setRunsFor(a)}>
                     {d.automation.rules.history}
                   </Button>
-                  <Button size="sm" variant="ghost" className="hover:text-[--color-danger]" onClick={() => setDeleteFor(a)}>
+                  <Button size="sm" variant="ghost" className="hover:text-(--color-danger)" onClick={() => setDeleteFor(a)}>
                     {d.common.delete}
                   </Button>
                 </div>
@@ -194,7 +194,7 @@ export function RulesTab({ accountId }: { accountId: string }) {
       <Dialog open={deleteFor !== null} onOpenChange={(v) => !v && setDeleteFor(null)}>
         {deleteFor && (
           <DialogContent title={d.common.delete}>
-            <p className="text-sm text-[--color-fg-muted]">{d.common.confirmDelete(deleteFor.name)}</p>
+            <p className="text-sm text-(--color-fg-muted)">{d.common.confirmDelete(deleteFor.name)}</p>
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setDeleteFor(null)}>
                 {d.common.cancel}
@@ -226,12 +226,12 @@ function RunsDialog({ automation, onClose }: { automation: AutomationRow; onClos
     <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent title={`${d.automation.rules.history} — ${automation.name}`}>
         <div className="max-h-80 space-y-1 overflow-y-auto text-xs">
-          {runs.length === 0 && <p className="text-[--color-fg-muted]">{d.common.none}</p>}
+          {runs.length === 0 && <p className="text-(--color-fg-muted)">{d.common.none}</p>}
           {runs.map((r) => (
-            <div key={r.id} className="flex items-center justify-between border-b border-[--color-border] py-1.5 last:border-0">
+            <div key={r.id} className="flex items-center justify-between border-b border-(--color-border) py-1.5 last:border-0">
               <Badge tone={r.status === "SUCCESS" ? "ok" : "danger"}>{r.status}</Badge>
-              <span className="mx-2 flex-1 truncate text-[--color-fg-muted]">{r.error ?? ""}</span>
-              <span className="shrink-0 text-[--color-fg-faint]">
+              <span className="mx-2 flex-1 truncate text-(--color-fg-muted)">{r.error ?? ""}</span>
+              <span className="shrink-0 text-(--color-fg-faint)">
                 {timeAgo(r.createdAt)} · {r.durationMs ?? 0}ms
               </span>
             </div>
@@ -328,7 +328,7 @@ function CreateRuleDialog({
 
           {/* optional condition — raw field/operator identifiers, empty value = always */}
           <div>
-            <div className="mb-1.5 flex items-center gap-1 text-xs font-medium text-[--color-fg-muted]">
+            <div className="mb-1.5 flex items-center gap-1 text-xs font-medium text-(--color-fg-muted)">
               <Filter size={13} aria-hidden />
               <span>({d.common.optional.toLowerCase()})</span>
             </div>

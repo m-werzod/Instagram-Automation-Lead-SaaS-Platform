@@ -136,7 +136,7 @@ export default function ContentPage() {
   /* ---------- guards ---------- */
 
   if (accountsLoading || (selected && items === null)) {
-    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+    return <div className="py-20 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</div>;
   }
 
   if (!selected) {
@@ -168,7 +168,7 @@ export default function ContentPage() {
         title={d.content.title}
         description={
           <>
-            {d.content.subtitle} — <span className="font-medium text-[--color-fg]">@{selected.username}</span>
+            {d.content.subtitle} — <span className="font-medium text-(--color-fg)">@{selected.username}</span>
           </>
         }
         accent="var(--color-mod-content)"
@@ -243,7 +243,7 @@ function MediaCard({
             <KindIcon size={10} /> {kindLabel}
           </span>
           {item.isDemo && (
-            <span className="rounded-md bg-[--color-warn] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white">
+            <span className="rounded-md bg-(--color-warn) px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white">
               {d.shell.demo}
             </span>
           )}
@@ -279,16 +279,16 @@ function MediaCard({
       </MediaImage>
 
       <div className="flex flex-1 flex-col gap-2 p-2.5">
-        <p className="line-clamp-2 min-h-10 text-xs leading-5 text-[--color-fg-muted]" title={item.caption ?? undefined}>
+        <p className="line-clamp-2 min-h-10 text-xs leading-5 text-(--color-fg-muted)" title={item.caption ?? undefined}>
           {item.caption}
         </p>
-        <div className="text-[10px] text-[--color-fg-faint]">{formatDate(item.timestamp)}</div>
+        <div className="text-[10px] text-(--color-fg-faint)">{formatDate(item.timestamp)}</div>
 
         {/* AI verdict */}
         {item.analysis && (
-          <div className="rounded-lg border border-[--color-mod-ai]/25 bg-[--color-mod-ai]/10 p-2">
+          <div className="rounded-lg border border-(--color-mod-ai)/25 bg-(--color-mod-ai)/10 p-2">
             <div className="flex flex-wrap items-center justify-between gap-1">
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[--color-mod-ai]">
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-(--color-mod-ai)">
                 <Sparkles size={11} /> {d.content.aiSays}
               </span>
               {potential && (
@@ -297,14 +297,14 @@ function MediaCard({
                 </Badge>
               )}
             </div>
-            {aiDetail && <p className="mt-1 line-clamp-3 text-[11px] leading-4 text-[--color-fg]">{aiDetail}</p>}
+            {aiDetail && <p className="mt-1 line-clamp-3 text-[11px] leading-4 text-(--color-fg)">{aiDetail}</p>}
           </div>
         )}
 
         <div className="mt-auto flex flex-col gap-1.5 pt-1">
           {!item.analysis && (
             <Button size="sm" variant="secondary" className="w-full" disabled={busy === item.id} onClick={onAnalyze}>
-              <Sparkles size={13} className="text-[--color-mod-ai]" />
+              <Sparkles size={13} className="text-(--color-mod-ai)" />
               {busy === item.id ? d.content.analyzing : d.content.analyze}
             </Button>
           )}
@@ -342,7 +342,7 @@ function MediaImage({ item, alt, children }: { item: ContentRow; alt: string; ch
   const [ok, setOk] = React.useState(true);
   const src = item.thumbnailUrl ?? item.mediaUrl;
   return (
-    <div className="relative aspect-[4/5] w-full overflow-hidden bg-[--color-panel-2]">
+    <div className="relative aspect-[4/5] w-full overflow-hidden bg-(--color-panel-2)">
       {src && ok ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img

@@ -55,7 +55,7 @@ function LoginForm() {
   const expired = params.get("expired") === "1";
 
   if (setup === null) {
-    return <div className="h-[248px] animate-pulse rounded-xl bg-[--color-panel-2]" aria-hidden />;
+    return <div className="h-[248px] animate-pulse rounded-xl bg-(--color-panel-2)" aria-hidden />;
   }
   if (!setup.configured) {
     return <SetupRequired missing={setup.missing} platform={setup.platform} />;
@@ -90,20 +90,20 @@ function LoginForm() {
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
       {expired && !error && (
-        <div className="flex items-start gap-2 rounded-lg bg-[--color-warn-soft] px-3 py-2 text-xs text-[--color-warn]">
+        <div className="flex items-start gap-2 rounded-lg bg-(--color-warn-soft) px-3 py-2 text-xs text-(--color-warn)">
           <AlertCircle size={14} className="mt-px shrink-0" />
           <span>{d.errors.sessionExpired}</span>
         </div>
       )}
       {error && (
-        <div className="flex items-start gap-2 rounded-lg bg-[--color-danger-soft] px-3 py-2 text-xs text-[--color-danger]">
+        <div className="flex items-start gap-2 rounded-lg bg-(--color-danger-soft) px-3 py-2 text-xs text-(--color-danger)">
           <AlertCircle size={14} className="mt-px shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
       <div>
-        <label htmlFor="login" className="mb-1.5 block text-xs font-semibold text-[--color-fg-muted]">
+        <label htmlFor="login" className="mb-1.5 block text-xs font-semibold text-(--color-fg-muted)">
           {d.auth.login}
         </label>
         <Input
@@ -119,7 +119,7 @@ function LoginForm() {
       </div>
 
       <div>
-        <label htmlFor="password" className="mb-1.5 block text-xs font-semibold text-[--color-fg-muted]">
+        <label htmlFor="password" className="mb-1.5 block text-xs font-semibold text-(--color-fg-muted)">
           {d.auth.password}
         </label>
         <div className="relative">
@@ -138,7 +138,7 @@ function LoginForm() {
           <button
             type="button"
             onClick={() => setShowPassword((v) => !v)}
-            className="absolute inset-y-0 right-0 grid w-10 place-items-center text-[--color-fg-faint] hover:text-[--color-fg]"
+            className="absolute inset-y-0 right-0 grid w-10 place-items-center text-(--color-fg-faint) hover:text-(--color-fg)"
             aria-label={showPassword ? d.auth.hidePassword : d.auth.showPassword}
             tabIndex={-1}
           >
@@ -146,7 +146,7 @@ function LoginForm() {
           </button>
         </div>
         {capsLock && (
-          <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-[--color-warn]">
+          <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-(--color-warn)">
             <AlertCircle size={12} /> {d.auth.capsLock}
           </p>
         )}
@@ -156,7 +156,7 @@ function LoginForm() {
         {busy ? d.auth.signingIn : d.auth.signIn}
       </Button>
 
-      <p className="flex items-center justify-center gap-1.5 text-[11px] text-[--color-fg-faint]">
+      <p className="flex items-center justify-center gap-1.5 text-[11px] text-(--color-fg-faint)">
         <ShieldCheck size={12} /> {d.auth.private}
       </p>
     </form>
@@ -166,10 +166,10 @@ function LoginForm() {
 export default function LoginPage() {
   const { d, locale, setLocale } = useI18n();
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-[--color-bg] p-4">
+    <div className="flex min-h-dvh items-center justify-center bg-(--color-bg) p-4">
       {/* language switcher */}
       <div className="fixed right-4 top-4 flex items-center gap-1.5">
-        <Globe size={14} className="text-[--color-fg-faint]" aria-hidden />
+        <Globe size={14} className="text-(--color-fg-faint)" aria-hidden />
         <Select
           aria-label={d.common.language}
           className="h-8 w-32 text-xs"
@@ -184,7 +184,7 @@ export default function LoginPage() {
         </Select>
       </div>
 
-      <div className="grid w-full max-w-4xl overflow-hidden rounded-2xl border border-[--color-border] bg-white shadow-xl md:grid-cols-2">
+      <div className="grid w-full max-w-4xl overflow-hidden rounded-2xl border border-(--color-border) bg-white shadow-xl md:grid-cols-2">
         {/* brand panel */}
         <div className="ig-gradient relative hidden flex-col justify-between p-8 text-white md:flex">
           <div className="flex items-center gap-2.5">
@@ -220,8 +220,8 @@ export default function LoginPage() {
             </span>
           </div>
           <h2 className="text-xl font-bold">{d.auth.title}</h2>
-          <p className="mb-6 mt-1 text-[13px] text-[--color-fg-muted]">{d.auth.subtitle}</p>
-          <React.Suspense fallback={<div className="h-[248px] animate-pulse rounded-xl bg-[--color-panel-2]" aria-hidden />}>
+          <p className="mb-6 mt-1 text-[13px] text-(--color-fg-muted)">{d.auth.subtitle}</p>
+          <React.Suspense fallback={<div className="h-[248px] animate-pulse rounded-xl bg-(--color-panel-2)" aria-hidden />}>
             <LoginForm />
           </React.Suspense>
         </div>

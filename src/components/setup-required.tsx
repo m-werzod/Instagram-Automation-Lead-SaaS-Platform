@@ -29,11 +29,11 @@ export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; 
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-2.5 rounded-lg bg-[--color-warn-soft] px-3 py-2.5">
-        <AlertTriangle size={16} className="mt-0.5 shrink-0 text-[--color-warn]" />
+      <div className="flex items-start gap-2.5 rounded-lg bg-(--color-warn-soft) px-3 py-2.5">
+        <AlertTriangle size={16} className="mt-0.5 shrink-0 text-(--color-warn)" />
         <div>
-          <p className="text-sm font-medium text-[--color-warn]">{d.setup.title}</p>
-          <p className="mt-1 text-xs leading-5 text-[--color-fg-muted]">{d.setup.text}</p>
+          <p className="text-sm font-medium text-(--color-warn)">{d.setup.title}</p>
+          <p className="mt-1 text-xs leading-5 text-(--color-fg-muted)">{d.setup.text}</p>
         </div>
       </div>
 
@@ -41,25 +41,25 @@ export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; 
         {missing.map((item, i) => {
           const Icon = ICONS[item.name] ?? KeyRound;
           return (
-            <li key={item.name} className="flex gap-2.5 rounded-md border border-[--color-border] bg-[--color-panel-2] p-3">
-              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[--color-panel-3] text-[11px] font-semibold">
+            <li key={item.name} className="flex gap-2.5 rounded-md border border-(--color-border) bg-(--color-panel-2) p-3">
+              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-(--color-panel-3) text-[11px] font-semibold">
                 {i + 1}
               </span>
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <Icon size={13} className="text-[--color-fg-faint]" />
-                  <code className="font-mono text-xs font-semibold text-[--color-fg]">{item.name}</code>
+                  <Icon size={13} className="text-(--color-fg-faint)" />
+                  <code className="font-mono text-xs font-semibold text-(--color-fg)">{item.name}</code>
                 </div>
-                {item.problem && <p className="mt-1 text-[11px] leading-5 text-[--color-fg-muted]">{item.problem}</p>}
+                {item.problem && <p className="mt-1 text-[11px] leading-5 text-(--color-fg-muted)">{item.problem}</p>}
               </div>
             </li>
           );
         })}
       </ol>
 
-      <div className="rounded-md border border-[--color-border] bg-[--color-panel-2] p-3">
+      <div className="rounded-md border border-(--color-border) bg-(--color-panel-2) p-3">
         <p className="text-xs font-medium">{d.setup.docs}</p>
-        <p className="mt-1 text-[11px] leading-5 text-[--color-fg-muted]">
+        <p className="mt-1 text-[11px] leading-5 text-(--color-fg-muted)">
           {onVercel ? (
             <>
               Vercel → your project → <b>Settings → Environment Variables</b>. Add each one for the{" "}
@@ -72,7 +72,7 @@ export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; 
             </>
           )}
         </p>
-        <p className="mt-2 text-[11px] leading-5 text-[--color-fg-faint]">
+        <p className="mt-2 text-[11px] leading-5 text-(--color-fg-faint)">
           After redeploying you still need to create the first administrator once — see{" "}
           <code className="font-mono">docs/DEPLOYMENT.md</code> §9.
         </p>
@@ -80,7 +80,7 @@ export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; 
 
       <button
         onClick={() => window.location.reload()}
-        className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-[--color-border-strong] text-sm font-medium text-[--color-fg] transition-colors hover:bg-[--color-panel-2]"
+        className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-(--color-border-strong) text-sm font-medium text-(--color-fg) transition-colors hover:bg-(--color-panel-2)"
       >
         <RefreshCw size={14} />
         {d.common.tryAgain}

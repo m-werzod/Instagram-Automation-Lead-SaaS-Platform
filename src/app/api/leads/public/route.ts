@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
+import { after } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, clientIp, enforceRateLimit } from "@/lib/api";
 import { notFound, validationError } from "@/lib/errors";
 import { validateAnswer } from "@/lib/leadflow/engine";
-import { enqueue } from "@/lib/queue";
+import { enqueue, drainNow } from "@/lib/queue";
 import type { Prisma } from "@prisma/client";
 
 /**
@@ -67,5 +68,7 @@ export const POST = route(async (req: NextRequest) => {
   await prisma.leadEvent.create({ data: { leadId: lead.id, type: "CREATED", data: { via: "landing_page", slug: body.slug } } });
   await enqueue("lead.process", { leadId: lead.id }, { idempotencyKey: `lead.process:${lead.id}` });
 
+  // Deliver to Telegram/CRM right away (post-response), not on the 5-min cron.
+  after(() => drainNow());
   return ok({ submitted: true });
 });

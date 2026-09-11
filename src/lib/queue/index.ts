@@ -152,6 +152,24 @@ export async function drainOnce(workerId: string, max = 25): Promise<number> {
   return processed;
 }
 
+/**
+ * Drain the queue immediately from a web request, using Next's `after()` so it
+ * runs AFTER the response is sent (Vercel keeps the function alive for it). This
+ * gives near-instant lead → Telegram delivery instead of waiting for the 5-min
+ * cron, while the cron remains the reliability backstop. Never throws.
+ *
+ * One drain cascades: processing webhook.process enqueues lead.process, which
+ * this same loop then claims (drainOnce re-queries until empty or `max`).
+ */
+export async function drainNow(max = 25): Promise<void> {
+  try {
+    await import("./handlers"); // ensure handlers are registered in this process
+    await drainOnce(`after-${process.pid}-${Date.now()}`, max);
+  } catch (err) {
+    log.error("after() queue drain failed", errorFields(err));
+  }
+}
+
 // ---- inline mode (dev convenience: process jobs in the web process) ----
 
 let inlineRunning = false;

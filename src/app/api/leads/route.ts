@@ -1,11 +1,11 @@
-import { NextRequest } from "next/server";
+import { NextRequest, after } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
-import { enqueue } from "@/lib/queue";
+import { enqueue, drainNow } from "@/lib/queue";
 
 const STATUSES = ["NEW", "CONTACTED", "QUALIFIED", "IN_PROGRESS", "WON", "LOST"] as const;
 
@@ -73,6 +73,7 @@ export const POST = route(async (req: NextRequest) => {
   await prisma.leadEvent.create({ data: { leadId: lead.id, type: "CREATED", adminId: auth.admin.id, data: { manual: true } } });
   if (body.notify) {
     await enqueue("lead.process", { leadId: lead.id }, { idempotencyKey: `lead.process:${lead.id}` });
+    after(() => drainNow());
   }
   await audit({
     adminId: auth.admin.id,

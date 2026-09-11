@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { metaEnv } from "@/lib/env";
 import { verifyWebhookSignature, parseWebhookPayload, dedupeKeyForEvent, type WebhookPayload } from "@/lib/meta/webhooks";
 import { sha256Hex } from "@/lib/crypto";
-import { enqueue } from "@/lib/queue";
+import { enqueue, drainNow } from "@/lib/queue";
 import { createLogger, errorFields } from "@/lib/logger";
 
 const log = createLogger("webhook.instagram");
@@ -82,6 +82,9 @@ export async function POST(req: NextRequest) {
       },
     });
     await enqueue("webhook.process", { webhookEventId: event.id }, { maxAttempts: 5, priority: 10 });
+    // Process the event (and any lead it produces) right away, post-response,
+    // so DM/comment replies and lead notifications don't wait for the cron.
+    after(() => drainNow());
   } catch (err) {
     // Unique-violation race between two deliveries → still ack.
     if (typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2002") {

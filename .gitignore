@@ -46,3 +46,4 @@ devdb.log
 devserver.log
 worker.log
 tsconfig.tsbuildinfo
+scratch-*.ts

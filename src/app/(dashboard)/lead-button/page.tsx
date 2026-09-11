@@ -33,6 +33,7 @@ import { Field, Input, Segmented, Select } from "@/components/ui/input";
 import { ToggleRow } from "@/components/ui/switch";
 import { PhonePreview } from "@/components/lead-button/phone-preview";
 import { QuestionEditor } from "@/components/lead-button/question-editor";
+import { leadButtonStyle } from "@/lib/leadbutton-style";
 import { DEFAULT_BUTTON_SPEC, type ButtonSpec } from "@/lib/validation/leadbutton";
 import type { QuestionInput } from "@/lib/validation/leadflow";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
@@ -353,6 +354,22 @@ export default function LeadButtonPage() {
               title={d.leadButton.sections.appearance}
             />
             <CardBody className="space-y-4">
+              {/* Live button sample — sticky so it stays visible while you adjust
+                  colours/shape/size below (crucial on mobile, where the phone
+                  preview is far above these controls). Reflects the spec exactly
+                  via the same leadButtonStyle used by the real landing page. */}
+              <div className="sticky top-0 z-10 -mx-4 -mt-3.5 mb-1 border-b border-(--color-border) bg-white/95 px-4 py-3 backdrop-blur">
+                <div className="mb-1.5 text-center text-[10px] font-semibold uppercase tracking-wide text-(--color-fg-faint)">
+                  {d.common.preview}
+                </div>
+                <button type="button" style={leadButtonStyle(draft.buttonSpec)} tabIndex={-1}>
+                  {draft.buttonSpec.label || d.leadButton.appearance.labelPh}
+                </button>
+                {draft.buttonSpec.helper && (
+                  <p className="mt-1.5 text-center text-[11px] text-(--color-fg-faint)">{draft.buttonSpec.helper}</p>
+                )}
+              </div>
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label={d.leadButton.appearance.label}>
                   <Input

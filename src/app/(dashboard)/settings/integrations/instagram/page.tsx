@@ -52,6 +52,8 @@ function CallbackNotices() {
         meta_error: "Meta reported an authorization error.",
         not_configured:
           "This installation has no Meta app credentials yet, so Instagram cannot be opened. Complete the one-time setup shown on this page.",
+        instagram_app_missing:
+          "Instagram sign-in needs its own app ID and secret (META_INSTAGRAM_APP_ID / META_INSTAGRAM_APP_SECRET) — the Facebook ones do not work here. See the setup note on this page.",
       };
       toast.error("Instagram connection failed", { description: map[error] ?? error, duration: 10000 });
     }

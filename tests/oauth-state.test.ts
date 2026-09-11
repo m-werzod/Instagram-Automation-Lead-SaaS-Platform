@@ -41,6 +41,22 @@ describe("OAuth state (CSRF)", () => {
   });
 
   /**
+   * Regression guard. Instagram Login authenticates with the INSTAGRAM app id;
+   * passing the Facebook app id makes instagram.com reject the request with
+   * "Invalid platform app" before the user ever sees a consent screen.
+   */
+  it("each authorize URL uses its own platform's app id", () => {
+    const state = buildState({ mode: "INSTAGRAM_LOGIN", adminId: "a", nonce: "n" });
+
+    const ig = new URL(instagramAuthorizeUrl(state));
+    expect(ig.searchParams.get("client_id")).toBe("test-ig-app-id");
+    expect(ig.searchParams.get("client_id")).not.toBe("test-fb-app-id");
+
+    const fb = new URL(facebookAuthorizeUrl(state));
+    expect(fb.searchParams.get("client_id")).toBe("test-fb-app-id");
+  });
+
+  /**
    * Regression guard. Facebook rejects the ENTIRE authorization dialog with
    * "Invalid Scopes" if one requested permission is unavailable to the app.
    * An app set up for Instagram Login does not have the instagram_* or

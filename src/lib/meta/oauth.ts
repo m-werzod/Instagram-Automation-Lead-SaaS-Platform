@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { coreEnv, metaEnv } from "@/lib/env";
+import { coreEnv, instagramAppCredentials, metaEnv } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { MetaApiError, type MetaErrorBody } from "./client";
 
@@ -82,8 +82,10 @@ export function verifyState(state: string): OAuthStatePayload {
 
 export function instagramAuthorizeUrl(state: string): string {
   const env = metaEnv();
+  // NOTE: Instagram Login uses the INSTAGRAM app id, not the Facebook one.
+  const { appId } = instagramAppCredentials();
   const url = new URL("https://www.instagram.com/oauth/authorize");
-  url.searchParams.set("client_id", env.META_APP_ID);
+  url.searchParams.set("client_id", appId);
   url.searchParams.set("redirect_uri", env.META_REDIRECT_URI);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", IG_LOGIN_SCOPES.join(","));
@@ -146,9 +148,10 @@ export async function igExchangeCode(code: string): Promise<IgShortTokenResult> 
     permissions?: string[] | string;
     data?: Array<{ access_token: string; user_id: number | string; permissions?: string[] | string }>;
   };
+  const { appId, appSecret } = instagramAppCredentials();
   const json = await postForm<Shape>("https://api.instagram.com/oauth/access_token", {
-    client_id: env.META_APP_ID,
-    client_secret: env.META_APP_SECRET,
+    client_id: appId,
+    client_secret: appSecret,
     grant_type: "authorization_code",
     redirect_uri: env.META_REDIRECT_URI,
     code,
@@ -175,10 +178,10 @@ export interface LongLivedToken {
 
 /** Mode A step 2: short-lived → long-lived (~60 days). */
 export async function igExchangeLongLived(shortToken: string): Promise<LongLivedToken> {
-  const env = metaEnv();
+  const { appSecret } = instagramAppCredentials();
   const url = new URL("https://graph.instagram.com/access_token");
   url.searchParams.set("grant_type", "ig_exchange_token");
-  url.searchParams.set("client_secret", env.META_APP_SECRET);
+  url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("access_token", shortToken);
   const json = await getJson<{ access_token: string; expires_in: number }>(url);
   return { accessToken: json.access_token, expiresInSec: json.expires_in };

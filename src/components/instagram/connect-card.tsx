@@ -23,6 +23,9 @@ import { Badge, StatusDot } from "@/components/ui/badge";
 interface ConfigStatus {
   configured: boolean;
   missing: string[];
+  /** Instagram Login needs its own app credentials, separate from Facebook's. */
+  instagramLoginReady: boolean;
+  instagramMissing: string[];
   appId: string | null;
   redirectUri: string;
   webhookUrl: string;
@@ -90,7 +93,25 @@ export function InstagramConnectCard({ compact = false }: { compact?: boolean })
         {config === null && <p className="text-xs text-[--color-fg-muted]">Checking configuration…</p>}
 
         {/* ready → offer the real redirect */}
-        {config?.configured && (
+        {config?.configured && !config.instagramLoginReady && (
+          <div className="rounded-md border border-[--color-warn]/40 bg-[--color-warn]/10 p-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-[--color-warn]">
+              <AlertTriangle size={15} />
+              One more value needed for Instagram
+            </div>
+            <p className="mt-1.5 text-xs leading-5 text-[--color-fg-muted]">
+              Instagram sign-in uses its <b>own</b> app ID and secret — different from the Facebook ones. Without them
+              Instagram replies <code className="font-mono">Invalid platform app</code>. Still missing:{" "}
+              <span className="font-mono text-[--color-warn]">{config.instagramMissing.join(", ")}</span>
+            </p>
+            <p className="mt-2 text-xs leading-5 text-[--color-fg-muted]">
+              Find them in the Meta App Dashboard under <b>Instagram → API setup with Instagram login</b> →{" "}
+              <b>Business login settings</b>, then add them to your environment and redeploy.
+            </p>
+          </div>
+        )}
+
+        {config?.configured && config.instagramLoginReady && (
           <>
             <div className="flex flex-wrap gap-2">
               <Button asChild size="lg">

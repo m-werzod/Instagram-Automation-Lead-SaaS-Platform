@@ -15,9 +15,17 @@ export const GET = route(async () => {
   const missing = required.filter((key) => !process.env[key]?.trim());
   const appUrl = coreEnv().APP_URL;
 
+  // Instagram Login needs its OWN app id/secret; the Facebook ones make
+  // instagram.com reject the request with "Invalid platform app".
+  const instagramMissing = (["META_INSTAGRAM_APP_ID", "META_INSTAGRAM_APP_SECRET"] as const).filter(
+    (key) => !process.env[key]?.trim(),
+  );
+
   return ok({
     configured: missing.length === 0,
     missing,
+    instagramLoginReady: instagramMissing.length === 0,
+    instagramMissing,
     appId: process.env.META_APP_ID ? `${process.env.META_APP_ID.slice(0, 4)}…${process.env.META_APP_ID.slice(-4)}` : null,
     graphVersion: process.env.META_GRAPH_VERSION ?? "v25.0",
     redirectUri: process.env.META_REDIRECT_URI || `${appUrl}/api/meta/oauth/callback`,

@@ -78,6 +78,31 @@ export function emailEnv() {
   return parse(emailSchema, "Email (SMTP)");
 }
 
+/**
+ * Instagram Login (www.instagram.com/oauth/authorize) authenticates with the
+ * **Instagram app ID/secret**, which are DIFFERENT values from the Facebook app
+ * ID/secret used by graph.facebook.com. Passing the Facebook app ID makes
+ * Instagram reject the request with "Invalid platform app".
+ *
+ * Found in the App Dashboard under
+ *   Instagram → API setup with Instagram login → Business login settings.
+ */
+export function instagramAppCredentials(): { appId: string; appSecret: string } {
+  const appId = process.env.META_INSTAGRAM_APP_ID?.trim();
+  const appSecret = process.env.META_INSTAGRAM_APP_SECRET?.trim();
+  if (!appId || !appSecret) {
+    throw new ConfigError(
+      "Instagram Login",
+      "META_INSTAGRAM_APP_ID / META_INSTAGRAM_APP_SECRET are not set. These are the Instagram app credentials, not the Facebook ones — copy them from Instagram → API setup with Instagram login → Business login settings in the Meta App Dashboard.",
+    );
+  }
+  return { appId, appSecret };
+}
+
+export function isInstagramLoginConfigured(): boolean {
+  return Boolean(process.env.META_INSTAGRAM_APP_ID?.trim() && process.env.META_INSTAGRAM_APP_SECRET?.trim());
+}
+
 /** Non-throwing check — used by health/capability endpoints. */
 export function isMetaConfigured(): boolean {
   return metaSchema.safeParse(process.env).success;

@@ -3,7 +3,7 @@ import { route } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { buildState, facebookAuthorizeUrl, instagramAuthorizeUrl } from "@/lib/meta/oauth";
 import { randomToken } from "@/lib/crypto";
-import { coreEnv, isMetaConfigured } from "@/lib/env";
+import { coreEnv, isInstagramLoginConfigured, isMetaConfigured } from "@/lib/env";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("meta.oauth.start");
@@ -25,6 +25,13 @@ export const GET = route(async (req: NextRequest) => {
   }
 
   const mode = req.nextUrl.searchParams.get("mode") === "facebook" ? "FACEBOOK_LOGIN" : "INSTAGRAM_LOGIN";
+
+  // Instagram Login needs its own app credentials. Redirect back with an
+  // explanation rather than sending the admin to an "Invalid platform app" page.
+  if (mode === "INSTAGRAM_LOGIN" && !isInstagramLoginConfigured()) {
+    log.warn("Instagram connect attempted without Instagram app credentials");
+    return NextResponse.redirect(`${settingsUrl}?error=instagram_app_missing`);
+  }
   const state = buildState({ mode, adminId: auth.admin.id, nonce: randomToken(8) });
   const target = mode === "FACEBOOK_LOGIN" ? facebookAuthorizeUrl(state) : instagramAuthorizeUrl(state);
 

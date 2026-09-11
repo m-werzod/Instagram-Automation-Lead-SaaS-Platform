@@ -133,9 +133,21 @@ token exchange response / `/me?fields=...` probes) and persisted to `instagram_p
   `promoted_object.page_id`, creative referencing `lead_gen_form_id`. Instagram placement supported.
   Lead download needs `leads_retrieval` + `pages_manage_ads`, real-time via `leadgen` webhook. Page must
   accept Lead Ads TOS (`leadgen_tos_accepted`).
-- Access tiers: **development access** (default) can only reach a limited number of ad accounts you
-  administer with limited spend behavior — sufficient for this private tool; **standard access** needs
-  Meta review + business verification. Documented in UI when unavailable.
+- **Access tiers (verified 2026-09-11 against /docs/marketing-api/overview/authorization):**
+
+  | | **Limited Access** (default) | **Full Access** |
+  | --- | --- | --- |
+  | How to get it | Automatic when the Marketing API product is added — **no App Review** | App Review, plus ≥500 Marketing API calls in the past 15 days and an error rate under 15% |
+  | Ad accounts | Unlimited | Unlimited |
+  | Rate limits | Heavily rate-limited per ad account | Lightly rate-limited |
+  | System users | 1 standard + 1 admin | 10 standard + 1 admin |
+  | Data | **Production** — real campaigns, real spend | Production |
+
+  The key point for this platform: calls at **every** access level run against production data, so an
+  admin can create and run real ads on their own ad account **without App Review**. Meta labels Limited
+  Access "for development", but the constraint is throughput, not capability — and a private tool
+  creating a handful of campaigns never approaches those limits. App Review only becomes necessary at
+  high call volume or when managing ad accounts belonging to other businesses.
 
 ## 9. Honest limitations (things Meta does NOT allow — reflected in product design)
 

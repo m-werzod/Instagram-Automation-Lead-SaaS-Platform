@@ -11,14 +11,42 @@ import { MetaApiError, type MetaErrorBody } from "./client";
 
 export type ConnectMode = "INSTAGRAM_LOGIN" | "FACEBOOK_LOGIN";
 
-// Current scope names (renamed 2025-01-27 — old business_basic style is dead)
-export const IG_LOGIN_SCOPES = [
+/**
+ * Instagram Login scopes (names renamed 2025-01-27; the old business_basic
+ * style is dead).
+ *
+ * Only the three permissions Meta lists as REQUIRED for the Instagram API use
+ * case are requested by default. Instagram rejects the whole authorization with
+ * "Invalid Scopes" if any single requested permission is not enabled on the
+ * app, and content publishing / insights are OPTIONAL extras that an app does
+ * not have until they are explicitly added in the dashboard. Requesting them
+ * unconditionally would break the connection for every new installation.
+ *
+ * Enable the extras once they are added under Instagram → Permissions and
+ * features, via META_INSTAGRAM_EXTRA_SCOPES (comma-separated). Anything not
+ * granted simply shows as unavailable in the capability matrix.
+ */
+export const IG_REQUIRED_SCOPES = [
   "instagram_business_basic",
   "instagram_business_manage_messages",
   "instagram_business_manage_comments",
+] as const;
+
+export const IG_OPTIONAL_SCOPES = [
   "instagram_business_content_publish",
   "instagram_business_manage_insights",
 ] as const;
+
+export function igLoginScopes(): string[] {
+  const extra = (process.env.META_INSTAGRAM_EXTRA_SCOPES ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...IG_REQUIRED_SCOPES, ...extra])];
+}
+
+/** @deprecated kept for callers that only need the baseline set */
+export const IG_LOGIN_SCOPES = IG_REQUIRED_SCOPES;
 
 /**
  * Facebook Login is used for ONE job here: advertising (Marketing API).
@@ -88,7 +116,7 @@ export function instagramAuthorizeUrl(state: string): string {
   url.searchParams.set("client_id", appId);
   url.searchParams.set("redirect_uri", env.META_REDIRECT_URI);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", IG_LOGIN_SCOPES.join(","));
+  url.searchParams.set("scope", igLoginScopes().join(","));
   url.searchParams.set("state", state);
   return url.toString();
 }

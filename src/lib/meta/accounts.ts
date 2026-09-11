@@ -8,7 +8,7 @@ import {
   igExchangeCode,
   igExchangeLongLived,
   igRefreshLongLived,
-  IG_LOGIN_SCOPES,
+  igLoginScopes,
 } from "./oauth";
 import { getActiveToken, markTokenExpired, resolveAccess, storeToken } from "./tokens";
 import { AppError, notFound } from "@/lib/errors";
@@ -50,7 +50,8 @@ export async function finalizeInstagramLogin(code: string): Promise<ConnectResul
   });
 
   const igUserId = String(profile.user_id ?? short.igUserId);
-  const scopes = short.permissions.length > 0 ? short.permissions : [...IG_LOGIN_SCOPES];
+  // Prefer what Instagram actually granted; fall back to what we asked for.
+  const scopes = short.permissions.length > 0 ? short.permissions : igLoginScopes();
 
   const account = await prisma.instagramAccount.upsert({
     where: { igUserId },

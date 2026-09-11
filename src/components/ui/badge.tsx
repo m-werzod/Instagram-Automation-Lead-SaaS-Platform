@@ -3,10 +3,11 @@ import { cn } from "@/lib/utils";
 
 const styles: Record<string, string> = {
   default: "bg-[--color-panel-2] text-[--color-fg-muted] border-[--color-border-strong]",
-  ok: "bg-[--color-ok]/10 text-[--color-ok] border-[--color-ok]/30",
-  warn: "bg-[--color-warn]/10 text-[--color-warn] border-[--color-warn]/30",
-  danger: "bg-[--color-danger]/10 text-[--color-danger] border-[--color-danger]/30",
-  accent: "bg-[--color-accent]/10 text-[--color-accent] border-[--color-accent]/30",
+  ok: "bg-[--color-ok-soft] text-[--color-ok] border-[--color-ok]/25",
+  warn: "bg-[--color-warn-soft] text-[--color-warn] border-[--color-warn]/25",
+  danger: "bg-[--color-danger-soft] text-[--color-danger] border-[--color-danger]/25",
+  accent: "bg-[--color-accent-soft] text-[--color-accent] border-[--color-accent]/25",
+  info: "bg-[--color-info-soft] text-[--color-info] border-[--color-info]/25",
 };
 
 export function Badge({
@@ -17,7 +18,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium leading-4",
+        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium leading-4",
         styles[tone],
         className,
       )}

@@ -3,20 +3,40 @@
 import * as React from "react";
 import Link from "next/link";
 import { toast } from "sonner";
+import {
+  BarChart3,
+  CircleDashed,
+  ExternalLink,
+  Eye,
+  Film,
+  Heart,
+  Image as ImageIcon,
+  Instagram,
+  Megaphone,
+  MessageCircle,
+  MousePointerClick,
+  RefreshCw,
+  Sparkles,
+} from "lucide-react";
 import { api } from "@/lib/client/api";
+import { useI18n } from "@/lib/i18n/provider";
 import { useAccounts } from "@/components/shell/account-context";
-import { Card, CardBody } from "@/components/ui/card";
+import { PageHeader, EmptyState } from "@/components/ui/page-header";
+import { Card, IconChip } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Field, Input, Select } from "@/components/ui/input";
-import { PageHeader, EmptyState } from "@/components/ui/page-header";
-import { RefreshCw } from "lucide-react";
-import { formatDate, truncate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import type { Dictionary } from "@/lib/i18n/dictionaries";
+
+/**
+ * Posts & Reels library — a visual grid of everything the account published.
+ * Sync pulls fresh media through the official API; each card offers AI
+ * analysis, an insights refresh, promotion and the Lead Button hand-off.
+ * CTA configuration itself lives on the dedicated /lead-button page.
+ */
 
 interface ContentRow {
   id: string;
-  mediaId: string;
   mediaType: string;
   mediaProductType: string | null;
   caption: string | null;
@@ -31,29 +51,45 @@ interface ContentRow {
   analysis: {
     leadPotential: string | null;
     recommendedCta: string | null;
-    recommendedObjective: string | null;
-    recommendedCopy: string | null;
     topic: string | null;
-    audience: string | null;
-    reasoning: string | null;
-    captionQuality: string | null;
   } | null;
-  ctaConfigs: Array<{ id: string; name: string; kind: string; enabled: boolean }>;
-  _count: { campaigns: number; leads: number };
+}
+
+type Potential = "LOW" | "MEDIUM" | "HIGH";
+
+const POTENTIAL_TONE: Record<Potential, "default" | "warn" | "ok"> = {
+  LOW: "default",
+  MEDIUM: "warn",
+  HIGH: "ok",
+};
+
+function asPotential(v: string | null | undefined): Potential | null {
+  return v === "LOW" || v === "MEDIUM" || v === "HIGH" ? v : null;
+}
+
+/** REELS → reel, STORY → story, FEED (and anything else) → post. */
+function mediaKind(item: ContentRow): "reel" | "post" | "story" {
+  if (item.mediaProductType === "REELS") return "reel";
+  if (item.mediaProductType === "STORY") return "story";
+  return "post";
 }
 
 export default function ContentPage() {
-  const { selected } = useAccounts();
+  const { d } = useI18n();
+  const { selected, loading: accountsLoading } = useAccounts();
   const [items, setItems] = React.useState<ContentRow[] | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     if (!selected) return;
-    const data = await api<{ items: ContentRow[] }>(`/api/content?accountId=${selected.id}`, { silent: true });
+    const data = await api<{ items: ContentRow[] }>(`/api/content?accountId=${selected.id}`, { silent: true }).catch(
+      () => ({ items: [] as ContentRow[] }),
+    );
     setItems(data.items);
   }, [selected]);
 
   React.useEffect(() => {
+    setItems(null);
     void load();
   }, [load]);
 
@@ -62,8 +98,10 @@ export default function ContentPage() {
     setBusy("sync");
     try {
       const res = await api<{ synced: number }>(`/api/instagram/accounts/${selected.id}/sync`, { method: "POST" });
-      toast.success(`Synced ${res.synced} media items from Instagram`);
+      toast.success(d.content.syncedOk(res.synced));
       await load();
+    } catch {
+      /* error toast shown by api() */
     } finally {
       setBusy(null);
     }
@@ -73,8 +111,10 @@ export default function ContentPage() {
     setBusy(item.id);
     try {
       await api(`/api/content/${item.id}/analyze`, { method: "POST" });
-      toast.success("AI analysis complete");
+      toast.success(d.common.done);
       await load();
+    } catch {
+      /* error toast shown by api() */
     } finally {
       setBusy(null);
     }
@@ -84,292 +124,240 @@ export default function ContentPage() {
     setBusy(item.id + ":ins");
     try {
       await api(`/api/content/${item.id}/insights`, { method: "POST" });
+      toast.success(d.common.done);
       await load();
-      toast.success("Insights refreshed");
+    } catch {
+      /* error toast shown by api() */
     } finally {
       setBusy(null);
     }
   }
 
-  if (!selected) return <p className="text-sm text-[--color-fg-muted]">Connect an Instagram account first.</p>;
+  /* ---------- guards ---------- */
+
+  if (accountsLoading || (selected && items === null)) {
+    return <div className="py-20 text-center text-sm text-[--color-fg-muted]">{d.common.loading}</div>;
+  }
+
+  if (!selected) {
+    return (
+      <>
+        <PageHeader title={d.content.title} description={d.content.subtitle} accent="var(--color-mod-content)" />
+        <EmptyState
+          icon={
+            <IconChip color="var(--color-mod-instagram)" size={48}>
+              <Instagram size={22} />
+            </IconChip>
+          }
+          title={d.shell.noAccount}
+          action={
+            <Button asChild variant="instagram">
+              <Link href="/instagram">{d.leadButton.goConnect}</Link>
+            </Button>
+          }
+        />
+      </>
+    );
+  }
+
+  const list = items ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5">
+    <>
       <PageHeader
-        title="Posts & Reels"
-        description={`Content published by @${selected.username}, pulled through the official API. "Analyze with AI" reads the caption and engagement numbers (it cannot watch the video) and only ever suggests — it never posts or promotes anything on its own.`}
+        title={d.content.title}
+        description={
+          <>
+            {d.content.subtitle} — <span className="font-medium text-[--color-fg]">@{selected.username}</span>
+          </>
+        }
         accent="var(--color-mod-content)"
         actions={
           <Button onClick={sync} disabled={busy === "sync"}>
             <RefreshCw size={15} className={busy === "sync" ? "animate-spin" : undefined} />
-            {busy === "sync" ? "Syncing…" : "Sync from Instagram"}
+            {busy === "sync" ? d.content.syncing : d.content.sync}
           </Button>
         }
       />
 
-      {items?.length === 0 && (
+      {list.length === 0 ? (
         <EmptyState
-          title="No posts loaded yet"
-          description="Pull your published posts and Reels from Instagram to analyse them and attach call-to-action flows."
+          icon={
+            <IconChip color="var(--color-mod-content)" size={48}>
+              <Film size={22} />
+            </IconChip>
+          }
+          title={d.content.empty}
           action={
             <Button onClick={sync} disabled={busy === "sync"}>
-              <RefreshCw size={15} /> Sync from Instagram
+              <RefreshCw size={15} className={busy === "sync" ? "animate-spin" : undefined} />
+              {busy === "sync" ? d.content.syncing : d.content.sync}
             </Button>
           }
         />
-      )}
-
-      <div className="grid gap-4 md:grid-cols-2">
-        {items?.map((item) => (
-          <Card key={item.id}>
-            <CardBody className="flex gap-3">
-              <MediaThumb item={item} />
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge tone="accent">{item.mediaProductType ?? item.mediaType}</Badge>
-                  {item.isDemo && <Badge tone="warn">DEMO</Badge>}
-                  <span className="text-[11px] text-[--color-fg-faint]">{formatDate(item.timestamp)}</span>
-                </div>
-                <p className="text-xs leading-5 text-[--color-fg-muted]">{truncate(item.caption, 140) || "(no caption)"}</p>
-                <div className="flex flex-wrap gap-3 text-[11px] text-[--color-fg-faint]">
-                  <span>♥ {item.likeCount ?? "—"}</span>
-                  <span>💬 {item.commentsCount ?? "—"}</span>
-                  {item.insights?.views !== undefined && <span>views {item.insights.views}</span>}
-                  {item.insights?.reach !== undefined && <span>reach {item.insights.reach}</span>}
-                  {item.permalink && (
-                    <a className="text-[--color-accent] underline" href={item.permalink} target="_blank" rel="noreferrer">
-                      open ↗
-                    </a>
-                  )}
-                </div>
-
-                {item.analysis && (
-                  <div className="rounded-md border border-[--color-border] bg-[--color-panel-2] p-2 text-[11px] leading-4">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">AI analysis</span>
-                      <Badge tone={item.analysis.leadPotential === "HIGH" ? "ok" : item.analysis.leadPotential === "MEDIUM" ? "warn" : "default"}>
-                        Lead potential: {item.analysis.leadPotential}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 text-[--color-fg-muted]">
-                      Suggested CTA: <b>{item.analysis.recommendedCta}</b> · Objective: <b>{item.analysis.recommendedObjective}</b>
-                      <br />
-                      {item.analysis.reasoning}
-                    </div>
-                  </div>
-                )}
-
-                {item.ctaConfigs.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {item.ctaConfigs.map((cta) => (
-                      <Badge key={cta.id} tone={cta.enabled ? "ok" : "default"}>
-                        CTA: {cta.name} ({cta.kind})
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  <Button size="sm" variant="secondary" onClick={() => analyze(item)} disabled={busy === item.id}>
-                    {busy === item.id ? "Analyzing…" : item.analysis ? "Re-analyze" : "Analyze with AI"}
-                  </Button>
-                  {!item.isDemo && (
-                    <Button size="sm" variant="ghost" onClick={() => refreshInsights(item)} disabled={busy === item.id + ":ins"}>
-                      Insights
-                    </Button>
-                  )}
-                  <CtaConfigDialog item={item} accountId={selected.id} onSaved={load} />
-                  <Button asChild size="sm" variant="ghost">
-                    <Link href={`/campaigns?contentId=${item.id}`}>Create campaign</Link>
-                  </Button>
-                </div>
-              </div>
-            </CardBody>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function MediaThumb({ item }: { item: ContentRow }) {
-  const src = item.thumbnailUrl ?? item.mediaUrl;
-  return (
-    <div className="grid h-24 w-24 shrink-0 place-items-center overflow-hidden rounded-md border border-[--color-border] bg-[--color-panel-2] text-[10px] text-[--color-fg-faint]">
-      {src ? (
-        // Instagram CDN URLs expire; render best-effort without next/image optimization
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt="" className="h-full w-full object-cover" />
       ) : (
-        <span>{item.mediaProductType === "REELS" ? "REEL" : item.mediaType}</span>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4 xl:grid-cols-5">
+          {list.map((item) => (
+            <MediaCard
+              key={item.id}
+              item={item}
+              d={d}
+              busy={busy}
+              onAnalyze={() => analyze(item)}
+              onInsights={() => refreshInsights(item)}
+            />
+          ))}
+        </div>
       )}
-    </div>
+    </>
   );
 }
 
-function CtaConfigDialog({ item, accountId, onSaved }: { item: ContentRow; accountId: string; onSaved: () => Promise<void> }) {
-  const [open, setOpen] = React.useState(false);
-  const [kind, setKind] = React.useState<"MESSAGING" | "EXTERNAL_LINK" | "CREATIVE_OVERLAY" | "AD_NATIVE">("MESSAGING");
-  const [name, setName] = React.useState("Sign-up CTA");
-  const [flows, setFlows] = React.useState<Array<{ id: string; name: string }>>([]);
-  const [flowId, setFlowId] = React.useState("");
-  const [keyword, setKeyword] = React.useState("kurs");
-  const [url, setUrl] = React.useState("");
-  const [ctaType, setCtaType] = React.useState("SIGN_UP");
-  const [overlayText, setOverlayText] = React.useState("SIGN UP — DM us \"kurs\"");
-  const [overlayPos, setOverlayPos] = React.useState<"bottom" | "top" | "center">("bottom");
-  const [nativeTypes, setNativeTypes] = React.useState<Array<{ value: string; label: string }>>([]);
-  const [createLanding, setCreateLanding] = React.useState(true);
-  const [busy, setBusy] = React.useState(false);
+/* ---------- media card ---------- */
 
-  React.useEffect(() => {
-    if (!open) return;
-    api<{ flows: Array<{ id: string; name: string }> }>(`/api/lead-flows?accountId=${accountId}`, { silent: true })
-      .then((d) => {
-        setFlows(d.flows);
-        if (d.flows[0]) setFlowId(d.flows[0].id);
-      })
-      .catch(() => undefined);
-    api<{ nativeCtaTypes: Array<{ value: string; label: string }> }>(`/api/cta?accountId=${accountId}`, { silent: true })
-      .then((d) => setNativeTypes(d.nativeCtaTypes))
-      .catch(() => undefined);
-  }, [open, accountId]);
-
-  async function submit() {
-    setBusy(true);
-    try {
-      await api("/api/cta", {
-        method: "POST",
-        json: {
-          accountId,
-          contentId: item.id,
-          name,
-          kind,
-          ctaType: kind === "AD_NATIVE" ? ctaType : null,
-          url: kind === "EXTERNAL_LINK" && !createLanding ? url : null,
-          leadFlowId: kind === "AD_NATIVE" ? null : flowId || null,
-          overlaySpec:
-            kind === "CREATIVE_OVERLAY"
-              ? { text: overlayText, position: overlayPos, bgColor: "#10b981", textColor: "#ffffff" }
-              : null,
-          messagingKeyword: kind === "MESSAGING" ? keyword : null,
-          createLandingPage: kind === "EXTERNAL_LINK" && createLanding,
-        },
-      });
-      toast.success("CTA configuration saved");
-      setOpen(false);
-      await onSaved();
-    } finally {
-      setBusy(false);
-    }
-  }
+function MediaCard({
+  item,
+  d,
+  busy,
+  onAnalyze,
+  onInsights,
+}: {
+  item: ContentRow;
+  d: Dictionary;
+  busy: string | null;
+  onAnalyze: () => void;
+  onInsights: () => void;
+}) {
+  const kind = mediaKind(item);
+  const kindLabel = d.content[kind];
+  const KindIcon = kind === "reel" ? Film : kind === "story" ? CircleDashed : ImageIcon;
+  const potential = asPotential(item.analysis?.leadPotential);
+  const aiDetail = item.analysis ? [item.analysis.recommendedCta, item.analysis.topic].filter(Boolean).join(" · ") : "";
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button size="sm" variant="ghost" onClick={() => setOpen(true)}>
-        Configure CTA
-      </Button>
-      <DialogContent
-        wide
-        title="Configure CTA"
-        description="Meta does not allow adding buttons to organic posts, or styling/repositioning native ad CTAs. Each option below is labeled with what it really is."
-      >
-        <div className="space-y-3">
-          <Field label="CTA name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </Field>
-          <Field label="Kind">
-            <Select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-              <option value="MESSAGING">MESSAGING — keyword in DM/comment starts the lead flow (organic, free)</option>
-              <option value="EXTERNAL_LINK">EXTERNAL LANDING PAGE — hosted form link for bio/caption</option>
-              <option value="CREATIVE_OVERLAY">CREATIVE OVERLAY — visual CTA rendered into the creative (not a button)</option>
-              <option value="AD_NATIVE">NATIVE META CTA — real ad button (requires Facebook-Login mode + campaign)</option>
-            </Select>
-          </Field>
+    <Card className="group flex flex-col overflow-hidden transition-shadow hover:shadow-md">
+      <MediaImage item={item} alt={kindLabel}>
+        {/* type + demo chips */}
+        <div className="absolute left-1.5 top-1.5 flex items-center gap-1">
+          <span className="inline-flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+            <KindIcon size={10} /> {kindLabel}
+          </span>
+          {item.isDemo && (
+            <span className="rounded-md bg-[--color-warn] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white">
+              {d.shell.demo}
+            </span>
+          )}
+        </div>
 
-          {kind === "MESSAGING" && (
-            <>
-              <Field label="Trigger keyword" hint='User DMs this word → the lead flow starts (e.g. caption says: DM "kurs")'>
-                <Input value={keyword} onChange={(e) => setKeyword(e.target.value)} />
-              </Field>
-              <FlowSelect flows={flows} value={flowId} onChange={setFlowId} />
-            </>
+        {/* open on Instagram */}
+        {item.permalink && (
+          <a
+            href={item.permalink}
+            target="_blank"
+            rel="noreferrer"
+            title={d.common.open}
+            className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-md bg-black/45 text-white transition-colors hover:bg-black/70"
+          >
+            <ExternalLink size={12} />
+          </a>
+        )}
+
+        {/* engagement strip */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2.5 bg-gradient-to-t from-black/70 via-black/25 to-transparent px-2 pb-1.5 pt-8 text-[11px] font-medium text-white">
+          <span className="inline-flex items-center gap-1" title={d.content.likes}>
+            <Heart size={11} /> {item.likeCount ?? "—"}
+          </span>
+          <span className="inline-flex items-center gap-1" title={d.content.comments}>
+            <MessageCircle size={11} /> {item.commentsCount ?? "—"}
+          </span>
+          {typeof item.insights?.views === "number" && (
+            <span className="ml-auto inline-flex items-center gap-1" title={d.content.insights}>
+              <Eye size={11} /> {item.insights.views}
+            </span>
           )}
-          {kind === "EXTERNAL_LINK" && (
-            <>
-              <label className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={createLanding} onChange={(e) => setCreateLanding(e.target.checked)} />
-                Host a landing page on this platform (form is built from the lead flow)
-              </label>
-              {createLanding ? (
-                <FlowSelect flows={flows} value={flowId} onChange={setFlowId} />
-              ) : (
-                <Field label="External URL">
-                  <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
-                </Field>
+        </div>
+      </MediaImage>
+
+      <div className="flex flex-1 flex-col gap-2 p-2.5">
+        <p className="line-clamp-2 min-h-10 text-xs leading-5 text-[--color-fg-muted]" title={item.caption ?? undefined}>
+          {item.caption}
+        </p>
+        <div className="text-[10px] text-[--color-fg-faint]">{formatDate(item.timestamp)}</div>
+
+        {/* AI verdict */}
+        {item.analysis && (
+          <div className="rounded-lg border border-[--color-mod-ai]/25 bg-[--color-mod-ai]/10 p-2">
+            <div className="flex flex-wrap items-center justify-between gap-1">
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[--color-mod-ai]">
+                <Sparkles size={11} /> {d.content.aiSays}
+              </span>
+              {potential && (
+                <Badge tone={POTENTIAL_TONE[potential]} title={d.content.leadPotential} className="px-1 py-0">
+                  {d.content.potential[potential]}
+                </Badge>
               )}
-            </>
+            </div>
+            {aiDetail && <p className="mt-1 line-clamp-3 text-[11px] leading-4 text-[--color-fg]">{aiDetail}</p>}
+          </div>
+        )}
+
+        <div className="mt-auto flex flex-col gap-1.5 pt-1">
+          {!item.analysis && (
+            <Button size="sm" variant="secondary" className="w-full" disabled={busy === item.id} onClick={onAnalyze}>
+              <Sparkles size={13} className="text-[--color-mod-ai]" />
+              {busy === item.id ? d.content.analyzing : d.content.analyze}
+            </Button>
           )}
-          {kind === "CREATIVE_OVERLAY" && (
-            <>
-              <Field label="Overlay text (burned into the creative before publishing — this is a visual element, NOT a clickable button)">
-                <Input value={overlayText} onChange={(e) => setOverlayText(e.target.value)} maxLength={60} />
-              </Field>
-              <Field label="Position">
-                <Select value={overlayPos} onChange={(e) => setOverlayPos(e.target.value as typeof overlayPos)}>
-                  <option value="bottom">Below / bottom of video</option>
-                  <option value="top">Top of video</option>
-                  <option value="center">Center</option>
-                </Select>
-              </Field>
-            </>
-          )}
-          {kind === "AD_NATIVE" && (
-            <>
-              <Field
-                label="Native CTA button type (fixed position & style — Meta renders it, we cannot move or recolor it)"
-                hint="Applied when you promote this post via Campaigns. Requires Facebook-Login connection mode."
+          <Button asChild size="sm" variant="secondary" className="h-auto min-h-7 w-full whitespace-normal py-1 text-center">
+            <Link href="/lead-button">
+              <MousePointerClick size={13} /> {d.content.useForLeadButton}
+            </Link>
+          </Button>
+          <div className="flex gap-1.5">
+            <Button asChild size="sm" variant="ghost" className="flex-1">
+              <Link href={`/campaigns?new=1&contentId=${item.id}`}>
+                <Megaphone size={13} /> {d.content.promote}
+              </Link>
+            </Button>
+            {!item.isDemo && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="flex-1"
+                disabled={busy === item.id + ":ins"}
+                onClick={onInsights}
               >
-                <Select value={ctaType} onChange={(e) => setCtaType(e.target.value)}>
-                  {nativeTypes.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label} ({t.value})
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            </>
-          )}
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={submit} disabled={busy}>
-              {busy ? "Saving…" : "Save CTA"}
-            </Button>
+                <BarChart3 size={13} /> {d.content.insights}
+              </Button>
+            )}
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </Card>
   );
 }
 
-function FlowSelect({ flows, value, onChange }: { flows: Array<{ id: string; name: string }>; value: string; onChange: (v: string) => void }) {
+/** 4:5 media area with a graceful gradient fallback (Instagram CDN URLs expire). */
+function MediaImage({ item, alt, children }: { item: ContentRow; alt: string; children?: React.ReactNode }) {
+  const [ok, setOk] = React.useState(true);
+  const src = item.thumbnailUrl ?? item.mediaUrl;
   return (
-    <Field label="Lead flow">
-      {flows.length === 0 ? (
-        <p className="text-xs text-[--color-warn]">
-          No lead flows yet — create one under CRM · Lead Flows first.
-        </p>
+    <div className="relative aspect-[4/5] w-full overflow-hidden bg-[--color-panel-2]">
+      {src && ok ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          onError={() => setOk(false)}
+        />
       ) : (
-        <Select value={value} onChange={(e) => onChange(e.target.value)}>
-          {flows.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </Select>
+        <span className="grid h-full w-full place-items-center bg-gradient-to-br from-fuchsia-500 to-indigo-600 text-white">
+          <Film size={28} />
+        </span>
       )}
-    </Field>
+      {children}
+    </div>
   );
 }

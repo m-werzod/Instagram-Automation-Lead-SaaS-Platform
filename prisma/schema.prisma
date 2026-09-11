@@ -514,6 +514,8 @@ model Lead {
   content        ContentItem?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
   flowId         String?
   flow           LeadFlow?        @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  ctaConfigId    String? // which Lead Button captured this lead
+  ctaConfig      CtaConfig?       @relation(fields: [ctaConfigId], references: [id], onDelete: SetNull)
   status         LeadStatus       @default(NEW)
   notes          String?          @db.Text
   isDemo         Boolean          @default(false)
@@ -524,6 +526,7 @@ model Lead {
 
   @@index([accountId, status])
   @@index([accountId, createdAt])
+  @@index([ctaConfigId])
 }
 
 model LeadEvent {
@@ -555,8 +558,11 @@ model CtaConfig {
   leadFlowId       String?
   overlaySpec      Json? // CREATIVE_OVERLAY: {text, position, bgColor, textColor} — visual only
   messagingKeyword String? // MESSAGING: comment/DM keyword trigger
+  buttonSpec       Json? // Lead Button appearance {label, helper, bg, fg, border, shape, size, style} — rendered on /f/{slug} and in the builder preview
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
+
+  leads Lead[]
 
   @@index([accountId])
 }

@@ -310,6 +310,12 @@ async function completeSession(sessionId: string): Promise<StepOutcome> {
   }
   const answersJson = byOrder.map((a) => ({ question: a.question.title, answer: a.value }));
 
+  // Attribute the lead to the Lead Button config built on this flow (if any).
+  const ctaConfig = await prisma.ctaConfig.findFirst({
+    where: { accountId: session.accountId, leadFlowId: session.flowId },
+    select: { id: true },
+  });
+
   const lead = await prisma.lead.create({
     data: {
       accountId: session.accountId,
@@ -321,6 +327,7 @@ async function completeSession(sessionId: string): Promise<StepOutcome> {
       answers: answersJson as unknown as Prisma.InputJsonValue,
       source: "instagram_dm",
       flowId: session.flowId,
+      ctaConfigId: ctaConfig?.id ?? null,
       status: "NEW",
     },
   });

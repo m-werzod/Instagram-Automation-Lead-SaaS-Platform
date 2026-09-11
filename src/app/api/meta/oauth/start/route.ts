@@ -17,7 +17,7 @@ const log = createLogger("meta.oauth.start");
  */
 export const GET = route(async (req: NextRequest) => {
   const auth = await requireAdmin();
-  const settingsUrl = `${coreEnv().APP_URL}/settings/integrations/instagram`;
+  const settingsUrl = `${coreEnv().APP_URL}/instagram`;
 
   if (!isMetaConfigured()) {
     log.warn("connect attempted before Meta app credentials were configured");

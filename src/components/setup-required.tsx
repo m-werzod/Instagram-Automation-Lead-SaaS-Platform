@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { AlertTriangle, Database, KeyRound, Link2, RefreshCw } from "lucide-react";
+import { useI18n } from "@/lib/i18n/provider";
 
 /**
  * Shown instead of the sign-in form when the installation has no working
@@ -23,18 +24,16 @@ const ICONS: Record<string, typeof Database> = {
 };
 
 export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; platform?: string | null }) {
+  const { d } = useI18n();
   const onVercel = platform === "vercel";
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-2.5 rounded-md border border-[--color-warn]/40 bg-[--color-warn]/10 px-3 py-2.5">
+      <div className="flex items-start gap-2.5 rounded-lg bg-[--color-warn-soft] px-3 py-2.5">
         <AlertTriangle size={16} className="mt-0.5 shrink-0 text-[--color-warn]" />
         <div>
-          <p className="text-sm font-medium text-[--color-warn]">Setup required — this is not a password problem</p>
-          <p className="mt-1 text-xs leading-5 text-[--color-fg-muted]">
-            No account can sign in yet because this deployment has no database and no encryption keys. Sign-in works as
-            soon as the values below are set.
-          </p>
+          <p className="text-sm font-medium text-[--color-warn]">{d.setup.title}</p>
+          <p className="mt-1 text-xs leading-5 text-[--color-fg-muted]">{d.setup.text}</p>
         </div>
       </div>
 
@@ -59,7 +58,7 @@ export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; 
       </ol>
 
       <div className="rounded-md border border-[--color-border] bg-[--color-panel-2] p-3">
-        <p className="text-xs font-medium">Where to put these</p>
+        <p className="text-xs font-medium">{d.setup.docs}</p>
         <p className="mt-1 text-[11px] leading-5 text-[--color-fg-muted]">
           {onVercel ? (
             <>
@@ -81,10 +80,10 @@ export function SetupRequired({ missing, platform }: { missing: MissingCheck[]; 
 
       <button
         onClick={() => window.location.reload()}
-        className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[--color-border-strong] text-sm font-medium text-[--color-fg] transition-colors hover:bg-[--color-panel-2]"
+        className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-[--color-border-strong] text-sm font-medium text-[--color-fg] transition-colors hover:bg-[--color-panel-2]"
       >
         <RefreshCw size={14} />
-        I&apos;ve set them — check again
+        {d.common.tryAgain}
       </button>
     </div>
   );

@@ -1,53 +1,63 @@
 @import "tailwindcss";
 
 /*
- * Control-center theme.
- * Colour is used as INFORMATION, never decoration:
+ * Bright SaaS theme — light-first, friendly, colour used as INFORMATION:
  *   green  = on / healthy / success
  *   red    = off / error / destructive
  *   amber  = needs attention / costs money
- *   blue   = primary action / neutral info
- * Each product module also owns a hue so the sidebar is scannable at a glance.
+ *   indigo = primary action
+ * Each product module owns a hue so a section is recognisable before reading.
  */
 @theme {
-  /* surfaces — layered, with clear separation between levels */
-  --color-bg: #0d1117;
-  --color-panel: #161b22;
-  --color-panel-2: #1d2431;
-  --color-panel-3: #252d3d;
-  --color-border: #2c3444;
-  --color-border-strong: #3d4759;
+  /* surfaces — soft cool background, white panels, layered subtly */
+  --color-bg: #f4f6fb;
+  --color-panel: #ffffff;
+  --color-panel-2: #f4f6fa;
+  --color-panel-3: #e9edf5;
+  --color-border: #e4e9f2;
+  --color-border-strong: #cbd5e4;
 
-  /* text — raised contrast for readability */
-  --color-fg: #f2f5fa;
-  --color-fg-muted: #aeb9c9;
-  --color-fg-faint: #7f8b9e;
+  /* text — slate, high contrast on white */
+  --color-fg: #101828;
+  --color-fg-muted: #51607a;
+  --color-fg-faint: #8494ac;
 
   /* semantic */
-  --color-accent: #3b82f6;
-  --color-accent-hover: #2563eb;
-  --color-ok: #22c55e;
-  --color-warn: #f59e0b;
-  --color-danger: #ef4444;
-  --color-info: #06b6d4;
-  --color-on: #22c55e;
-  --color-off: #6b7280;
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-soft: #eef2ff;
+  --color-ok: #16a34a;
+  --color-ok-soft: #e8f7ee;
+  --color-warn: #d97706;
+  --color-warn-soft: #fdf3e2;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fdecec;
+  --color-info: #0e7fa8;
+  --color-info-soft: #e6f5fa;
+  --color-on: #16a34a;
+  --color-off: #94a3b8;
 
-  /* module hues (sidebar icons, page accents) */
-  --color-mod-overview: #3b82f6;
-  --color-mod-instagram: #ec4899;
-  --color-mod-ai: #a855f7;
-  --color-mod-content: #06b6d4;
-  --color-mod-leads: #22c55e;
-  --color-mod-ads: #f59e0b;
-  --color-mod-system: #94a3b8;
+  /* module hues (sidebar icons, page accents) — darkened for light surfaces */
+  --color-mod-overview: #2563eb;
+  --color-mod-instagram: #db2777;
+  --color-mod-ai: #7c3aed;
+  --color-mod-content: #0891b2;
+  --color-mod-leads: #16a34a;
+  --color-mod-ads: #d97706;
+  --color-mod-system: #64748b;
+
+  /* Instagram brand gradient — used ONLY for Instagram-branded moments */
+  --gradient-instagram: linear-gradient(45deg, #f58529, #dd2a7b, #8134af, #515bd4);
 
   --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
+
+  --shadow-card: 0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.06);
+  --shadow-pop: 0 4px 6px -2px rgb(16 24 40 / 0.05), 0 12px 16px -4px rgb(16 24 40 / 0.1);
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
@@ -59,7 +69,7 @@ body {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
 }
 
 * {
@@ -87,8 +97,56 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
+/* Colour swatch inputs look like swatches, not text fields. */
+input[type="color"] {
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+}
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+input[type="color"]::-webkit-color-swatch {
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+}
+
 /* Visible keyboard focus everywhere, without doubling up on mouse click. */
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
+}
+
+/* Instagram-gradient utility for brand moments (logo chip, connect button). */
+.ig-gradient {
+  background: var(--gradient-instagram);
+}
+.ig-gradient-text {
+  background: var(--gradient-instagram);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Phone mockup helpers (Lead Button preview) */
+.phone-frame {
+  aspect-ratio: 9 / 19;
+  border-radius: 2rem;
+  border: 6px solid #1a1a1f;
+  background: #000;
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  position: relative;
+}
+.phone-notch {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 5rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  background: #1a1a1f;
+  z-index: 30;
 }

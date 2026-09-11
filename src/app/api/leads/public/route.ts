@@ -60,6 +60,7 @@ export const POST = route(async (req: NextRequest) => {
       source: "landing_page",
       contentId: cta.contentId,
       flowId: flow.id,
+      ctaConfigId: cta.id, // attribute the lead to the Lead Button that captured it
       status: "NEW",
     },
   });

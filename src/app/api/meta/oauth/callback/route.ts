@@ -14,7 +14,7 @@ const log = createLogger("meta.oauth.callback");
 export async function GET(req: NextRequest) {
   const base = coreEnv().APP_URL;
   const done = (params: Record<string, string>) =>
-    NextResponse.redirect(`${base}/settings/integrations/instagram?${new URLSearchParams(params)}`);
+    NextResponse.redirect(`${base}/instagram?${new URLSearchParams(params)}`);
 
   const search = req.nextUrl.searchParams;
   const error = search.get("error") ?? search.get("error_reason");

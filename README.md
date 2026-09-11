@@ -1,9 +1,18 @@
-# Instagram Automation Control Center
+# Instagram Automation — Lead Platform
 
-Private, admin-only Instagram automation platform: official Meta OAuth account connection, AI agents
-(Anthropic / OpenAI / Google) answering DMs with a permission-tiered tool system, sequential DM lead flows,
-lightweight CRM with email notifications, honest CTA tooling, Marketing-API campaigns with hard spend
-safeguards, automations, analytics, and a full audit trail.
+Private, admin-only Instagram automation platform built around the **Lead Button**: a visually
+configurable button (colors, shape, size, texts) that sends Instagram viewers into an admin-designed
+question flow and lands every answer in the built-in CRM. Also: official Meta OAuth account connection,
+AI agents (Anthropic / OpenAI / Google) answering DMs, DM keyword lead flows, email notifications,
+Marketing-API campaigns with hard spend safeguards, automations, analytics, and a full audit trail.
+
+**UI languages:** O‘zbekcha (default) · English · Русский — switchable from the header; the whole
+interface is dictionary-driven (`src/lib/i18n/`).
+
+The Lead Button reaches customers through three honest, API-supported paths (no faked Instagram
+features): a hosted landing page (`/f/{slug}`) usable in bio/Stories/anywhere, DM/comment code words
+that start the questions inside Instagram, and a real native CTA button under a promoted Reel via the
+Marketing API (Instagram renders that button; only its text is configurable).
 
 **Read first:** [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) (architecture & decisions) and
 [docs/META_API.md](docs/META_API.md) (verified Meta capabilities **and limitations** — nothing in this

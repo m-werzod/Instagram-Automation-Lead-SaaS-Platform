@@ -1,9 +1,10 @@
 import type { Campaign, InstagramAccount } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { AppError, metaUnsupported } from "@/lib/errors";
-import { createLogger } from "@/lib/logger";
-import { graphCall } from "./client";
+import { createLogger, errorFields } from "@/lib/logger";
+import { graphCall, MetaApiError } from "./client";
 import { resolveAdsAccess } from "./tokens";
+import type { Prisma } from "@prisma/client";
 
 const log = createLogger("meta.marketing");
 
@@ -11,8 +12,9 @@ const log = createLogger("meta.marketing");
  * Marketing API integration (docs/META_API.md §8).
  * HARD SAFETY RULES:
  *  - everything is created with status=PAUSED,
- *  - activation (real spend) only via publishCampaign(), which the API layer
- *    gates behind explicit admin confirmation + audit (spec §16).
+ *  - activation (real spend) only via activateCampaignInMeta(), which the API
+ *    layer gates behind explicit admin confirmation + audit (spec §16),
+ *  - audience numbers come ONLY from Meta's reachestimate; nothing is invented.
  * Only vetted, verified CTA types and objectives are exposed.
  */
 
@@ -22,6 +24,8 @@ export const SUPPORTED_OBJECTIVES = [
   { value: "OUTCOME_LEADS", label: "Leads (Instant Forms)" },
   { value: "OUTCOME_AWARENESS", label: "Awareness (reach)" },
 ] as const;
+
+export type Objective = (typeof SUPPORTED_OBJECTIVES)[number]["value"];
 
 /** Verified subset of Meta's call_to_action enum, valid for IG placements. */
 export const SUPPORTED_CTA_TYPES = [
@@ -44,31 +48,90 @@ interface ObjectiveConfig {
   billingEvent: string;
   destinationType?: string;
   needsPage: boolean;
+  /** which `actions` entry counts as a result in insights */
+  resultAction: string | null;
 }
 
-const OBJECTIVE_CONFIG: Record<string, ObjectiveConfig> = {
-  OUTCOME_TRAFFIC: { optimizationGoal: "LINK_CLICKS", billingEvent: "IMPRESSIONS", needsPage: false },
+export const OBJECTIVE_CONFIG: Record<Objective, ObjectiveConfig> = {
+  OUTCOME_TRAFFIC: { optimizationGoal: "LINK_CLICKS", billingEvent: "IMPRESSIONS", needsPage: false, resultAction: "link_click" },
   OUTCOME_ENGAGEMENT: {
     optimizationGoal: "CONVERSATIONS",
     billingEvent: "IMPRESSIONS",
     destinationType: "INSTAGRAM_DIRECT",
     needsPage: true,
+    resultAction: "onsite_conversion.messaging_conversation_started_7d",
   },
   OUTCOME_LEADS: {
     optimizationGoal: "LEAD_GENERATION",
     billingEvent: "IMPRESSIONS",
     destinationType: "ON_AD",
     needsPage: true,
+    resultAction: "lead",
   },
-  OUTCOME_AWARENESS: { optimizationGoal: "REACH", billingEvent: "IMPRESSIONS", needsPage: true },
+  OUTCOME_AWARENESS: { optimizationGoal: "REACH", billingEvent: "IMPRESSIONS", needsPage: true, resultAction: null },
 };
+
+// ---- targeting ----
+
+export interface CampaignCity {
+  key: string;
+  name?: string;
+  radius?: number;
+  distanceUnit?: "kilometer" | "mile";
+}
+
+export interface CampaignInterest {
+  id: string;
+  name?: string;
+}
 
 export interface CampaignTargeting {
   countries?: string[];
+  cities?: CampaignCity[];
   ageMin?: number;
   ageMax?: number;
-  genders?: number[]; // 1 = male, 2 = female (Meta convention); empty = all
+  genders?: number[]; // 1 = men, 2 = women (Meta convention); empty = all
+  interests?: CampaignInterest[];
   instagramPositions?: string[];
+}
+
+/** Meta needs at least one location; everything else is optional. */
+export function targetingProblem(t: CampaignTargeting | null | undefined): string | null {
+  if (!t?.countries?.length && !t?.cities?.length) return "Choose at least one country or city";
+  if (t.ageMin !== undefined && t.ageMax !== undefined && t.ageMin > t.ageMax) return "Minimum age is above maximum age";
+  for (const c of t.cities ?? []) {
+    if (c.radius !== undefined) {
+      const km = c.distanceUnit === "mile" ? c.radius * 1.609 : c.radius;
+      if (km < 17 || km > 80) return "City radius must be 17–80 km (10–50 miles)";
+    }
+  }
+  return null;
+}
+
+/** The exact `targeting` object sent to Meta (unit-tested). */
+export function buildTargeting(t: CampaignTargeting | null): Record<string, unknown> {
+  const geo: Record<string, unknown> = {};
+  if (t?.countries?.length) geo.countries = t.countries;
+  if (t?.cities?.length) {
+    geo.cities = t.cities.map((c) => ({
+      key: c.key,
+      ...(c.radius ? { radius: c.radius, distance_unit: c.distanceUnit ?? "kilometer" } : {}),
+    }));
+  }
+  const targeting: Record<string, unknown> = {
+    geo_locations: geo,
+    publisher_platforms: ["instagram"],
+    instagram_positions: t?.instagramPositions?.length ? t.instagramPositions : ["stream", "reels"],
+    // explicit choice, not Meta's default expansion — predictable targeting
+    targeting_automation: { advantage_audience: 0 },
+  };
+  if (t?.ageMin) targeting.age_min = Math.max(18, t.ageMin);
+  if (t?.ageMax) targeting.age_max = Math.min(65, t.ageMax);
+  if (t?.genders?.length && t.genders.length < 2) targeting.genders = t.genders;
+  if (t?.interests?.length) {
+    targeting.flexible_spec = [{ interests: t.interests.map((i) => ({ id: i.id, ...(i.name ? { name: i.name } : {}) })) }];
+  }
+  return targeting;
 }
 
 /**
@@ -81,24 +144,108 @@ export function assertAdsCapable(account: InstagramAccount): void {
     throw metaUnsupported(
       "Campaigns",
       "No Meta ad account is linked to this Instagram account yet.",
-      "Open Settings → Integrations → Instagram and use 'Connect with Facebook (ads)'. It adds advertising without affecting your Instagram messaging connection.",
+      "Open the Instagram page and use 'Connect Facebook (for ads)'. It adds advertising without affecting your Instagram messaging connection.",
     );
   }
 }
 
-function buildTargeting(t: CampaignTargeting | null): Record<string, unknown> {
-  const targeting: Record<string, unknown> = {
-    geo_locations: { countries: t?.countries?.length ? t.countries : ["US"] },
-    publisher_platforms: ["instagram"],
-    instagram_positions: t?.instagramPositions?.length ? t.instagramPositions : ["stream", "reels"],
-    // explicit choice, not Meta's default expansion — predictable targeting
-    targeting_automation: { advantage_audience: 0 },
-  };
-  if (t?.ageMin) targeting.age_min = Math.max(18, t.ageMin);
-  if (t?.ageMax) targeting.age_max = Math.min(65, t.ageMax);
-  if (t?.genders?.length) targeting.genders = t.genders;
-  return targeting;
+// ---- reach estimate (the ONLY source of audience numbers) ----
+
+export type ReachEstimate =
+  | { available: true; usersLowerBound: number; usersUpperBound: number; fetchedAt: string }
+  | { available: false; reason: string };
+
+export function parseReachEstimate(json: Record<string, unknown>): ReachEstimate {
+  const node = (Array.isArray(json.data) ? json.data[0] : json.data) as Record<string, unknown> | undefined;
+  const lower = Number(node?.users_lower_bound);
+  const upper = Number(node?.users_upper_bound);
+  if (!node || node.estimate_ready === false || !Number.isFinite(lower) || !Number.isFinite(upper) || lower < 0 || upper < 0) {
+    return { available: false, reason: "Estimate unavailable until Meta processes this audience." };
+  }
+  return { available: true, usersLowerBound: lower, usersUpperBound: upper, fetchedAt: new Date().toISOString() };
 }
+
+export async function fetchReachEstimate(account: InstagramAccount, targeting: CampaignTargeting): Promise<ReachEstimate> {
+  if (!account.adAccountId) {
+    return { available: false, reason: "Connect Facebook (ads) to get Meta's audience estimate for this targeting." };
+  }
+  const problem = targetingProblem(targeting);
+  if (problem) return { available: false, reason: problem };
+  const access = await resolveAdsAccess(account);
+  try {
+    const json = await graphCall<Record<string, unknown>>({
+      host: "graph.facebook.com",
+      path: `${account.adAccountId}/reachestimate`,
+      accessToken: access.accessToken,
+      params: { targeting_spec: buildTargeting(targeting) },
+    });
+    return parseReachEstimate(json);
+  } catch (err) {
+    log.warn("reachestimate failed", { accountId: account.id, ...errorFields(err) });
+    const reason = err instanceof MetaApiError ? `${err.message}${err.reason ? ` — ${err.reason}` : ""}` : "Meta did not return an estimate.";
+    return { available: false, reason };
+  }
+}
+
+// ---- targeting search (interests, cities) ----
+
+export interface InterestSuggestion {
+  id: string;
+  name: string;
+  path: string[];
+  audienceLower: number | null;
+  audienceUpper: number | null;
+}
+
+export async function searchInterests(account: InstagramAccount, q: string): Promise<InterestSuggestion[]> {
+  const access = await resolveAdsAccess(account);
+  const json = await graphCall<{ data?: Array<Record<string, unknown>> }>({
+    host: "graph.facebook.com",
+    path: "search",
+    accessToken: access.accessToken,
+    params: { type: "adinterest", q, limit: 15 },
+  });
+  return (json.data ?? []).map((r) => ({
+    id: String(r.id),
+    name: String(r.name ?? ""),
+    path: Array.isArray(r.path) ? (r.path as string[]) : [],
+    audienceLower: typeof r.audience_size_lower_bound === "number" ? r.audience_size_lower_bound : null,
+    audienceUpper: typeof r.audience_size_upper_bound === "number" ? r.audience_size_upper_bound : null,
+  }));
+}
+
+export interface CitySuggestion {
+  key: string;
+  name: string;
+  region: string | null;
+  countryCode: string;
+  countryName: string | null;
+}
+
+export async function searchCities(account: InstagramAccount, q: string, countryCode?: string): Promise<CitySuggestion[]> {
+  const access = await resolveAdsAccess(account);
+  const json = await graphCall<{ data?: Array<Record<string, unknown>> }>({
+    host: "graph.facebook.com",
+    path: "search",
+    accessToken: access.accessToken,
+    params: {
+      type: "adgeolocation",
+      location_types: ["city"],
+      q,
+      limit: 15,
+      ...(countryCode ? { country_code: countryCode } : {}),
+    },
+  });
+  return (json.data ?? []).map((r) => ({
+    key: String(r.key),
+    name: String(r.name ?? ""),
+    region: typeof r.region === "string" ? r.region : null,
+    countryCode: String(r.country_code ?? ""),
+    countryName: typeof r.country_name === "string" ? r.country_name : null,
+  }));
+}
+
+// ---- create / lifecycle ----
 
 export interface MetaCampaignIds {
   metaCampaignId: string;
@@ -115,7 +262,7 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
   assertAdsCapable(account);
   const access = await resolveAdsAccess(account);
   const adAccount = account.adAccountId!; // "act_..."
-  const config = OBJECTIVE_CONFIG[campaign.objective];
+  const config = OBJECTIVE_CONFIG[campaign.objective as Objective];
   if (!config) {
     throw new AppError("VALIDATION", `Objective ${campaign.objective} is not supported`, {
       fix: `Use one of: ${SUPPORTED_OBJECTIVES.map((o) => o.value).join(", ")}`,
@@ -126,6 +273,12 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
   }
   if (!campaign.dailyBudgetCents && !campaign.lifetimeBudgetCents) {
     throw new AppError("VALIDATION", "Campaign needs a daily or lifetime budget");
+  }
+  const targeting = campaign.targeting as CampaignTargeting | null;
+  const problem = targetingProblem(targeting);
+  if (problem) throw new AppError("VALIDATION", problem);
+  if (campaign.lifetimeBudgetCents && !campaign.endTime) {
+    throw new AppError("VALIDATION", "A lifetime budget needs an end date");
   }
 
   // 1. Campaign (PAUSED)
@@ -143,19 +296,20 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
   });
 
   // 2. Ad set (PAUSED)
-  const targeting = buildTargeting(campaign.targeting as CampaignTargeting | null);
   const adsetBody: Record<string, unknown> = {
     name: `${campaign.name} — ad set`,
     campaign_id: camp.id,
     status: "PAUSED",
     billing_event: config.billingEvent,
     optimization_goal: config.optimizationGoal,
-    targeting,
+    targeting: buildTargeting(targeting),
   };
   if (campaign.dailyBudgetCents) adsetBody.daily_budget = campaign.dailyBudgetCents;
   if (campaign.lifetimeBudgetCents) {
     adsetBody.lifetime_budget = campaign.lifetimeBudgetCents;
-    adsetBody.end_time = (campaign.endTime ?? new Date(Date.now() + 7 * 86400_000)).toISOString();
+    adsetBody.end_time = campaign.endTime!.toISOString();
+  } else if (campaign.endTime) {
+    adsetBody.end_time = campaign.endTime.toISOString();
   }
   if (campaign.startTime) adsetBody.start_time = campaign.startTime.toISOString();
   if (config.destinationType) adsetBody.destination_type = config.destinationType;
@@ -214,7 +368,7 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
  *
  * Returns null when no button should be rendered.
  */
-function buildCallToAction(campaign: Campaign): Record<string, unknown> | null {
+export function buildCallToAction(campaign: Pick<Campaign, "ctaType" | "objective" | "metaFormId" | "destinationUrl">): Record<string, unknown> | null {
   if (!campaign.ctaType) return null;
 
   switch (campaign.objective) {
@@ -299,7 +453,7 @@ async function buildCreative(account: InstagramAccount, campaign: Campaign): Pro
   };
 }
 
-/** ACTIVATE = real money. Called only from the admin-confirmed publish route. */
+/** ACTIVATE = real money. Called only from the admin-confirmed publish route (also used to RESUME a paused campaign). */
 export async function activateCampaignInMeta(account: InstagramAccount, campaign: Campaign): Promise<void> {
   assertAdsCapable(account);
   if (!campaign.metaCampaignId || !campaign.metaAdSetId || !campaign.metaAdId) {
@@ -330,19 +484,30 @@ export async function pauseCampaignInMeta(account: InstagramAccount, campaign: C
   });
 }
 
+/** STOP = archive in Meta. Delivery ends for good; history and spend stay readable in Ads Manager. */
+export async function stopCampaignInMeta(account: InstagramAccount, campaign: Campaign): Promise<void> {
+  assertAdsCapable(account);
+  if (!campaign.metaCampaignId) return;
+  const access = await resolveAdsAccess(account);
+  await graphCall({
+    host: "graph.facebook.com",
+    method: "POST",
+    path: campaign.metaCampaignId,
+    accessToken: access.accessToken,
+    body: { status: "ARCHIVED" },
+  });
+}
+
+// ---- status + insights (real numbers from Meta) ----
+
 export interface CampaignLiveStatus {
   status: string | null;
   effectiveStatus: string | null;
-  spend: string | null;
-  impressions: string | null;
-  clicks: string | null;
 }
 
 export async function fetchCampaignStatus(account: InstagramAccount, campaign: Campaign): Promise<CampaignLiveStatus> {
   assertAdsCapable(account);
-  if (!campaign.metaCampaignId) {
-    return { status: null, effectiveStatus: null, spend: null, impressions: null, clicks: null };
-  }
+  if (!campaign.metaCampaignId) return { status: null, effectiveStatus: null };
   const access = await resolveAdsAccess(account);
   const info = await graphCall<{ status?: string; effective_status?: string }>({
     host: "graph.facebook.com",
@@ -350,29 +515,128 @@ export async function fetchCampaignStatus(account: InstagramAccount, campaign: C
     accessToken: access.accessToken,
     params: { fields: "status,effective_status" },
   });
-  let spend: string | null = null;
-  let impressions: string | null = null;
-  let clicks: string | null = null;
-  try {
-    const insights = await graphCall<{ data: Array<{ spend?: string; impressions?: string; clicks?: string }> }>({
-      host: "graph.facebook.com",
-      path: `${campaign.metaCampaignId}/insights`,
-      accessToken: access.accessToken,
-      params: { fields: "spend,impressions,clicks" },
-    });
-    spend = insights.data?.[0]?.spend ?? null;
-    impressions = insights.data?.[0]?.impressions ?? null;
-    clicks = insights.data?.[0]?.clicks ?? null;
-  } catch {
-    // no delivery yet — fine
+  return { status: info.status ?? null, effectiveStatus: info.effective_status ?? null };
+}
+
+export interface CampaignInsights {
+  spend: number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+  results: number | null;
+  resultAction: string | null;
+  cpc: number | null;
+  ctr: number | null;
+  currency: string;
+  dateStart: string | null;
+  dateStop: string | null;
+  fetchedAt: string;
+}
+
+/** Reads Meta's insights row; results = the action matching the objective (null when Meta reports none). */
+export function parseCampaignInsights(json: Record<string, unknown>, objective: string, currency: string): CampaignInsights | null {
+  const row = (Array.isArray(json.data) ? json.data[0] : undefined) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const num = (v: unknown): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const opt = (v: unknown): number | null => (v === undefined || v === null || v === "" ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+  const config = OBJECTIVE_CONFIG[objective as Objective];
+  const actions = (Array.isArray(row.actions) ? row.actions : []) as Array<{ action_type?: string; value?: string | number }>;
+  let results: number | null = null;
+  if (config?.resultAction) {
+    const hit = actions.find((a) => a.action_type === config.resultAction);
+    results = hit ? num(hit.value) : 0;
+  } else if (objective === "OUTCOME_AWARENESS") {
+    results = num(row.reach);
   }
   return {
-    status: info.status ?? null,
-    effectiveStatus: info.effective_status ?? null,
-    spend,
-    impressions,
-    clicks,
+    spend: num(row.spend),
+    impressions: num(row.impressions),
+    reach: num(row.reach),
+    clicks: num(row.clicks),
+    results,
+    resultAction: config?.resultAction ?? (objective === "OUTCOME_AWARENESS" ? "reach" : null),
+    cpc: opt(row.cpc),
+    ctr: opt(row.ctr),
+    currency,
+    dateStart: typeof row.date_start === "string" ? row.date_start : null,
+    dateStop: typeof row.date_stop === "string" ? row.date_stop : null,
+    fetchedAt: new Date().toISOString(),
   };
+}
+
+export async function fetchCampaignInsights(account: InstagramAccount, campaign: Campaign): Promise<CampaignInsights | null> {
+  assertAdsCapable(account);
+  if (!campaign.metaCampaignId) return null;
+  const access = await resolveAdsAccess(account);
+  const json = await graphCall<Record<string, unknown>>({
+    host: "graph.facebook.com",
+    path: `${campaign.metaCampaignId}/insights`,
+    accessToken: access.accessToken,
+    params: { fields: "spend,impressions,reach,clicks,cpc,ctr,actions", date_preset: "maximum" },
+  });
+  return parseCampaignInsights(json, campaign.objective, campaign.currency);
+}
+
+/** Local status implied by Meta's effective_status; null = leave as is. */
+export function statusFromMeta(effectiveStatus: string | null): Campaign["status"] | null {
+  switch (effectiveStatus) {
+    case "ACTIVE":
+      return "ACTIVE";
+    case "PAUSED":
+    case "CAMPAIGN_PAUSED":
+    case "ADSET_PAUSED":
+      return "PAUSED";
+    case "ARCHIVED":
+    case "DELETED":
+      return "ARCHIVED";
+    default:
+      return null;
+  }
+}
+
+/** Pull status + spend/results from Meta and store the snapshot on the campaign. */
+export async function syncCampaignFromMeta(account: InstagramAccount, campaign: Campaign): Promise<{ status: CampaignLiveStatus; insights: CampaignInsights | null }> {
+  const status = await fetchCampaignStatus(account, campaign);
+  let insights: CampaignInsights | null = null;
+  try {
+    insights = await fetchCampaignInsights(account, campaign);
+  } catch (err) {
+    log.warn("insights unavailable", { campaignId: campaign.id, ...errorFields(err) });
+  }
+  const implied = statusFromMeta(status.effectiveStatus);
+  // Only reconcile states Meta can change on its own (a schedule ending, an
+  // admin acting in Ads Manager) — never resurrect something archived locally.
+  const nextStatus =
+    implied && campaign.status !== "ARCHIVED" && campaign.status !== "DRAFT" && campaign.status !== "READY" && campaign.status !== "ERROR"
+      ? implied
+      : undefined;
+  await prisma.campaign.update({
+    where: { id: campaign.id },
+    data: {
+      ...(insights ? { insightsSnapshot: insights as unknown as Prisma.InputJsonValue } : {}),
+      insightsSyncedAt: new Date(),
+      ...(nextStatus ? { status: nextStatus } : {}),
+      ...(nextStatus === "ARCHIVED" && !campaign.stoppedAt ? { stoppedAt: new Date() } : {}),
+    },
+  });
+  return { status, insights };
+}
+
+/** Meta-rendered preview of the created ad (HTML iframe) — the real thing, available once the creative exists. */
+export async function fetchAdPreview(account: InstagramAccount, campaign: Campaign, format = "INSTAGRAM_STANDARD"): Promise<string | null> {
+  assertAdsCapable(account);
+  if (!campaign.metaCreativeId) return null;
+  const access = await resolveAdsAccess(account);
+  const json = await graphCall<{ data?: Array<{ body?: string }> }>({
+    host: "graph.facebook.com",
+    path: `${campaign.metaCreativeId}/previews`,
+    accessToken: access.accessToken,
+    params: { ad_format: format },
+  });
+  return json.data?.[0]?.body ?? null;
 }
 
 /** Create an Instant Form (lead ads). Requires pages_manage_ads + accepted lead-ads TOS. */

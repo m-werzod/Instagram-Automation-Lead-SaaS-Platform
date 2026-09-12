@@ -24,7 +24,8 @@ export type JobType =
   | "tokens.refresh"
   | "analytics.sync"
   | "queue.cleanup"
-  | "publish.run";
+  | "publish.run"
+  | "campaigns.sync";
 
 export interface EnqueueOptions {
   runAt?: Date;

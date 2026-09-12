@@ -10,6 +10,7 @@ import { deliverLeadToTelegram } from "@/lib/telegram";
 import { refreshExpiringTokens } from "@/lib/meta/accounts";
 import { syncMedia } from "@/lib/meta/media";
 import { runPublishJob } from "@/lib/meta/publishing";
+import { syncCampaignFromMeta } from "@/lib/meta/marketing";
 import { getGlobalSettings } from "@/lib/settings";
 import { createLogger, errorFields } from "@/lib/logger";
 import type { Prisma } from "@prisma/client";
@@ -377,6 +378,26 @@ registerHandler("analytics.sync", async (payload) => {
   }
 });
 
+// ---------- periodic: campaign status + spend from Meta ----------
+
+registerHandler("campaigns.sync", async (payload) => {
+  const campaignId = payload.campaignId ? String(payload.campaignId) : null;
+  const campaigns = await prisma.campaign.findMany({
+    where: campaignId
+      ? { id: campaignId }
+      : { status: { in: ["ACTIVE", "PAUSED", "CREATED"] }, metaCampaignId: { not: null }, account: { isDemo: false, status: "CONNECTED" } },
+    include: { account: true },
+    take: 100,
+  });
+  for (const campaign of campaigns) {
+    try {
+      await syncCampaignFromMeta(campaign.account, campaign);
+    } catch (err) {
+      log.warn("campaign sync failed", { campaignId: campaign.id, ...errorFields(err) });
+    }
+  }
+});
+
 // ---------- periodic: queue cleanup ----------
 
 registerHandler("queue.cleanup", async () => {
@@ -399,5 +420,6 @@ export async function ensurePeriodicJobs(): Promise<void> {
   const dayKey = now.toISOString().slice(0, 10);
   await enqueue("tokens.refresh", {}, { idempotencyKey: `tokens.refresh:${hourKey}` });
   await enqueue("analytics.sync", {}, { idempotencyKey: `analytics.sync:${dayKey}` });
+  await enqueue("campaigns.sync", {}, { idempotencyKey: `campaigns.sync:${hourKey}` });
   await enqueue("queue.cleanup", {}, { idempotencyKey: `queue.cleanup:${dayKey}` });
 }

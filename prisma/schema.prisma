@@ -669,6 +669,11 @@ model Campaign {
   metaAdId            String?
   metaFormId          String? // lead ads instant form
   lastError           String?
+  estimate            Json? // Meta reachestimate snapshot {available, usersLowerBound, usersUpperBound, fetchedAt} — never computed locally
+  insightsSnapshot    Json? // last Meta insights {spend, impressions, reach, clicks, results, ...}
+  insightsSyncedAt    DateTime?
+  stoppedAt           DateTime?
+  platformFeeCents    Int? // platform service fee charged for this campaign (Meta spend is billed by Meta)
   publishedAt         DateTime?
   publishedByAdminId  String?
   isDemo              Boolean          @default(false)

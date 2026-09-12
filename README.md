@@ -161,17 +161,22 @@ docs/META_API.md §9 for App Review requirements if you ever need public access.
 
 ```
 prisma/schema.prisma        relational schema (tenant-isolated per Instagram account)
-src/lib/meta/*              Graph client, OAuth, tokens, messaging, media, marketing, webhooks, capabilities
-src/lib/agent/*             AI runtime + permission-tiered tool registry
+src/lib/auth/access.ts      RBAC — OWNER/ADMIN unrestricted, USER confined to granted accounts
+src/lib/meta/*              Graph client, OAuth, tokens, messaging, media, marketing, publishing, webhooks, capabilities
+src/lib/agent/*             AI runtime + guardrails (working hours, topics, output gate) + permission-tiered tools
+src/lib/ai/*                Provider abstraction — Anthropic / OpenAI-compatible (incl. gateways) / Google
+src/lib/billing/*           Stripe client, pricing math, payment/schedule service — platform fees only, never Meta spend
+src/lib/leads.ts            CRM cross-cutting helpers (lastInteractionAt, AI qualification types)
 src/lib/leadflow/engine.ts  one-question-per-step DM state machine
 src/lib/automation/*        trigger → condition → action engine
-src/lib/queue/*             DB-backed job queue (SKIP LOCKED) + handlers
+src/lib/queue/*             DB-backed job queue (SKIP LOCKED) + handlers (webhooks, AI, publishing, billing, campaign sync)
 src/lib/knowledge/*         extract → chunk → embed → retrieve
 src/lib/email/*             EmailService with queued retries
-src/app/api/*               REST surface (zod-validated, audited)
-src/app/(dashboard)/*       control-center UI
+src/app/api/*               REST surface (zod-validated, audited, RBAC-scoped)
+src/app/(dashboard)/*       control-center UI, incl. Target wizard, Billing and the staff-only Admin overview
 scripts/worker.ts           worker process
 docs/INSTAGRAM_SETUP.md     adding an Instagram account, start to finish
-docs/META_API.md            verified Meta capability reference
-docs/DEPLOYMENT.md          production deployment guide
+docs/META_API.md            verified Meta capability reference (incl. publishing/targeting/estimate endpoints)
+docs/DEPLOYMENT.md          production deployment guide (incl. Stripe webhook + AI gateway setup)
+docs/AUDIT_2026-09-12.md    pre-upgrade architecture audit and gap analysis
 ```

@@ -201,3 +201,26 @@ capability marked unavailable with reason. `4`/`17`/`32`/`613` rate limits → b
 unavailable → conversation flagged. `100` invalid param → surfaced to admin with request context (sans
 secrets). OAuth `error_reason=user_denied` → friendly abort. Subcode `2018278` outside messaging window →
 message dropped with UI notice, never silently retried into policy violation.
+
+## 13. Implemented since the 2026-09-10 baseline (verified 2026-09-12)
+
+Content publishing (§5) and the Marketing API targeting/estimate calls below are now implemented in
+`src/lib/meta/publishing.ts` and `src/lib/meta/marketing.ts` — this section records exactly which
+endpoints back them, so the capability table above stays honest as code, not just as a plan.
+
+- **Publishing**: `POST /{ig-id}/media` (image/REELS/STORIES/CAROUSEL container) → poll
+  `GET /{container-id}?fields=status_code` → `POST /{ig-id}/media_publish`. `GET /{ig-id}/content_publishing_limit`
+  is checked before every publish. Meta has **no scheduling endpoint** — "Schedule" in the UI is this
+  platform holding a `PublishJob` row until the chosen time, and the label says so.
+- **Reach estimate**: `GET /act_{id}/reachestimate?targeting_spec=…` → `users_lower_bound`/`users_upper_bound`,
+  or `-1`/`estimate_ready:false` when Meta has nothing yet — surfaced verbatim as "Estimate unavailable
+  until Meta processes this audience", never computed locally.
+- **Targeting search**: `GET /search?type=adinterest&q=…` (interests, with Meta's own audience-size
+  bounds) and `GET /search?type=adgeolocation&location_types=["city"]&q=…` (cities, used with
+  `geo_locations.cities[{key,radius,distance_unit}]`, radius 17–80 km / 10–50 mi per Meta's limits).
+- **Campaign insights for the Target page**: `GET /{metaCampaignId}/insights?fields=spend,impressions,
+  reach,clicks,cpc,ctr,actions` — the `actions` array is matched against the objective's real result type
+  (`link_click` for Traffic, `lead` for Leads, `onsite_conversion.messaging_conversation_started_7d` for
+  Engagement, `reach` for Awareness) rather than guessed.
+- **Ad preview**: `GET /{metaCreativeId}/previews?ad_format=…` returns Meta's own rendered iframe HTML —
+  used as-is, never re-implemented visually.

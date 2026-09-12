@@ -329,8 +329,27 @@ export const uz = {
     how3: "Savollaringizga javob beradi",
     how4: "Lid CRM’ingizda paydo bo‘ladi",
 
+    reality: {
+      title: "Tugmangiz mijozlarga qanday yetib boradi",
+      warn:
+        "Instagram oddiy post yoki Reel ostida hech qachon tugma ko‘rsatmaydi. Buni hech bir ilova qo‘sha olmaydi — Meta bunday imkoniyatni umuman bermaydi. Tugmangiz odamlarga quyidagi uchta yo‘l orqali yetib boradi.",
+      routeLink: "O‘z sahifangiz havolasi",
+      routeLinkText: "Uni bio, Stories yoki post tagiga qo‘ying. Havolani ochgan har kim tugmangiz va savollaringizni ko‘radi.",
+      routeKeyword: "Izoh yoki xabardagi kod so‘z",
+      routeKeywordText:
+        "Kimdir post ostiga yoki xabarga o‘sha so‘zni yozadi va savollar Instagram ichida avtomatik boshlanadi.",
+      routeAd: "Reklama qilingan post",
+      routeAdText:
+        "Faqat post uchun pul to‘lab reklama qilsangiz, Instagram uning ostida haqiqiy bosiladigan tugma chizadi. Tugma qanday ko‘rinishini Instagram hal qiladi.",
+      ready: "Tayyor",
+      notSet: "Sozlanmagan",
+      free: "Bepul",
+      paid: "Pul sarflanadi",
+      jump: "Sozlash",
+    },
+
     sections: {
-      target: "Qayerda ko‘rinadi?",
+      target: "Bu qaysi post uchun?",
       appearance: "Tugma ko‘rinishi",
       text: "Matnlar",
       questions: "Savollaringiz",

@@ -330,8 +330,27 @@ export const en = {
     how3: "They answer your questions",
     how4: "The lead appears in your CRM",
 
+    reality: {
+      title: "How your button reaches customers",
+      warn:
+        "Instagram never shows a button under an ordinary post or Reel. No app can add one — Meta provides no way to do it, for anyone. Your button reaches people through the three routes below.",
+      routeLink: "Your own page link",
+      routeLinkText: "Put it in your bio, a Story or a caption. Anyone who opens it sees your button and your questions.",
+      routeKeyword: "A code word in DMs or comments",
+      routeKeywordText:
+        "Someone writes your word under a post or sends it as a message, and the questions start automatically inside Instagram.",
+      routeAd: "A promoted post",
+      routeAdText:
+        "Only when you pay to promote a post does Instagram draw a real tappable button under it. Instagram decides how that button looks.",
+      ready: "Ready",
+      notSet: "Not set up",
+      free: "Free",
+      paid: "Costs money",
+      jump: "Set this up",
+    },
+
     sections: {
-      target: "Where does it appear?",
+      target: "Which post is this for?",
       appearance: "Button appearance",
       text: "Texts",
       questions: "Your questions",

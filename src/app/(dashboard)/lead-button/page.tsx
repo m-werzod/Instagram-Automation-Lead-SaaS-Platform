@@ -20,6 +20,7 @@ import {
   Megaphone,
   X,
   Instagram,
+  Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/client/api";
@@ -275,6 +276,51 @@ export default function LeadButtonPage() {
           <HowStep icon={<MessageCircleQuestion size={16} />} color="var(--color-mod-ai)" n={3} text={d.leadButton.how3} />
           <ArrowRight size={14} className="hidden shrink-0 text-(--color-fg-faint) md:block" />
           <HowStep icon={<UserCheck size={16} />} color="var(--color-mod-leads)" n={4} text={d.leadButton.how4} />
+        </CardBody>
+      </Card>
+
+      {/*
+        The single most expensive misunderstanding this product can cause:
+        publishing a post and waiting for a button that Instagram is never going
+        to draw. Meta exposes no API to put a CTA on organic media — the only
+        tappable button is the one Instagram itself renders on a PAID promotion.
+        So the three routes that do work are stated up front, each showing
+        whether it is actually live, rather than leaving it to be discovered.
+      */}
+      <Card className="mb-5 border-(--color-warn)/40">
+        <CardHeader
+          icon={<IconChip color="var(--color-warn)"><Info size={16} /></IconChip>}
+          title={d.leadButton.reality.title}
+          description={d.leadButton.reality.warn}
+        />
+        <CardBody className="grid gap-2.5 sm:grid-cols-3">
+          <RouteCard
+            icon={<Link2 size={15} />}
+            color="var(--color-mod-leads)"
+            title={d.leadButton.reality.routeLink}
+            text={d.leadButton.reality.routeLinkText}
+            ready={Boolean(leadButton?.landingUrl)}
+            cost={d.leadButton.reality.free}
+            d={d}
+          />
+          <RouteCard
+            icon={<KeyRound size={15} />}
+            color="var(--color-mod-ai)"
+            title={d.leadButton.reality.routeKeyword}
+            text={d.leadButton.reality.routeKeywordText}
+            ready={draft.triggerKeywords.some((k) => k.trim().length > 0)}
+            cost={d.leadButton.reality.free}
+            d={d}
+          />
+          <RouteCard
+            icon={<Megaphone size={15} />}
+            color="var(--color-mod-ads)"
+            title={d.leadButton.reality.routeAd}
+            text={d.leadButton.reality.routeAdText}
+            ready={Boolean(selected?.adAccountId)}
+            cost={d.leadButton.reality.paid}
+            d={d}
+          />
         </CardBody>
       </Card>
 
@@ -656,6 +702,39 @@ export default function LeadButtonPage() {
 }
 
 /* ---------- small pieces ---------- */
+
+function RouteCard({
+  icon,
+  color,
+  title,
+  text,
+  ready,
+  cost,
+  d,
+}: {
+  icon: React.ReactNode;
+  color: string;
+  title: string;
+  text: string;
+  /** Whether this route is actually live right now, not whether it is possible. */
+  ready: boolean;
+  cost: string;
+  d: Dictionary;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-xl border border-(--color-border) bg-(--color-panel-2) p-3">
+      <div className="flex items-center gap-2">
+        <IconChip color={color} size={26}>{icon}</IconChip>
+        <span className="min-w-0 flex-1 text-[13px] font-semibold leading-tight">{title}</span>
+      </div>
+      <p className="text-[11px] leading-5 text-(--color-fg-muted)">{text}</p>
+      <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-1">
+        <Badge tone={ready ? "ok" : "default"}>{ready ? d.leadButton.reality.ready : d.leadButton.reality.notSet}</Badge>
+        <Badge tone={cost === d.leadButton.reality.paid ? "warn" : "default"}>{cost}</Badge>
+      </div>
+    </div>
+  );
+}
 
 function HowStep({ icon, color, n, text }: { icon: React.ReactNode; color: string; n: number; text: string }) {
   return (

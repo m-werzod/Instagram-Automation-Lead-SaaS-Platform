@@ -278,6 +278,39 @@ export const en = {
     webhookFix: "Turn on event delivery",
     webhookFixOk: "Event delivery is on",
     webhookFixHint: "Until this is on, messages and comments never reach the platform.",
+
+    /* --- inviting the account owner to authorise --------------------------- */
+    invites: {
+      openBtn: "Add another account",
+      dialogTitle: "Add another Instagram account",
+      hereTitle: "I have the account here",
+      hereText: "Sign in to that Instagram account in this browser now. Instagram will ask which account to use.",
+      hereBtn: "Continue to Instagram",
+      linkTitle: "Send a link to the account owner",
+      linkText:
+        "Instagram can only be authorised by the person holding the account — there is no way to request it from a username. Create a link, send it to them, and they approve on their own phone. The account then appears here.",
+      label: "Who is this link for?",
+      labelPh: "@handle or a note",
+      labelHint: "A label for your own reference only. Instagram decides which account actually connects.",
+      expiry: "Link valid for",
+      hours: (n: number) => (n === 24 ? "1 day" : n < 24 ? `${n} hours` : `${n / 24} days`),
+      create: "Create link",
+      createdTitle: "Link ready — copy it now",
+      createdHint: "Shown once and never again. Send it to the account owner; it works one time and then stops.",
+      linkLabel: "Connection link",
+      pending: "Links you have sent",
+      none: "No links yet.",
+      revoke: "Cancel link",
+      revokeConfirm: "Cancel this link? Whoever has it will no longer be able to connect.",
+      statuses: {
+        PENDING: "Waiting",
+        USED: "Connected",
+        EXPIRED: "Expired",
+        REVOKED: "Cancelled",
+      } as Record<string, string>,
+      expiresAt: "Expires",
+      createdBy: "Created by",
+    },
   },
 
   leadButton: {
@@ -455,6 +488,48 @@ export const en = {
     thanksDefault: "Thank you! We received your details.",
     poweredBy: "Powered by Instagram Automation",
     progress: (i: number, n: number) => `${i} / ${n}`,
+  },
+
+  connect: {
+    title: "Connect your Instagram account",
+    intro: "You have been asked to give this platform permission to manage this Instagram account.",
+    forLabel: "Requested for",
+    continueBtn: "Continue to Instagram",
+    stepsTitle: "What happens next",
+    s1: "Instagram's own page opens.",
+    s2: "Sign in to the Instagram account you want to connect. You type your password on instagram.com — this platform never sees it.",
+    s3: "Instagram lists what the app may do and asks you to allow it. Tap Allow, leaving every permission on.",
+    s4: "You come straight back here. That is all — you can close the page.",
+    permsTitle: "What is being asked for",
+    perm1: "Read the profile, posts and Reels",
+    perm2: "Read and reply to direct messages",
+    perm3: "Read and reply to comments",
+    needPro: "The account must be a Business or Creator account. Instagram does not allow this for Personal accounts.",
+    safety: "This link works once, then stops. Nothing can be read until you approve it on Instagram, and you can remove access at any time from Instagram settings.",
+    expiresOn: (when: string) => `This link expires on ${when}.`,
+
+    invalidTitle: "This link cannot be used",
+    askNew: "Ask the person who sent it to you for a new link.",
+
+    doneTitle: "Connected",
+    doneText: (u: string) => `@${u} is connected. You can close this page now.`,
+    doneTextPlain: "The Instagram account is connected. You can close this page now.",
+    failTitle: "Not connected",
+
+    reasons: {
+      unknown: "This link is not recognised. It may have been mistyped or already removed.",
+      invalid_link: "This link is not recognised. It may have been mistyped or already removed.",
+      expired: "This link has expired. Links are short-lived on purpose.",
+      used: "This link has already been used. Each link connects one account, once.",
+      revoked: "This link was cancelled by the person who sent it.",
+      denied: "The permission screen was cancelled, or a permission was left off. Nothing was changed — open the link again and tap Allow with everything switched on.",
+      not_configured: "This platform is not finished being set up, so it cannot accept a connection yet. Let the person who sent you this link know.",
+      rate_limited: "Too many attempts. Please wait a few minutes and try again.",
+      missing_params: "Instagram did not return an authorisation. Open the link again.",
+      meta_error: "Instagram reported a problem with the authorisation. Please try the link again.",
+      connect_failed: "The connection did not complete.",
+      failed: "Something went wrong. Please try the link again.",
+    } as Record<string, string>,
   },
 
   content: {

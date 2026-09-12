@@ -19,7 +19,6 @@ import {
   KeyRound,
   Settings2,
   X,
-  UserPlus,
   Radio,
 } from "lucide-react";
 import { api } from "@/lib/client/api";
@@ -32,6 +31,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Select } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { CopyField } from "@/components/ui/copy-field";
+import { AddAccountDialog } from "@/components/instagram/add-account-dialog";
 import { timeAgo } from "@/lib/utils";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 
@@ -163,15 +163,7 @@ export default function InstagramPage() {
         description={d.instagram.subtitle}
         accent="var(--color-mod-instagram)"
         actions={
-          accounts && accounts.length > 0 && ready ? (
-            <Button asChild variant="secondary" size="sm" title={d.instagram.switchHint}>
-              {/* switch=1 → Instagram re-asks which account, instead of silently
-                  re-approving the one already signed in in this browser. */}
-              <a href="/api/meta/oauth/start?mode=instagram&switch=1">
-                <UserPlus size={14} /> {d.instagram.switchAccount}
-              </a>
-            </Button>
-          ) : undefined
+          accounts && accounts.length > 0 && ready ? <AddAccountDialog onChanged={load} /> : undefined
         }
       />
 
@@ -186,7 +178,7 @@ export default function InstagramPage() {
       {accounts === null && <p className="py-10 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>}
 
       {/* not connected yet — the hero connect card */}
-      {accounts?.length === 0 && <ConnectHero ready={ready} />}
+      {accounts?.length === 0 && <ConnectHero ready={ready} onChanged={load} />}
 
       {/* connected account cards */}
       {accounts?.map((acc) => {
@@ -350,7 +342,7 @@ export default function InstagramPage() {
  * password by a tool you just signed into looks like a phishing page unless you
  * were told to expect it.
  */
-function ConnectHero({ ready }: { ready: boolean }) {
+function ConnectHero({ ready, onChanged }: { ready: boolean; onChanged: () => Promise<void> }) {
   const { d } = useI18n();
   return (
     <Card className="overflow-hidden">
@@ -377,6 +369,11 @@ function ConnectHero({ ready }: { ready: boolean }) {
             <Instagram size={18} /> {d.instagram.connectButton}
           </Button>
         )}
+        {/* The very first account is often a CLIENT's, not the admin's own —
+            so the invite path has to be reachable before anything is connected,
+            not only from an existing account's card. */}
+        {ready && <AddAccountDialog onChanged={onChanged} />}
+
         <div className="mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-(--color-fg-muted)">
           <span className="flex items-center gap-1.5"><MessagesSquare size={13} className="text-(--color-mod-content)" /> {d.instagram.capMessages}</span>
           <span className="flex items-center gap-1.5"><MessageSquareText size={13} className="text-(--color-mod-ai)" /> {d.instagram.capComments}</span>

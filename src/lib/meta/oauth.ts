@@ -83,6 +83,14 @@ interface OAuthStatePayload {
    * on single-account installs, where "the only account" is unambiguous.
    */
   accountId?: string;
+  /**
+   * Set when the authorization was started from a connect INVITATION rather
+   * than by a signed-in admin — i.e. the person at the keyboard is the
+   * Instagram account owner, who has no account here at all. The callback
+   * validates this invite instead of demanding an admin session; `adminId`
+   * then names the admin who issued the link, purely for the audit trail.
+   */
+  inviteId?: string;
 }
 
 function sign(data: string): string {

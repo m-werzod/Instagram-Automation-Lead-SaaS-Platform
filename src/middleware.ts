@@ -10,6 +10,14 @@ import { NextRequest, NextResponse } from "next/server";
 const PUBLIC_PREFIXES = [
   "/login",
   "/f/", // public hosted lead-capture landing pages
+  "/connect/", // invitation pages — opened by the Instagram account OWNER, who has no session here
+  "/api/connect/", // starts the invited authorization (the invite token IS the authorization)
+  // Meta sends the account OWNER back here after an invited authorization, and
+  // they have no session — so this cannot be gated on a cookie. The route does
+  // the real check either way: a matching admin session for an admin-initiated
+  // flow, a valid unused invitation for an invited one, and an HMAC-signed
+  // state for both.
+  "/api/meta/oauth/callback",
   "/api/auth/login",
   "/api/webhooks", // Meta webhook (signature-validated in the route)
   "/api/cron", // scheduler-driven queue drain (CRON_SECRET-validated in the route)

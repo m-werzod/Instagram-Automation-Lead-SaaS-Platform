@@ -277,6 +277,39 @@ export const uz = {
     webhookFix: "Hodisalarni yoqish",
     webhookFixOk: "Hodisalar yetib kelmoqda",
     webhookFixHint: "Bu yoqilmaguncha xabarlar va izohlar platformaga tushmaydi.",
+
+    /* --- hisob egasini ruxsat berishga taklif qilish ------------------------ */
+    invites: {
+      openBtn: "Boshqa hisob qo‘shish",
+      dialogTitle: "Boshqa Instagram hisobini qo‘shish",
+      hereTitle: "Hisob shu yerda, o‘zimda",
+      hereText: "O‘sha Instagram hisobiga shu brauzerda hoziroq kiring. Instagram qaysi hisobni tanlashingizni so‘raydi.",
+      hereBtn: "Instagramga o‘tish",
+      linkTitle: "Hisob egasiga havola yuborish",
+      linkText:
+        "Instagramga faqat hisob egasining o‘zi ruxsat bera oladi — foydalanuvchi nomi orqali so‘rov yuborishning iloji yo‘q. Havola yarating va unga yuboring; u o‘z telefonida tasdiqlaydi. Shundan so‘ng hisob shu yerda paydo bo‘ladi.",
+      label: "Bu havola kim uchun?",
+      labelPh: "@foydalanuvchi nomi yoki izoh",
+      labelHint: "Bu faqat o‘zingiz uchun belgi. Qaysi hisob ulanishini Instagram hal qiladi.",
+      expiry: "Havola amal qilish muddati",
+      hours: (n: number) => (n === 24 ? "1 kun" : n < 24 ? `${n} soat` : `${n / 24} kun`),
+      create: "Havola yaratish",
+      createdTitle: "Havola tayyor — hoziroq nusxalang",
+      createdHint: "Bu havola faqat bir marta ko‘rsatiladi. Hisob egasiga yuboring; u bir marta ishlaydi va keyin to‘xtaydi.",
+      linkLabel: "Ulanish havolasi",
+      pending: "Siz yuborgan havolalar",
+      none: "Hozircha havola yo‘q.",
+      revoke: "Bekor qilish",
+      revokeConfirm: "Bu havola bekor qilinsinmi? Havola bor odam endi ulana olmaydi.",
+      statuses: {
+        PENDING: "Kutilmoqda",
+        USED: "Ulandi",
+        EXPIRED: "Muddati tugagan",
+        REVOKED: "Bekor qilingan",
+      } as Record<string, string>,
+      expiresAt: "Tugaydi",
+      createdBy: "Yaratdi",
+    },
   },
 
   leadButton: {
@@ -454,6 +487,48 @@ export const uz = {
     thanksDefault: "Rahmat! Ma’lumotlaringizni qabul qildik.",
     poweredBy: "Instagram Avtomatika asosida",
     progress: (i: number, n: number) => `${i} / ${n}`,
+  },
+
+  connect: {
+    title: "Instagram hisobingizni ulang",
+    intro: "Sizdan bu platformaga Instagram hisobini boshqarish uchun ruxsat berishingiz so‘ralmoqda.",
+    forLabel: "Kim uchun",
+    continueBtn: "Instagramga o‘tish",
+    stepsTitle: "Keyin nima bo‘ladi",
+    s1: "Instagramning o‘z sahifasi ochiladi.",
+    s2: "Ulamoqchi bo‘lgan Instagram hisobiga kirasiz. Parolni instagram.com’da kiritasiz — bu platforma uni hech qachon ko‘rmaydi.",
+    s3: "Instagram ilova nima qila olishini ko‘rsatib, ruxsat so‘raydi. Barcha ruxsatlarni yoniq qoldirib, “Ruxsat berish”ni bosing.",
+    s4: "To‘g‘ridan-to‘g‘ri shu yerga qaytasiz. Hammasi shu — sahifani yopishingiz mumkin.",
+    permsTitle: "Nima so‘ralmoqda",
+    perm1: "Profil, postlar va Reels’ni o‘qish",
+    perm2: "Shaxsiy xabarlarni o‘qish va javob berish",
+    perm3: "Izohlarni o‘qish va javob berish",
+    needPro: "Hisob Biznes yoki Ijodkor turida bo‘lishi kerak. Instagram shaxsiy hisoblarga bunga ruxsat bermaydi.",
+    safety: "Bu havola bir marta ishlaydi va keyin to‘xtaydi. Siz Instagramda tasdiqlamaguningizcha hech narsa o‘qilmaydi va istalgan vaqtda Instagram sozlamalaridan ruxsatni olib tashlashingiz mumkin.",
+    expiresOn: (when: string) => `Havola muddati: ${when}.`,
+
+    invalidTitle: "Bu havoladan foydalanib bo‘lmaydi",
+    askNew: "Havolani yuborgan odamdan yangisini so‘rang.",
+
+    doneTitle: "Ulandi",
+    doneText: (u: string) => `@${u} ulandi. Endi sahifani yopishingiz mumkin.`,
+    doneTextPlain: "Instagram hisobi ulandi. Endi sahifani yopishingiz mumkin.",
+    failTitle: "Ulanmadi",
+
+    reasons: {
+      unknown: "Bu havola tanilmadi. Noto‘g‘ri kiritilgan yoki allaqachon o‘chirilgan bo‘lishi mumkin.",
+      invalid_link: "Bu havola tanilmadi. Noto‘g‘ri kiritilgan yoki allaqachon o‘chirilgan bo‘lishi mumkin.",
+      expired: "Havola muddati tugagan. Havolalar ataylab qisqa muddatli.",
+      used: "Bu havola allaqachon ishlatilgan. Har bir havola bitta hisobni bir marta ulaydi.",
+      revoked: "Havolani yuborgan odam uni bekor qilgan.",
+      denied: "Ruxsat oynasi bekor qilindi yoki biror ruxsat o‘chirib qoldirildi. Hech narsa o‘zgarmadi — havolani qayta oching va hammasi yoniq holda “Ruxsat berish”ni bosing.",
+      not_configured: "Bu platforma sozlab bo‘linmagan, shuning uchun hozircha ulanishni qabul qila olmaydi. Havolani yuborgan odamga xabar bering.",
+      rate_limited: "Juda ko‘p urinish. Bir necha daqiqadan so‘ng qayta urinib ko‘ring.",
+      missing_params: "Instagram ruxsat qaytarmadi. Havolani qayta oching.",
+      meta_error: "Instagram ruxsat berishda muammo borligini aytdi. Havolani qayta urinib ko‘ring.",
+      connect_failed: "Ulanish tugallanmadi.",
+      failed: "Nimadir xato ketdi. Havolani qayta urinib ko‘ring.",
+    } as Record<string, string>,
   },
 
   content: {

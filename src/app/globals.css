@@ -124,6 +124,58 @@
   --shadow-pop: 0 4px 8px -2px rgb(0 0 0 / 0.5), 0 14px 24px -6px rgb(0 0 0 / 0.55);
 }
 
+/*
+ * Explicit LIGHT, for subtrees that must stay light regardless of the admin's
+ * choice — the public connect and lead-capture pages, which are shown to people
+ * outside the organisation and have to look the same for everyone.
+ *
+ * :root already carries these values from @theme, so this block exists purely so
+ * that a `data-theme="light"` container nested inside a dark document can
+ * override the inherited dark values. Keep it in sync with @theme above.
+ */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --color-bg: #f4f6fb;
+  --color-panel: #ffffff;
+  --color-panel-2: #f4f6fa;
+  --color-panel-3: #e9edf5;
+  --color-border: #e4e9f2;
+  --color-border-strong: #cbd5e4;
+  --color-surface-raised: #ffffff;
+  --color-scrim: rgb(15 23 42 / 0.40);
+
+  --color-fg: #101828;
+  --color-fg-muted: #4a5872;
+  --color-fg-faint: #66748f;
+
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-soft: #eef2ff;
+  --color-ok: #16a34a;
+  --color-ok-soft: #e8f7ee;
+  --color-warn: #d97706;
+  --color-warn-soft: #fdf3e2;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fdecec;
+  --color-info: #0e7fa8;
+  --color-info-soft: #e6f5fa;
+  --color-on: #16a34a;
+  --color-off: #64748b;
+
+  --color-mod-overview: #2563eb;
+  --color-mod-instagram: #db2777;
+  --color-mod-ai: #7c3aed;
+  --color-mod-content: #0891b2;
+  --color-mod-leads: #16a34a;
+  --color-mod-ads: #d97706;
+  --color-mod-system: #64748b;
+
+  --shadow-card: 0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.06);
+  --shadow-pop: 0 4px 6px -2px rgb(16 24 40 / 0.05), 0 12px 16px -4px rgb(16 24 40 / 0.1);
+}
+
+
 html {
   color-scheme: light;
 }

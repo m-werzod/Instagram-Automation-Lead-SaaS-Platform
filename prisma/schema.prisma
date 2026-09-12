@@ -137,7 +137,7 @@ enum AutomationTriggerType {
 // ---------- auth ----------
 
 model Admin {
-  id String @id @default(cuid())
+  id           String    @id @default(cuid())
   /// Username used to sign in (case-insensitive: always stored lowercased).
   login        String    @unique
   /// Optional contact address — NOT used for authentication.
@@ -149,8 +149,9 @@ model Admin {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  sessions  Session[]
-  auditLogs AuditLog[]
+  sessions       Session[]
+  auditLogs      AuditLog[]
+  connectInvites ConnectInvite[]
 }
 
 model Session {
@@ -204,20 +205,21 @@ model InstagramAccount {
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
-  tokens        InstagramToken[]
-  permissions   InstagramPermission[]
-  agents        AIAgent[]
-  content       ContentItem[]
-  conversations Conversation[]
-  documents     KnowledgeDocument[]
-  chunks        KnowledgeChunk[]
-  leadFlows     LeadFlow[]
-  flowSessions  LeadFlowSession[]
-  leads         Lead[]
-  ctaConfigs    CtaConfig[]
-  campaigns     Campaign[]
-  automations   Automation[]
-  aiUsage       AIUsage[]
+  tokens         InstagramToken[]
+  permissions    InstagramPermission[]
+  agents         AIAgent[]
+  content        ContentItem[]
+  conversations  Conversation[]
+  documents      KnowledgeDocument[]
+  chunks         KnowledgeChunk[]
+  leadFlows      LeadFlow[]
+  flowSessions   LeadFlowSession[]
+  leads          Lead[]
+  ctaConfigs     CtaConfig[]
+  campaigns      Campaign[]
+  automations    Automation[]
+  aiUsage        AIUsage[]
+  connectInvites ConnectInvite[]
 }
 
 model InstagramToken {
@@ -238,17 +240,51 @@ model InstagramToken {
 }
 
 model InstagramPermission {
-  id        String           @id @default(cuid())
-  accountId String
-  account   InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id         String           @id @default(cuid())
+  accountId  String
+  account    InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   permission String
-  granted   Boolean          @default(true)
-  checkedAt DateTime         @default(now())
+  granted    Boolean          @default(true)
+  checkedAt  DateTime         @default(now())
 
   @@unique([accountId, permission])
 }
 
 // ---------- content ----------
+
+/// A single-use link that lets the OWNER of an Instagram account authorize it
+/// without having an account on this platform.
+///
+/// Instagram has no API to "request access" to a handle — only the person
+/// holding the account can approve, on instagram.com, in their own browser. So
+/// onboarding someone else's account means sending them a link. This row is
+/// what makes that link safe: it is single-use, expiring, revocable, and grants
+/// exactly one capability (attach one Instagram account) rather than a session.
+model ConnectInvite {
+  id        String  @id @default(cuid())
+  /// sha256(token + SESSION_SECRET). The raw token exists only inside the link
+  /// that was handed out, so a database leak cannot be replayed.
+  tokenHash String  @unique
+  /// Free text the admin entered to tell invites apart (usually the expected
+  /// @handle). Never used to authenticate — Instagram decides who signs in.
+  label     String?
+
+  createdById String?
+  createdBy   Admin?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+
+  /// The account this invite produced, once it has been used.
+  accountId String?
+  account   InstagramAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([createdById])
+}
 
 model ContentItem {
   id               String           @id @default(cuid())
@@ -299,16 +335,16 @@ model ContentAnalysis {
 // ---------- AI agents ----------
 
 model AIAgent {
-  id          String         @id @default(cuid())
+  id          String           @id @default(cuid())
   accountId   String
   account     InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   name        String
   description String?
-  enabled     Boolean        @default(false)
-  provider    AIProviderType @default(ANTHROPIC)
+  enabled     Boolean          @default(false)
+  provider    AIProviderType   @default(ANTHROPIC)
   model       String
-  temperature Float          @default(0.7)
-  maxTokens   Int            @default(1024)
+  temperature Float            @default(0.7)
+  maxTokens   Int              @default(1024)
 
   systemPrompt      String  @db.Text
   tone              String?
@@ -319,13 +355,13 @@ model AIAgent {
   escalationRules   String? @db.Text
 
   // feature toggles — each is enforced in the worker pipeline, not decorative
-  autoReply              Boolean @default(true)
-  leadQualification      Boolean @default(true)
-  knowledgeEnabled       Boolean @default(true)
-  humanHandoffEnabled    Boolean @default(true)
-  autoFollowUp           Boolean @default(false)
-  commentReplyEnabled    Boolean @default(false)
-  maxRepliesPerUserPerHour Int   @default(20)
+  autoReply                Boolean @default(true)
+  leadQualification        Boolean @default(true)
+  knowledgeEnabled         Boolean @default(true)
+  humanHandoffEnabled      Boolean @default(true)
+  autoFollowUp             Boolean @default(false)
+  commentReplyEnabled      Boolean @default(false)
+  maxRepliesPerUserPerHour Int     @default(20)
 
   // tool permission system (spec §34/§35): ids from src/lib/agent/tools.ts
   allowedTools String[]
@@ -371,19 +407,19 @@ model Conversation {
 }
 
 model Message {
-  id               String           @id @default(cuid())
-  conversationId   String
-  conversation     Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  mid              String?          @unique // Meta message id — webhook dedupe anchor
-  direction        MessageDirection
-  sender           MessageSender
-  text             String?          @db.Text
-  attachments      Json?
+  id                String           @id @default(cuid())
+  conversationId    String
+  conversation      Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  mid               String?          @unique // Meta message id — webhook dedupe anchor
+  direction         MessageDirection
+  sender            MessageSender
+  text              String?          @db.Text
+  attachments       Json?
   quickReplyPayload String?
-  sentByAdminId    String?
-  aiLatencyMs      Int?
-  raw              Json?
-  createdAt        DateTime         @default(now())
+  sentByAdminId     String?
+  aiLatencyMs       Int?
+  raw               Json?
+  createdAt         DateTime         @default(now())
 
   @@index([conversationId, createdAt])
 }

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { Languages, Mail, Plus, ScrollText, Send, Settings2, Users } from "lucide-react";
+import { Languages, Mail, ScrollText, Send, Settings2, Users } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
@@ -12,9 +12,10 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardBody, CardHeader, IconChip } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch, ToggleRow } from "@/components/ui/switch";
+import { ToggleRow } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/input";
+import { UsersTab, type AdminRow, type Me } from "@/components/settings/users-tab";
 
 /**
  * Settings — three tabs driven by ?tab=: general switches (spec §16, §37),
@@ -34,19 +35,6 @@ interface GlobalSettings {
   leadAutomationWhenOff: boolean;
 }
 
-interface AdminRow {
-  id: string;
-  login: string;
-  email: string | null;
-  name: string;
-  role: "OWNER" | "ADMIN";
-  isActive: boolean;
-}
-
-interface Me {
-  id: string;
-  role: string;
-}
 
 interface LogRow {
   id: string;
@@ -77,21 +65,25 @@ function SettingsInner() {
   const params = useSearchParams();
 
   const tabParam = params.get("tab");
-  const tab: TabId = tabParam === "admins" || tabParam === "audit" ? tabParam : "general";
+  const requested: TabId = tabParam === "admins" || tabParam === "audit" ? tabParam : "general";
 
   const [settings, setSettings] = React.useState<GlobalSettings | null>(null);
   const [admins, setAdmins] = React.useState<AdminRow[]>([]);
   const [me, setMe] = React.useState<Me | null>(null);
+  const staff = me !== null && me.role !== "USER";
+  const visibleTabs: readonly TabId[] = staff ? TABS : ["general"];
+  const tab: TabId = visibleTabs.includes(requested) ? requested : "general";
 
   const load = React.useCallback(async () => {
-    const [s, a, m] = await Promise.all([
+    const m = await api<{ admin: Me }>("/api/auth/me", { silent: true });
+    setMe(m.admin);
+    const staff = m.admin.role !== "USER";
+    const [s, a] = await Promise.all([
       api<{ settings: GlobalSettings }>("/api/settings/global", { silent: true }),
-      api<{ admins: AdminRow[] }>("/api/admin/admins", { silent: true }),
-      api<{ admin: Me }>("/api/auth/me", { silent: true }),
+      staff ? api<{ admins: AdminRow[] }>("/api/admin/admins", { silent: true }) : Promise.resolve({ admins: [] as AdminRow[] }),
     ]);
     setSettings(s.settings);
     setAdmins(a.admins);
-    setMe(m.admin);
   }, []);
 
   React.useEffect(() => {
@@ -106,10 +98,10 @@ function SettingsInner() {
     <div className="mx-auto max-w-4xl">
       <PageHeader title={d.settings.title} description={d.settings.subtitle} accent="var(--color-mod-system)" />
 
-      <TabBar tab={tab} onSelect={selectTab} labels={d.settings.tabs} />
+      {visibleTabs.length > 1 && <TabBar tabs={visibleTabs} tab={tab} onSelect={selectTab} labels={d.settings.tabs} />}
 
-      {tab === "general" && <GeneralTab settings={settings} onSettings={setSettings} />}
-      {tab === "admins" && <AdminsTab admins={admins} me={me} reload={load} />}
+      {tab === "general" && <GeneralTab settings={settings} onSettings={setSettings} staff={staff} />}
+      {tab === "admins" && <UsersTab admins={admins} me={me} reload={load} />}
       {tab === "audit" && <AuditTab />}
     </div>
   );
@@ -117,7 +109,7 @@ function SettingsInner() {
 
 /* ---------- tabs ---------- */
 
-function TabBar({ tab, onSelect, labels }: { tab: TabId; onSelect: (t: TabId) => void; labels: Record<TabId, string> }) {
+function TabBar({ tabs, tab, onSelect, labels }: { tabs: readonly TabId[]; tab: TabId; onSelect: (t: TabId) => void; labels: Record<TabId, string> }) {
   const icons: Record<TabId, React.ReactNode> = {
     general: <Settings2 size={15} />,
     admins: <Users size={15} />,
@@ -128,7 +120,7 @@ function TabBar({ tab, onSelect, labels }: { tab: TabId; onSelect: (t: TabId) =>
       role="tablist"
       className="mb-5 flex w-fit max-w-full gap-1 overflow-x-auto rounded-lg border border-(--color-border) bg-(--color-panel-2) p-1"
     >
-      {TABS.map((t) => (
+      {tabs.map((t) => (
         <button
           key={t}
           role="tab"
@@ -149,7 +141,7 @@ function TabBar({ tab, onSelect, labels }: { tab: TabId; onSelect: (t: TabId) =>
 
 /* ---------- GENERAL ---------- */
 
-function GeneralTab({ settings, onSettings }: { settings: GlobalSettings | null; onSettings: (s: GlobalSettings) => void }) {
+function GeneralTab({ settings, onSettings, staff }: { settings: GlobalSettings | null; onSettings: (s: GlobalSettings) => void; staff: boolean }) {
   const { d, locale, setLocale } = useI18n();
   const [confirmOff, setConfirmOff] = React.useState(false);
   const [stopWord, setStopWord] = React.useState("");
@@ -218,6 +210,8 @@ function GeneralTab({ settings, onSettings }: { settings: GlobalSettings | null;
         </CardBody>
       </Card>
 
+      {staff && (
+        <>
       {/* Telegram — the PRIMARY lead receiver */}
       <TelegramCard />
 
@@ -270,6 +264,8 @@ function GeneralTab({ settings, onSettings }: { settings: GlobalSettings | null;
           </Button>
         </CardBody>
       </Card>
+        </>
+      )}
 
       {/* emergency-stop typed confirmation — spec §37 */}
       {confirmOff && (
@@ -433,131 +429,6 @@ function TelegramCard() {
   );
 }
 
-function AdminsTab({ admins, me, reload }: { admins: AdminRow[]; me: Me | null; reload: () => Promise<void> }) {
-  const { d } = useI18n();
-  const [busyId, setBusyId] = React.useState<string | null>(null);
-  const isOwner = me?.role === "OWNER";
-
-  async function setActive(a: AdminRow, v: boolean) {
-    setBusyId(a.id);
-    try {
-      await api(`/api/admin/admins/${a.id}`, { method: "PATCH", json: { isActive: v } });
-      toast.success(d.common.saved);
-      await reload();
-    } catch {
-      /* error toast shown by api() */
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  if (!me) {
-    return <p className="py-10 text-center text-sm text-(--color-fg-muted)">{d.common.loading}</p>;
-  }
-
-  return (
-    <Card>
-      <CardHeader
-        icon={<IconChip color="var(--color-mod-system)"><Users size={16} /></IconChip>}
-        title={d.settings.tabs.admins}
-        actions={isOwner ? <CreateAdminDialog onCreated={reload} /> : undefined}
-      />
-      <CardBody className="space-y-2">
-        {admins.map((a) => (
-          <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-(--color-border) px-3 py-2.5">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                {a.name}
-                {a.id === me.id && <span className="font-normal text-(--color-fg-muted)">({d.settings.admins.you})</span>}
-                <Badge tone={a.role === "OWNER" ? "accent" : "default"}>{a.role}</Badge>
-                {!a.isActive && <Badge tone="danger">{d.common.disabled}</Badge>}
-              </div>
-              <div className="mt-0.5 text-[11px] text-(--color-fg-faint)">
-                {d.settings.admins.login}: <span className="font-mono">{a.login}</span>
-                {a.email ? ` · ${a.email}` : ""}
-              </div>
-            </div>
-            {isOwner && a.id !== me.id && (
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="text-xs text-(--color-fg-muted)">{d.settings.admins.activeQ}</span>
-                <Switch checked={a.isActive} disabled={busyId === a.id} onCheckedChange={(v) => void setActive(a, v)} />
-              </div>
-            )}
-          </div>
-        ))}
-      </CardBody>
-    </Card>
-  );
-}
-
-function CreateAdminDialog({ onCreated }: { onCreated: () => Promise<void> }) {
-  const { d } = useI18n();
-  const [open, setOpen] = React.useState(false);
-  const [login, setLogin] = React.useState("");
-  const [email, setEmail] = React.useState("");
-  const [name, setName] = React.useState("");
-  const [password, setPassword] = React.useState("");
-  const [role, setRole] = React.useState<"ADMIN" | "OWNER">("ADMIN");
-  const [busy, setBusy] = React.useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      await api("/api/admin/admins", { method: "POST", json: { login, email: email || undefined, name, password, role } });
-      toast.success(d.common.saved);
-      setOpen(false);
-      setLogin("");
-      setEmail("");
-      setName("");
-      setPassword("");
-      setRole("ADMIN");
-      await onCreated();
-    } catch {
-      /* error toast shown by api() */
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button size="sm" onClick={() => setOpen(true)}>
-        <Plus size={14} /> {d.settings.admins.add}
-      </Button>
-      <DialogContent title={d.settings.admins.add}>
-        <form onSubmit={submit} className="space-y-3">
-          <Field label={d.settings.admins.login}>
-            <Input value={login} onChange={(e) => setLogin(e.target.value)} required autoCapitalize="none" spellCheck={false} />
-          </Field>
-          <Field label={d.settings.admins.name}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} required />
-          </Field>
-          <Field label={`${d.leads.detail.email} (${d.common.optional.toLowerCase()})`}>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </Field>
-          <Field label={d.settings.admins.password}>
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          </Field>
-          <Field label={d.settings.admins.role}>
-            <Select value={role} onChange={(e) => setRole(e.target.value as "ADMIN" | "OWNER")}>
-              <option value="ADMIN">ADMIN</option>
-              <option value="OWNER">OWNER</option>
-            </Select>
-          </Field>
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={() => setOpen(false)}>
-              {d.common.cancel}
-            </Button>
-            <Button type="submit" disabled={busy}>
-              {busy ? d.common.saving : d.common.create}
-            </Button>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 /* ---------- AUDIT ---------- */
 

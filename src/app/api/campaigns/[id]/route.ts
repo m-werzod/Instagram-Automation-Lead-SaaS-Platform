@@ -3,13 +3,14 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { fetchCampaignStatus } from "@/lib/meta/marketing";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (req: NextRequest, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const campaign = await prisma.campaign.findUnique({
     where: { id },
@@ -20,6 +21,7 @@ export const GET = route(async (req: NextRequest, ctx: RouteCtx) => {
     },
   });
   if (!campaign) throw notFound("Campaign");
+  await assertAccountAccess(auth, campaign.accountId);
 
   let live = null;
   if (campaign.metaCampaignId && !campaign.account.isDemo && req.nextUrl.searchParams.get("live") === "1") {
@@ -64,6 +66,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const existing = await prisma.campaign.findUnique({ where: { id } });
   if (!existing) throw notFound("Campaign");
+  await assertAccountAccess(auth, existing.accountId);
   if (existing.status === "ACTIVE" && body.status !== "ARCHIVED") {
     throw validationError("Pause the campaign before editing it");
   }

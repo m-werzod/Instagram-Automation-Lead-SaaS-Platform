@@ -15,8 +15,9 @@ datasource db {
 // ---------- enums ----------
 
 enum AdminRole {
-  OWNER
-  ADMIN
+  OWNER // full control incl. other admins
+  ADMIN // full platform control
+  USER // only the Instagram accounts explicitly granted in AccountAccess
 }
 
 enum ConnectionMode {
@@ -146,12 +147,14 @@ model Admin {
   passwordHash String
   role         AdminRole @default(ADMIN)
   isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   sessions       Session[]
   auditLogs      AuditLog[]
   connectInvites ConnectInvite[]
+  accountAccess  AccountAccess[]
 }
 
 model Session {
@@ -168,6 +171,22 @@ model Session {
 
   @@index([adminId])
   @@index([expiresAt])
+}
+
+/// Which Instagram accounts a USER-role admin may see and operate. OWNER and
+/// ADMIN are unrestricted and never need rows here. Enforced server-side in
+/// src/lib/auth/access.ts on every account-scoped route.
+model AccountAccess {
+  id          String           @id @default(cuid())
+  adminId     String
+  admin       Admin            @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  grantedById String?
+  createdAt   DateTime         @default(now())
+
+  @@unique([adminId, accountId])
+  @@index([accountId])
 }
 
 // Single-row global switches (id always 1)
@@ -220,6 +239,7 @@ model InstagramAccount {
   automations    Automation[]
   aiUsage        AIUsage[]
   connectInvites ConnectInvite[]
+  accessGrants   AccountAccess[]
 }
 
 model InstagramToken {

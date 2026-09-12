@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { SUPPORTED_CTA_TYPES } from "@/lib/meta/marketing";
@@ -10,12 +11,12 @@ import { randomToken } from "@/lib/crypto";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const sp = req.nextUrl.searchParams;
   const accountId = sp.get("accountId") ?? undefined;
   const contentId = sp.get("contentId") ?? undefined;
   const ctas = await prisma.ctaConfig.findMany({
-    where: { ...(accountId ? { accountId } : {}), ...(contentId ? { contentId } : {}) },
+    where: { ...(await accountScope(auth, accountId)), ...(contentId ? { contentId } : {}) },
     include: {
       account: { select: { username: true, connectionMode: true } },
       content: { select: { id: true, caption: true, thumbnailUrl: true } },
@@ -53,6 +54,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const account = await prisma.instagramAccount.findUnique({ where: { id: body.accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   // Honest kind-specific validation (spec §12–13):
   if (body.kind === "AD_NATIVE") {

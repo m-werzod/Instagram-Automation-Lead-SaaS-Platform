@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import type { Prisma } from "@prisma/client";
@@ -32,6 +33,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   const body = await parseBody(req, updateSchema);
   const existing = await prisma.ctaConfig.findUnique({ where: { id } });
   if (!existing) throw notFound("CTA config");
+  await assertAccountAccess(auth, existing.accountId);
 
   const cta = await prisma.ctaConfig.update({
     where: { id },
@@ -59,6 +61,7 @@ export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   const id = await pathParam(ctx, "id");
   const existing = await prisma.ctaConfig.findUnique({ where: { id } });
   if (!existing) throw notFound("CTA config");
+  await assertAccountAccess(auth, existing.accountId);
   await prisma.ctaConfig.delete({ where: { id } });
   await audit({
     adminId: auth.admin.id,

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { enqueue, drainNow } from "@/lib/queue";
@@ -10,7 +11,7 @@ import { enqueue, drainNow } from "@/lib/queue";
 const STATUSES = ["NEW", "CONTACTED", "QUALIFIED", "IN_PROGRESS", "WON", "LOST"] as const;
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const sp = req.nextUrl.searchParams;
   const accountId = sp.get("accountId") ?? undefined;
   const status = sp.get("status") ?? undefined;
@@ -18,7 +19,7 @@ export const GET = route(async (req: NextRequest) => {
 
   const leads = await prisma.lead.findMany({
     where: {
-      ...(accountId ? { accountId } : {}),
+      ...(await accountScope(auth, accountId)),
       ...(status && STATUSES.includes(status as (typeof STATUSES)[number]) ? { status: status as (typeof STATUSES)[number] } : {}),
       ...(q
         ? {
@@ -58,6 +59,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const account = await prisma.instagramAccount.findUnique({ where: { id: body.accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   const lead = await prisma.lead.create({
     data: {

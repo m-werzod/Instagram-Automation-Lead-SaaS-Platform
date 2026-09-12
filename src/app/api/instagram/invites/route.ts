@@ -1,14 +1,14 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireStaff } from "@/lib/auth/guard";
 import { createInvite, listInvites, INVITE_TTL_HOURS_DEFAULT, INVITE_TTL_HOURS_MAX } from "@/lib/meta/invites";
 import { isInstagramLoginConfigured, isMetaConfigured } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { audit } from "@/lib/audit";
 
 export const GET = route(async () => {
-  await requireAdmin();
+  await requireStaff();
   return ok({ invites: await listInvites() });
 });
 
@@ -26,7 +26,7 @@ const createSchema = z.object({
  */
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
-  const auth = await requireAdmin();
+  const auth = await requireStaff();
 
   // Refuse to hand out a link that is guaranteed to dead-end on the owner's
   // phone — that wastes their time and looks broken from outside.

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok, assertSameOrigin, clientIp } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireStaff } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { deliverEmailEvent } from "@/lib/email";
 import { emailEnv } from "@/lib/env";
@@ -9,7 +9,7 @@ import { emailEnv } from "@/lib/env";
 /** Send a real test email synchronously so the admin gets immediate feedback. */
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
-  const auth = await requireAdmin();
+  const auth = await requireStaff();
   const env = emailEnv(); // throws CONFIG_MISSING with fix instructions if unset
 
   const event = await prisma.emailEvent.create({

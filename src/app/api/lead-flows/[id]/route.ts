@@ -3,12 +3,13 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { questionSchema } from "@/lib/validation/leadflow";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const flow = await prisma.leadFlow.findUnique({
     where: { id },
@@ -19,6 +20,7 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
     },
   });
   if (!flow) throw notFound("Lead flow");
+  await assertAccountAccess(auth, flow.accountId);
   return ok({ flow });
 });
 
@@ -40,6 +42,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const existing = await prisma.leadFlow.findUnique({ where: { id }, include: { questions: true } });
   if (!existing) throw notFound("Lead flow");
+  await assertAccountAccess(auth, existing.accountId);
 
   const flow = await prisma.$transaction(async (tx) => {
     if (body.questions) {
@@ -92,6 +95,7 @@ export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   const id = await pathParam(ctx, "id");
   const existing = await prisma.leadFlow.findUnique({ where: { id } });
   if (!existing) throw notFound("Lead flow");
+  await assertAccountAccess(auth, existing.accountId);
   await prisma.leadFlow.delete({ where: { id } });
   await audit({
     adminId: auth.admin.id,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { buildState, facebookAuthorizeUrl, instagramAuthorizeUrl } from "@/lib/meta/oauth";
 import { randomToken } from "@/lib/crypto";
 import { coreEnv, isInstagramLoginConfigured, isMetaConfigured } from "@/lib/env";
@@ -49,6 +50,7 @@ export const GET = route(async (req: NextRequest) => {
         select: { id: true },
       });
       if (!exists) return NextResponse.redirect(`${settingsUrl}?error=account_not_found`);
+      await assertAccountAccess(auth, exists.id);
       accountId = exists.id;
     }
   }

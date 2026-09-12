@@ -3,12 +3,13 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { runAutomations } from "@/lib/automation/engine";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const lead = await prisma.lead.findUnique({
     where: { id },
@@ -21,6 +22,7 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
     },
   });
   if (!lead) throw notFound("Lead");
+  await assertAccountAccess(auth, lead.accountId);
   const emails = await prisma.emailEvent.findMany({ where: { leadId: id }, orderBy: { createdAt: "desc" }, take: 10 });
   return ok({ lead, emails });
 });
@@ -41,6 +43,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const existing = await prisma.lead.findUnique({ where: { id } });
   if (!existing) throw notFound("Lead");
+  await assertAccountAccess(auth, existing.accountId);
 
   const lead = await prisma.lead.update({ where: { id }, data: body });
 

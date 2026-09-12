@@ -3,18 +3,20 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const automation = await prisma.automation.findUnique({
     where: { id },
     include: { runs: { orderBy: { createdAt: "desc" }, take: 30 } },
   });
   if (!automation) throw notFound("Automation");
+  await assertAccountAccess(auth, automation.accountId);
   return ok({ automation });
 });
 
@@ -34,6 +36,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const existing = await prisma.automation.findUnique({ where: { id } });
   if (!existing) throw notFound("Automation");
+  await assertAccountAccess(auth, existing.accountId);
 
   const automation = await prisma.automation.update({
     where: { id },
@@ -70,6 +73,7 @@ export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   const id = await pathParam(ctx, "id");
   const existing = await prisma.automation.findUnique({ where: { id } });
   if (!existing) throw notFound("Automation");
+  await assertAccountAccess(auth, existing.accountId);
   await prisma.automation.delete({ where: { id } });
   await audit({
     adminId: auth.admin.id,

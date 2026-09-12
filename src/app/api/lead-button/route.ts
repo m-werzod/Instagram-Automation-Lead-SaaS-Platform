@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { coreEnv } from "@/lib/env";
@@ -64,11 +65,12 @@ async function loadLeadButton(accountId: string) {
 }
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const accountId = req.nextUrl.searchParams.get("accountId");
   if (!accountId) throw validationError("accountId is required");
   const account = await prisma.instagramAccount.findUnique({ where: { id: accountId }, select: { id: true, adAccountId: true } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   const leadButton = await loadLeadButton(accountId);
   return ok({
@@ -85,6 +87,7 @@ export const PUT = route(async (req: NextRequest) => {
 
   const account = await prisma.instagramAccount.findUnique({ where: { id: body.accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   if (body.contentId) {
     const content = await prisma.contentItem.findFirst({ where: { id: body.contentId, accountId: body.accountId } });

@@ -1,10 +1,10 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireStaff } from "@/lib/auth/guard";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  await requireStaff();
   const sp = req.nextUrl.searchParams;
   const action = sp.get("action") ?? undefined;
   const adminId = sp.get("adminId") ?? undefined;

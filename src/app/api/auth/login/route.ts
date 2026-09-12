@@ -41,6 +41,7 @@ export const POST = route(async (req: NextRequest) => {
   }
 
   const { token, session } = await createSession(admin.id, ip, req.headers.get("user-agent"));
+  prisma.admin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }).catch(() => undefined);
   await audit({ adminId: admin.id, action: AuditActions.LOGIN, ip });
 
   const res = NextResponse.json({

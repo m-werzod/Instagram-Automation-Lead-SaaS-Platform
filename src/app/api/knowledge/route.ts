@@ -2,16 +2,17 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { extractText, processDocument } from "@/lib/knowledge";
 import { embeddingConfig } from "@/lib/env";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const accountId = req.nextUrl.searchParams.get("accountId") ?? undefined;
   const documents = await prisma.knowledgeDocument.findMany({
-    where: accountId ? { accountId } : {},
+    where: await accountScope(auth, accountId),
     include: { account: { select: { username: true } }, agent: { select: { id: true, name: true } } },
     orderBy: { createdAt: "desc" },
   });
@@ -46,6 +47,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const account = await prisma.instagramAccount.findUnique({ where: { id: accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
   if (agentId) {
     const agent = await prisma.aIAgent.findFirst({ where: { id: agentId, accountId } });
     if (!agent) throw validationError("Agent does not belong to this account");

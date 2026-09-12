@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { activateCampaignInMeta } from "@/lib/meta/marketing";
@@ -25,6 +26,7 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const campaign = await prisma.campaign.findUnique({ where: { id }, include: { account: true } });
   if (!campaign) throw notFound("Campaign");
+  await assertAccountAccess(auth, campaign.accountId);
   if (campaign.status !== "CREATED" && campaign.status !== "PAUSED") {
     throw validationError(`Campaign must be created in Meta (PAUSED) first — current status: ${campaign.status}`);
   }

@@ -1,11 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { route, ok } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountIdScope } from "@/lib/auth/access";
 import { detectCapabilities } from "@/lib/meta/capabilities";
 
 export const GET = route(async () => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const accounts = await prisma.instagramAccount.findMany({
+    where: await accountIdScope(auth),
     include: { permissions: true, tokens: true, _count: { select: { conversations: true, leads: true, content: true, agents: true } } },
     orderBy: { createdAt: "asc" },
   });

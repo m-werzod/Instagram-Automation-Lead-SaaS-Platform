@@ -1,13 +1,13 @@
 import { NextRequest } from "next/server";
 import { route, ok, assertSameOrigin } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireStaff } from "@/lib/auth/guard";
 import { AppError } from "@/lib/errors";
 import { telegramConfig, saveTelegramSettings, tgDetectChatId, tgSendMessage } from "@/lib/telegram";
 
 /** Send a real test message to the configured bot chat (auto-detects the chat first). */
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
-  await requireAdmin();
+  await requireStaff();
 
   const cfg = await telegramConfig();
   if (!cfg) {

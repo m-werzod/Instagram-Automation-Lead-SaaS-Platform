@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireAdmin, requireStaff } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { getGlobalSettings } from "@/lib/settings";
 
@@ -22,7 +22,7 @@ const updateSchema = z.object({
 
 export const PATCH = route(async (req: NextRequest) => {
   assertSameOrigin(req);
-  const auth = await requireAdmin();
+  const auth = await requireStaff();
   const body = await parseBody(req, updateSchema);
   const before = await getGlobalSettings();
 

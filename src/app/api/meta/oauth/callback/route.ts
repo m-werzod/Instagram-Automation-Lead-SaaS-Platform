@@ -5,6 +5,7 @@ import { finalizeFacebookLogin, finalizeInstagramLogin } from "@/lib/meta/accoun
 import { checkInvite, markInviteUsed } from "@/lib/meta/invites";
 import { prisma } from "@/lib/prisma";
 import { getAuth } from "@/lib/auth/session";
+import { grantAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { clientIp } from "@/lib/api";
 import { createLogger, errorFields } from "@/lib/logger";
@@ -93,6 +94,9 @@ export async function GET(req: NextRequest) {
         : await finalizeInstagramLogin(code);
 
     for (const account of result.accounts) {
+      // A USER who connects an account gets access to it without an admin
+      // having to assign it afterwards (no-op for OWNER/ADMIN, who see everything).
+      if (!inviteId && state.adminId) await grantAccountAccess(state.adminId, account.id, state.adminId).catch(() => undefined);
       await audit({
         adminId: state.adminId || undefined,
         action: AuditActions.CONNECTED_INSTAGRAM,

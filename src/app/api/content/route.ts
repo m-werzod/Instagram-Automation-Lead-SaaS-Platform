@@ -2,9 +2,10 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope } from "@/lib/auth/access";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const sp = req.nextUrl.searchParams;
   const accountId = sp.get("accountId") ?? undefined;
   const type = sp.get("type") ?? undefined; // REELS | FEED | STORY
@@ -12,7 +13,7 @@ export const GET = route(async (req: NextRequest) => {
 
   const items = await prisma.contentItem.findMany({
     where: {
-      ...(accountId ? { accountId } : {}),
+      ...(await accountScope(auth, accountId)),
       ...(type ? { mediaProductType: type } : {}),
     },
     include: {

@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { route, ok, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { notFound } from "@/lib/errors";
 import { isWithinMessagingWindow } from "@/lib/meta/messaging";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const conversation = await prisma.conversation.findUnique({
     where: { id },
@@ -21,6 +22,7 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
     },
   });
   if (!conversation) throw notFound("Conversation");
+  await assertAccountAccess(auth, conversation.accountId);
 
   const lead = conversation.leadId
     ? await prisma.lead.findUnique({

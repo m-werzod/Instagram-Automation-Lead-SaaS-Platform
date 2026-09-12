@@ -1,17 +1,19 @@
 import { route, ok, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { notFound, metaUnsupported } from "@/lib/errors";
 import { listAdAccounts } from "@/lib/meta/marketing";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const account = await prisma.instagramAccount.findUnique({
     where: { id },
     include: { tokens: { where: { kind: "ads", status: "ACTIVE" }, take: 1 } },
   });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   // Ads readiness is decided by the advertising authorization, not by how
   // Instagram itself was connected — an Instagram-Login account gains ads once

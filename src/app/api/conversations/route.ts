@@ -2,9 +2,10 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope } from "@/lib/auth/access";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const sp = req.nextUrl.searchParams;
   const accountId = sp.get("accountId") ?? undefined;
   const status = sp.get("status") ?? undefined; // OPEN | HUMAN | CLOSED
@@ -12,7 +13,7 @@ export const GET = route(async (req: NextRequest) => {
 
   const conversations = await prisma.conversation.findMany({
     where: {
-      ...(accountId ? { accountId } : {}),
+      ...(await accountScope(auth, accountId)),
       ...(status === "OPEN" || status === "HUMAN" || status === "CLOSED" ? { status } : {}),
       ...(q ? { OR: [{ username: { contains: q, mode: "insensitive" } }, { igsid: { contains: q } }] } : {}),
     },

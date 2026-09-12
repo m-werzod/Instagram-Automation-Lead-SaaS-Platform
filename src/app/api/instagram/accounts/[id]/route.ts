@@ -2,19 +2,21 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireAdmin, requireStaff } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { notFound } from "@/lib/errors";
 import { audit } from "@/lib/audit";
 import { detectCapabilities } from "@/lib/meta/capabilities";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const acc = await prisma.instagramAccount.findUnique({
     where: { id },
     include: { permissions: true, tokens: { orderBy: { issuedAt: "desc" } } },
   });
   if (!acc) throw notFound("Instagram account");
+  await assertAccountAccess(auth, acc.id);
   return ok({
     account: {
       ...acc,
@@ -40,7 +42,7 @@ const patchSchema = z.object({
 
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
-  const auth = await requireAdmin();
+  const auth = await requireStaff(); // linking an ad account is a billing relationship — staff only
   const id = await pathParam(ctx, "id");
   const body = await parseBody(req, patchSchema);
 

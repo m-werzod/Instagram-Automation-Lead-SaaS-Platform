@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { DEFAULT_ALLOWED_TOOLS, AGENT_TOOLS } from "@/lib/agent/tools";
@@ -10,10 +11,10 @@ import { DEFAULT_MODELS } from "@/lib/ai";
 import { isProviderConfigured } from "@/lib/ai";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const accountId = req.nextUrl.searchParams.get("accountId") ?? undefined;
   const agents = await prisma.aIAgent.findMany({
-    where: accountId ? { accountId } : {},
+    where: await accountScope(auth, accountId),
     include: { account: { select: { username: true, isDemo: true } }, _count: { select: { conversations: true } } },
     orderBy: { createdAt: "asc" },
   });
@@ -41,6 +42,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const account = await prisma.instagramAccount.findUnique({ where: { id: body.accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   const providerName = { ANTHROPIC: "anthropic", OPENAI: "openai", GOOGLE: "google" } as const;
   const agent = await prisma.aIAgent.create({

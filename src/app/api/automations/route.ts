@@ -3,15 +3,16 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const accountId = req.nextUrl.searchParams.get("accountId") ?? undefined;
   const automations = await prisma.automation.findMany({
-    where: accountId ? { accountId } : {},
+    where: await accountScope(auth, accountId),
     include: { account: { select: { username: true } }, _count: { select: { runs: true } } },
     orderBy: { createdAt: "asc" },
   });
@@ -54,6 +55,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const account = await prisma.instagramAccount.findUnique({ where: { id: body.accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   const automation = await prisma.automation.create({
     data: {

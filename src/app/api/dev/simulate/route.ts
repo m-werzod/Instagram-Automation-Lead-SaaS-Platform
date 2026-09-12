@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { AppError, notFound } from "@/lib/errors";
 import { enqueue } from "@/lib/queue";
 import { sha256Hex } from "@/lib/crypto";
@@ -23,7 +24,7 @@ const schema = z.object({
 
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
-  await requireAdmin();
+  const auth = await requireAdmin();
   if (process.env.NODE_ENV === "production" || process.env.ENABLE_DEV_SIMULATOR !== "true") {
     throw new AppError("FORBIDDEN", "The webhook simulator is disabled", {
       reason: "ENABLE_DEV_SIMULATOR is not 'true' or the app runs in production.",
@@ -34,6 +35,7 @@ export const POST = route(async (req: NextRequest) => {
   const body = await parseBody(req, schema);
   const account = await prisma.instagramAccount.findUnique({ where: { id: body.accountId } });
   if (!account) throw notFound("Instagram account");
+  await assertAccountAccess(auth, account.id);
 
   const mid = `sim-${sha256Hex(`${body.igsid}:${Date.now()}:${Math.random()}`).slice(0, 24)}`;
   const payload = {

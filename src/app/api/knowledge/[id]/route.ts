@@ -2,17 +2,19 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const document = await prisma.knowledgeDocument.findUnique({
     where: { id },
     include: { chunks: { orderBy: { idx: "asc" }, take: 5, select: { idx: true, text: true } } },
   });
   if (!document) throw notFound("Document");
+  await assertAccountAccess(auth, document.accountId);
   return ok({ document });
 });
 
@@ -22,6 +24,7 @@ export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   const id = await pathParam(ctx, "id");
   const existing = await prisma.knowledgeDocument.findUnique({ where: { id } });
   if (!existing) throw notFound("Document");
+  await assertAccountAccess(auth, existing.accountId);
   await prisma.knowledgeDocument.delete({ where: { id } });
   await audit({
     adminId: auth.admin.id,

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { accountScope } from "@/lib/auth/access";
 import { fetchAccountInsights } from "@/lib/meta/media";
 
 /**
@@ -10,12 +11,12 @@ import { fetchAccountInsights } from "@/lib/meta/media";
  * is fabricated — unavailable sections return null with a reason.
  */
 export const GET = route(async (req: NextRequest) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const sp = req.nextUrl.searchParams;
   const accountId = sp.get("accountId") ?? undefined;
   const days = Math.min(90, Math.max(1, Number(sp.get("days") ?? 7)));
   const since = new Date(Date.now() - days * 86400_000);
-  const acc = accountId ? { accountId } : {};
+  const acc = await accountScope(auth, accountId);
 
   const [
     inboundMessages,
@@ -40,14 +41,14 @@ export const GET = route(async (req: NextRequest) => {
     prisma.lead.count({ where: { ...acc, createdAt: { gte: since }, status: "WON" } }),
     prisma.leadFlowSession.count({ where: { ...acc, status: "COMPLETED", completedAt: { gte: since } } }),
     prisma.aIUsage.aggregate({
-      where: { ...(accountId ? { accountId } : {}), createdAt: { gte: since } },
+      where: { ...(await accountScope(auth, accountId)), createdAt: { gte: since } },
       _sum: { inputTokens: true, outputTokens: true, costUsd: true },
       _avg: { latencyMs: true },
       _count: true,
     }),
-    prisma.aIUsage.count({ where: { ...(accountId ? { accountId } : {}), createdAt: { gte: since }, success: false } }),
+    prisma.aIUsage.count({ where: { ...(await accountScope(auth, accountId)), createdAt: { gte: since }, success: false } }),
     prisma.campaign.findMany({
-      where: { ...(accountId ? { accountId } : {}) },
+      where: { ...acc },
       select: { id: true, name: true, status: true, dailyBudgetCents: true, currency: true, createdByAi: true },
     }),
     prisma.emailEvent.groupBy({ by: ["status"], _count: true, where: { createdAt: { gte: since } } }),

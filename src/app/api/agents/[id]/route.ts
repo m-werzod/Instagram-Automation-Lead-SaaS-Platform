@@ -3,12 +3,13 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { TOOLS_BY_ID } from "@/lib/agent/tools";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
-  await requireAdmin();
+  const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
   const agent = await prisma.aIAgent.findUnique({
     where: { id },
@@ -18,6 +19,7 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
     },
   });
   if (!agent) throw notFound("Agent");
+  await assertAccountAccess(auth, agent.accountId);
   const flows = await prisma.leadFlow.findMany({
     where: { accountId: agent.accountId },
     select: { id: true, name: true, enabled: true },
@@ -59,6 +61,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const existing = await prisma.aIAgent.findUnique({ where: { id } });
   if (!existing) throw notFound("Agent");
+  await assertAccountAccess(auth, existing.accountId);
 
   if (body.allowedTools) {
     const invalid = body.allowedTools.filter((t) => !TOOLS_BY_ID.has(t));
@@ -112,6 +115,7 @@ export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   const id = await pathParam(ctx, "id");
   const existing = await prisma.aIAgent.findUnique({ where: { id } });
   if (!existing) throw notFound("Agent");
+  await assertAccountAccess(auth, existing.accountId);
   await prisma.aIAgent.delete({ where: { id } });
   await audit({
     adminId: auth.admin.id,

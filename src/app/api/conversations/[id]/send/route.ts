@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { notFound } from "@/lib/errors";
 import { sendInstagramText } from "@/lib/meta/messaging";
 
@@ -21,6 +22,7 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   const conversation = await prisma.conversation.findUnique({ where: { id }, include: { account: true } });
   if (!conversation) throw notFound("Conversation");
+  await assertAccountAccess(auth, conversation.accountId);
 
   const sent = await sendInstagramText(conversation.account, conversation.igsid, body.text, {
     lastUserMessageAt: conversation.lastUserMessageAt,

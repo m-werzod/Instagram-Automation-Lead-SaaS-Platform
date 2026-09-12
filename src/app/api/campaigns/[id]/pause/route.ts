@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { pauseCampaignInMeta } from "@/lib/meta/marketing";
@@ -12,6 +13,7 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   const id = await pathParam(ctx, "id");
   const campaign = await prisma.campaign.findUnique({ where: { id }, include: { account: true } });
   if (!campaign) throw notFound("Campaign");
+  await assertAccountAccess(auth, campaign.accountId);
 
   if (campaign.metaCampaignId && !campaign.account.isDemo) {
     await pauseCampaignInMeta(campaign.account, campaign);

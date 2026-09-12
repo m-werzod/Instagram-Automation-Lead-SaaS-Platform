@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { route, ok, parseBody, assertSameOrigin } from "@/lib/api";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireStaff } from "@/lib/auth/guard";
 import { audit, AuditActions } from "@/lib/audit";
 import { telegramConfig, saveTelegramSettings, tgGetMe, tgDetectChatId } from "@/lib/telegram";
 
@@ -13,7 +13,7 @@ import { telegramConfig, saveTelegramSettings, tgGetMe, tgDetectChatId } from "@
  */
 
 export const GET = route(async () => {
-  await requireAdmin();
+  await requireStaff();
   const cfg = await telegramConfig();
   if (!cfg) return ok({ telegram: { configured: false, enabled: false, botUsername: null, chatId: null, source: null } });
 
@@ -42,7 +42,7 @@ const putSchema = z.object({
 
 export const PUT = route(async (req: NextRequest) => {
   assertSameOrigin(req);
-  const auth = await requireAdmin();
+  const auth = await requireStaff();
   const body = await parseBody(req, putSchema);
 
   let botUsername: string | null = null;

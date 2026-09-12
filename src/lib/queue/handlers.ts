@@ -9,6 +9,7 @@ import { deliverEmailEvent, notifyLeadSubmitted } from "@/lib/email";
 import { deliverLeadToTelegram } from "@/lib/telegram";
 import { refreshExpiringTokens } from "@/lib/meta/accounts";
 import { syncMedia } from "@/lib/meta/media";
+import { runPublishJob } from "@/lib/meta/publishing";
 import { getGlobalSettings } from "@/lib/settings";
 import { createLogger, errorFields } from "@/lib/logger";
 import type { Prisma } from "@prisma/client";
@@ -342,6 +343,14 @@ registerHandler("leadgen.fetch", async (payload) => {
   });
   await prisma.leadEvent.create({ data: { leadId: lead.id, type: "CREATED", data: { leadgenId } } });
   await enqueue("lead.process", { leadId: lead.id }, { idempotencyKey: `lead.process:${lead.id}` });
+});
+
+// ---------- publish.run (Instagram content publishing) ----------
+
+registerHandler("publish.run", async (payload) => {
+  const publishJobId = String(payload.publishJobId ?? "");
+  if (!publishJobId) return;
+  await runPublishJob(publishJobId);
 });
 
 // ---------- periodic: token refresh ----------

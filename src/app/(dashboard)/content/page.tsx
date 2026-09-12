@@ -15,7 +15,9 @@ import {
   Megaphone,
   MessageCircle,
   MousePointerClick,
+  PlusCircle,
   RefreshCw,
+  ShieldAlert,
   Sparkles,
 } from "lucide-react";
 import { api } from "@/lib/client/api";
@@ -27,6 +29,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
+import { PublishDialog, type LimitInfo } from "@/components/content/publish-dialog";
+import { PublishQueue } from "@/components/content/publish-queue";
 
 /**
  * Posts & Reels library — a visual grid of everything the account published.
@@ -79,6 +83,18 @@ export default function ContentPage() {
   const { selected, loading: accountsLoading } = useAccounts();
   const [items, setItems] = React.useState<ContentRow[] | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
+  const [publishOpen, setPublishOpen] = React.useState(false);
+  const [limitInfo, setLimitInfo] = React.useState<LimitInfo | null>(null);
+  const [queueKey, setQueueKey] = React.useState(0);
+
+  // Can this account publish from here? Real answer from the granted scopes + Meta's quota endpoint.
+  React.useEffect(() => {
+    if (!selected) return;
+    setLimitInfo(null);
+    api<LimitInfo>(`/api/publish/limit?accountId=${selected.id}`, { silent: true })
+      .then(setLimitInfo)
+      .catch(() => setLimitInfo({ available: false, reason: null, requiredScope: "", limit: null }));
+  }, [selected?.id, selected, queueKey]);
 
   const load = React.useCallback(async () => {
     if (!selected) return;
@@ -173,11 +189,50 @@ export default function ContentPage() {
         }
         accent="var(--color-mod-content)"
         actions={
-          <Button onClick={sync} disabled={busy === "sync"}>
-            <RefreshCw size={15} className={busy === "sync" ? "animate-spin" : undefined} />
-            {busy === "sync" ? d.content.syncing : d.content.sync}
-          </Button>
+          <>
+            <Button variant="secondary" onClick={sync} disabled={busy === "sync"}>
+              <RefreshCw size={15} className={busy === "sync" ? "animate-spin" : undefined} />
+              {busy === "sync" ? d.content.syncing : d.content.sync}
+            </Button>
+            {/* Never a dead button: disabled with the reason when Meta will not let this account publish. */}
+            <Button
+              onClick={() => setPublishOpen(true)}
+              disabled={!limitInfo?.available}
+              title={limitInfo && !limitInfo.available ? limitInfo.reason ?? d.content.publish.unavailable : undefined}
+            >
+              <PlusCircle size={15} /> {d.content.publish.create}
+            </Button>
+          </>
         }
+      />
+
+      {limitInfo && !limitInfo.available && (
+        <div className="mb-5 flex flex-wrap items-start gap-3 rounded-xl border border-(--color-warn)/30 bg-(--color-warn-soft) px-4 py-3 text-xs leading-5">
+          <ShieldAlert size={16} className="mt-0.5 shrink-0 text-(--color-warn)" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-(--color-warn)">{d.content.publish.unavailable}</p>
+            <p className="text-(--color-fg-muted)">{limitInfo.reason ?? d.content.publish.unavailableFix(limitInfo.requiredScope)}</p>
+            {limitInfo.reason && limitInfo.requiredScope && <p className="text-(--color-fg-muted)">{d.content.publish.unavailableFix(limitInfo.requiredScope)}</p>}
+          </div>
+          <Button asChild size="sm" variant="secondary">
+            <a href="https://www.instagram.com/" target="_blank" rel="noreferrer">
+              <ExternalLink size={13} /> {d.content.publish.openInstagram}
+            </a>
+          </Button>
+        </div>
+      )}
+
+      <PublishQueue accountId={selected.id} refreshKey={queueKey} />
+
+      <PublishDialog
+        open={publishOpen}
+        onOpenChange={setPublishOpen}
+        accountId={selected.id}
+        username={selected.username}
+        limitInfo={limitInfo}
+        onCreated={async () => {
+          setQueueKey((k) => k + 1);
+        }}
       />
 
       {list.length === 0 ? (

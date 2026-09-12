@@ -240,6 +240,8 @@ model InstagramAccount {
   aiUsage        AIUsage[]
   connectInvites ConnectInvite[]
   accessGrants   AccountAccess[]
+  mediaAssets    MediaAsset[]
+  publishJobs    PublishJob[]
 }
 
 model InstagramToken {
@@ -805,4 +807,61 @@ model AuditLog {
   @@index([createdAt])
   @@index([adminId, createdAt])
   @@index([action, createdAt])
+}
+
+// ---------- publishing (Instagram content publishing API) ----------
+
+enum PublishStatus {
+  DRAFT
+  SCHEDULED // waiting for scheduledAt (platform-side scheduling — Instagram has none)
+  PROCESSING // containers created, Meta is processing the media
+  PUBLISHED
+  FAILED // admin can retry
+  CANCELLED
+}
+
+/// A file the platform hosts so Meta can download it while publishing. Meta
+/// only accepts media on a public URL; images are stored inline (≤ 4 MB — the
+/// serverless request limit) and served from /m/{id}.{ext}. Larger media is
+/// referenced by an external URL instead.
+model MediaAsset {
+  id           String           @id @default(cuid())
+  accountId    String
+  account      InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  kind         String // IMAGE | VIDEO
+  mimeType     String
+  sizeBytes    Int
+  data         Bytes?
+  externalUrl  String?
+  uploadedById String?
+  createdAt    DateTime         @default(now())
+
+  @@index([accountId, createdAt])
+}
+
+model PublishJob {
+  id                String           @id @default(cuid())
+  accountId         String
+  account           InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  mediaType         String // IMAGE | REELS | STORIES | CAROUSEL
+  caption           String?          @db.Text
+  items             Json // [{url, kind}] — 1 item, or 2–10 for CAROUSEL
+  shareToFeed       Boolean?
+  coverUrl          String?
+  status            PublishStatus    @default(SCHEDULED)
+  scheduledAt       DateTime
+  startedAt         DateTime?
+  publishedAt       DateTime?
+  containerId       String?
+  childContainerIds String[]
+  publishedMediaId  String?
+  permalink         String?
+  attempts          Int              @default(0)
+  lastError         String?          @db.Text
+  createdByAdminId  String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@index([accountId, status])
+  @@index([status, scheduledAt])
 }

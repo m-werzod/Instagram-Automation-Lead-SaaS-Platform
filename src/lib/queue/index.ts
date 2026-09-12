@@ -23,7 +23,8 @@ export type JobType =
   | "leadgen.fetch"
   | "tokens.refresh"
   | "analytics.sync"
-  | "queue.cleanup";
+  | "queue.cleanup"
+  | "publish.run";
 
 export interface EnqueueOptions {
   runAt?: Date;

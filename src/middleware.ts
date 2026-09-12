@@ -24,6 +24,7 @@ const PUBLIC_PREFIXES = [
   "/api/health",
   "/api/setup-status", // readiness probe — must work before the app is configured
   "/api/leads/public", // landing page submissions (rate-limited in route)
+  "/m/", // platform-hosted media that Meta downloads while publishing (public by design)
   "/_next",
   "/favicon.ico",
 ];

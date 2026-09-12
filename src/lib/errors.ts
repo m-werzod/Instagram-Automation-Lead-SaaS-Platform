@@ -22,6 +22,9 @@ export type ErrorCode =
   | "AI_PROVIDER_ERROR"
   | "EMAIL_DELIVERY_FAILED"
   | "AUTOMATION_DISABLED"
+  | "PAYMENT_NOT_CONFIGURED"
+  | "PAYMENT_PROVIDER_ERROR"
+  | "REQUIRES_PAYMENT"
   | "INTERNAL";
 
 export class AppError extends Error {
@@ -84,6 +87,12 @@ function defaultStatus(code: ErrorCode): number {
       return 422;
     case "WEBHOOK_INVALID":
       return 401;
+    case "PAYMENT_NOT_CONFIGURED":
+      return 503;
+    case "PAYMENT_PROVIDER_ERROR":
+      return 502;
+    case "REQUIRES_PAYMENT":
+      return 402;
     default:
       return 500;
   }

@@ -8,6 +8,7 @@ import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { SUPPORTED_CTA_TYPES, SUPPORTED_OBJECTIVES, INSTAGRAM_POSITIONS, OBJECTIVE_CONFIG } from "@/lib/meta/marketing";
 import { campaignFieldsProblem, campaignFieldsSchema } from "@/lib/validation/campaign";
+import { getPricing } from "@/lib/billing/service";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (req: NextRequest) => {
@@ -19,11 +20,14 @@ export const GET = route(async (req: NextRequest) => {
       account: { select: { username: true, connectionMode: true, adAccountId: true, fbPageId: true } },
       content: { select: { id: true, caption: true, thumbnailUrl: true, mediaUrl: true, mediaProductType: true, permalink: true } },
       _count: { select: { leads: true } },
+      payments: { where: { kind: "CAMPAIGN_FEE" }, select: { id: true, status: true, amountCents: true, currency: true }, orderBy: { createdAt: "desc" }, take: 1 },
     },
     orderBy: { createdAt: "desc" },
   });
+  const pricing = await getPricing();
   return ok({
     campaigns,
+    pricing,
     options: {
       objectives: SUPPORTED_OBJECTIVES.map((o) => ({ ...o, needsPage: OBJECTIVE_CONFIG[o.value].needsPage })),
       ctaTypes: SUPPORTED_CTA_TYPES,

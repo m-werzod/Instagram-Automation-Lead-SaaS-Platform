@@ -18,8 +18,7 @@ import {
   Menu,
   X,
   Globe,
-  type LucideIcon,
-} from "lucide-react";
+  type LucideIcon, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
@@ -103,6 +102,13 @@ const NAV: NavItem[] = [
     what: (d) => d.nav.tagline.ads,
     icon: Megaphone,
     color: "var(--color-mod-ads)",
+  },
+  {
+    href: "/billing",
+    label: (d) => d.nav.billing,
+    what: (d) => d.nav.tagline.billing,
+    icon: CreditCard,
+    color: "var(--color-info)",
   },
   {
     href: "/settings",

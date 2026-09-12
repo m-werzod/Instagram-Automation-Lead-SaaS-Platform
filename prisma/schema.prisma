@@ -151,10 +151,11 @@ model Admin {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  sessions       Session[]
-  auditLogs      AuditLog[]
-  connectInvites ConnectInvite[]
-  accountAccess  AccountAccess[]
+  sessions        Session[]
+  auditLogs       AuditLog[]
+  connectInvites  ConnectInvite[]
+  accountAccess   AccountAccess[]
+  paymentCustomer PaymentCustomer?
 }
 
 model Session {
@@ -680,7 +681,9 @@ model Campaign {
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 
-  leads Lead[]
+  leads            Lead[]
+  payments         Payment[]
+  billingSchedules BillingSchedule[]
 
   @@index([accountId, status])
 }
@@ -869,4 +872,165 @@ model PublishJob {
 
   @@index([accountId, status])
   @@index([status, scheduledAt])
+}
+
+// ---------- billing (platform service payments — NOT Meta ad spend) ----------
+//
+// Card data never touches this database: the provider (Stripe) tokenises the
+// card in its own hosted Checkout, and only opaque provider ids plus display
+// metadata (brand, last4, expiry) are stored here.
+
+enum PaymentStatus {
+  PENDING // created, waiting for the customer (or the scheduler) to pay
+  PROCESSING // provider is confirming
+  REQUIRES_ACTION // 3-D Secure etc. — customer must finish in Checkout
+  SUCCEEDED
+  FAILED // retry allowed
+  CANCELED
+  REFUNDED
+}
+
+enum BillingScheduleStatus {
+  ACTIVE
+  PAUSED
+  CANCELED
+}
+
+/// One provider customer per platform user. `autoPay` is the "Automatic
+/// payments" switch: ON = due payments are charged to the default saved card;
+/// OFF = they wait as PENDING and the user is told to pay manually.
+model PaymentCustomer {
+  id                     String   @id @default(cuid())
+  adminId                String   @unique
+  admin                  Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  provider               String   @default("stripe")
+  providerCustomerId     String   @unique
+  email                  String?
+  currency               String   @default("USD")
+  autoPay                Boolean  @default(false)
+  defaultPaymentMethodId String? // PaymentMethod.id
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  paymentMethods PaymentMethod[]
+  payments       Payment[]
+  schedules      BillingSchedule[]
+}
+
+model PaymentMethod {
+  id               String          @id @default(cuid())
+  customerId       String
+  customer         PaymentCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  providerMethodId String          @unique
+  brand            String?
+  last4            String?
+  expMonth         Int?
+  expYear          Int?
+  createdAt        DateTime        @default(now())
+  removedAt        DateTime?
+
+  @@index([customerId])
+}
+
+model Payment {
+  id                        String           @id @default(cuid())
+  customerId                String
+  customer                  PaymentCustomer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  kind                      String // CAMPAIGN_FEE | PLAN | MANUAL
+  description               String
+  amountCents               Int
+  currency                  String
+  status                    PaymentStatus    @default(PENDING)
+  /// exactly-once guard for creation AND for the provider charge
+  idempotencyKey            String           @unique
+  providerPaymentIntentId   String?          @unique
+  providerCheckoutSessionId String?          @unique
+  providerChargeId          String?
+  receiptUrl                String?
+  failureCode               String?
+  failureMessage            String?
+  attempts                  Int              @default(0)
+  campaignId                String?
+  campaign                  Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  scheduleId                String?
+  schedule                  BillingSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  dueAt                     DateTime?
+  paidAt                    DateTime?
+  failedAt                  DateTime?
+  refundedAt                DateTime?
+  canceledAt                DateTime?
+  nextRetryAt               DateTime?
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
+
+  invoice Invoice?
+
+  @@index([customerId, createdAt])
+  @@index([status, nextRetryAt])
+  @@index([campaignId])
+}
+
+model Invoice {
+  id          String   @id @default(cuid())
+  paymentId   String   @unique
+  payment     Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  number      String   @unique // INV-2026-00001
+  amountCents Int
+  currency    String
+  lines       Json // [{description, amountCents}]
+  receiptUrl  String?
+  issuedAt    DateTime @default(now())
+}
+
+/// A recurring platform charge (plan or per-campaign management fee).
+model BillingSchedule {
+  id            String                @id @default(cuid())
+  customerId    String
+  customer      PaymentCustomer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name          String
+  amountCents   Int
+  currency      String
+  intervalDays  Int                   @default(30)
+  nextBillingAt DateTime
+  lastBilledAt  DateTime?
+  status        BillingScheduleStatus @default(ACTIVE)
+  campaignId    String?
+  campaign      Campaign?             @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  canceledAt    DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  payments Payment[]
+
+  @@index([status, nextBillingAt])
+  @@index([customerId])
+}
+
+/// Provider webhook deliveries — unique on the provider's event id so a
+/// redelivery is acknowledged but never processed twice.
+model BillingEvent {
+  id              String    @id @default(cuid())
+  provider        String
+  providerEventId String    @unique
+  type            String
+  payload         Json
+  status          String    @default("RECEIVED") // RECEIVED | PROCESSED | IGNORED | FAILED
+  error           String?
+  processedAt     DateTime?
+  receivedAt      DateTime  @default(now())
+
+  @@index([status, receivedAt])
+}
+
+/// Single row (id = 1). What this platform charges; editable by the OWNER.
+model PricingConfig {
+  id                 Int      @id @default(1)
+  currency           String   @default("USD")
+  campaignFeeCents   Int      @default(0) // flat fee per campaign created through the platform
+  campaignFeePercent Float    @default(0) // % of the campaign's first budget period
+  planName           String?
+  planAmountCents    Int      @default(0) // recurring plan, 0 = no plan
+  planIntervalDays   Int      @default(30)
+  taxPercent         Float    @default(0)
+  updatedAt          DateTime @updatedAt
 }

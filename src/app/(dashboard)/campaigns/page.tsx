@@ -9,6 +9,7 @@ import {
   Archive,
   ArrowRight,
   CloudUpload,
+  CreditCard,
   ExternalLink,
   Eye,
   Film,
@@ -37,6 +38,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input } from "@/components/ui/input";
 import { centsToMoney, formatDate, timeAgo, truncate } from "@/lib/utils";
 import { CampaignWizard, type ContentOption, type WizardInitial, type WizardOptions } from "@/components/campaigns/campaign-wizard";
+import { computeCampaignQuote, type Pricing } from "@/lib/billing/pricing";
 
 /**
  * Target — promoted posts and Reels with a real Meta button. The only screen
@@ -99,6 +101,7 @@ interface CampaignRow {
   content: { id: string; caption: string | null; thumbnailUrl: string | null; mediaUrl: string | null; mediaProductType: string | null; permalink: string | null } | null;
   account: { username: string; connectionMode: string; adAccountId: string | null; fbPageId: string | null };
   _count: { leads: number };
+  payments: Array<{ id: string; status: string; amountCents: number; currency: string }>;
 }
 
 interface Prefill {
@@ -133,6 +136,7 @@ function CampaignsInner() {
 
   const [campaigns, setCampaigns] = React.useState<CampaignRow[] | null>(null);
   const [options, setOptions] = React.useState<WizardOptions | null>(null);
+  const [pricing, setPricing] = React.useState<Pricing | null>(null);
   const [contentOptions, setContentOptions] = React.useState<ContentOption[]>([]);
   const [currency, setCurrency] = React.useState("USD");
   const [wizardOpen, setWizardOpen] = React.useState(false);
@@ -161,11 +165,12 @@ function CampaignsInner() {
   const load = React.useCallback(async () => {
     if (!selected) return;
     const [data, content] = await Promise.all([
-      api<{ campaigns: CampaignRow[]; options: WizardOptions }>(`/api/campaigns?accountId=${selected.id}`, { silent: true }),
+      api<{ campaigns: CampaignRow[]; options: WizardOptions; pricing: Pricing }>(`/api/campaigns?accountId=${selected.id}`, { silent: true }),
       api<{ items: ContentOption[] }>(`/api/content?accountId=${selected.id}&take=60`, { silent: true }).catch(() => ({ items: [] as ContentOption[] })),
     ]);
     setCampaigns(data.campaigns);
     setOptions(data.options);
+    setPricing(data.pricing);
     setContentOptions(content.items);
   }, [selected]);
 
@@ -282,6 +287,7 @@ function CampaignsInner() {
           busy={busy}
           adsAvailable={adsAvailable}
           adsReason={adsCapability?.reason}
+          pricing={pricing}
           onEdit={() => {
             setEditing(c);
             setWizardOpen(true);
@@ -336,6 +342,7 @@ function CampaignCard({
   busy,
   adsAvailable,
   adsReason,
+  pricing,
   onEdit,
   onCreateInMeta,
   onPause,
@@ -350,6 +357,7 @@ function CampaignCard({
   busy: string | null;
   adsAvailable: boolean;
   adsReason?: string;
+  pricing: Pricing | null;
   onEdit: () => void;
   onCreateInMeta: () => void;
   onPause: () => void;
@@ -372,6 +380,10 @@ function CampaignCard({
     : `${centsToMoney(c.lifetimeBudgetCents, c.currency)} ${d.campaigns.wizard.lifetime.toLowerCase()}`;
   const local = c.status === "DRAFT" || c.status === "READY" || c.status === "ERROR";
   const inMeta = Boolean(c.metaCampaignId);
+  // platform fee (ours) — Meta's spend is separate and billed by Meta
+  const quote = pricing ? computeCampaignQuote(c, pricing) : null;
+  const feePaid = c.payments.some((p) => p.status === "SUCCEEDED");
+  const feeDue = Boolean(quote && !quote.free && !feePaid);
   const ins = c.insightsSnapshot;
 
   return (
@@ -475,9 +487,14 @@ function CampaignCard({
               <Button size="sm" variant="secondary" onClick={onEdit}>
                 <PencilLine size={14} /> {d.campaigns.wizard.edit}
               </Button>
-              <Button size="sm" variant="secondary" disabled={isBusy("meta") || !adsAvailable} title={!adsAvailable ? adsReason : undefined} onClick={onCreateInMeta}>
-                <CloudUpload size={14} /> {d.campaigns.actions.createInMeta}
-              </Button>
+              {feeDue && quote ? (
+                <PayFeeButton campaignId={c.id} amount={centsToMoney(quote.totalCents, quote.currency)} onDone={onReload} />
+              ) : (
+                <Button size="sm" variant="secondary" disabled={isBusy("meta") || !adsAvailable} title={!adsAvailable ? adsReason : undefined} onClick={onCreateInMeta}>
+                  <CloudUpload size={14} /> {d.campaigns.actions.createInMeta}
+                </Button>
+              )}
+              {quote && !quote.free && feePaid && <Badge tone="ok">{d.billing.feePaid}</Badge>}
             </>
           )}
           {(c.status === "CREATED" || c.status === "PAUSED") && (
@@ -535,6 +552,36 @@ function CampaignCard({
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+/** Platform service fee — collected through Stripe before the campaign is created in Meta. */
+function PayFeeButton({ campaignId, amount, onDone }: { campaignId: string; amount: string; onDone: () => Promise<void> }) {
+  const { d } = useI18n();
+  const [busy, setBusy] = React.useState(false);
+  async function pay() {
+    setBusy(true);
+    try {
+      const res = await api<{ checkoutUrl: string | null; payment: { status: string } | null; free: boolean }>("/api/billing/payments", {
+        method: "POST",
+        json: { kind: "CAMPAIGN_FEE", campaignId, returnPath: "/campaigns" },
+      });
+      if (res.checkoutUrl) {
+        window.location.href = res.checkoutUrl;
+        return;
+      }
+      toast.success(res.free || res.payment?.status === "SUCCEEDED" ? d.billing.feePaid : d.billing.statuses.PENDING);
+      await onDone();
+    } catch {
+      /* toast from api() */
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Button size="sm" disabled={busy} onClick={() => void pay()} title={d.billing.feeDue(amount)}>
+      <CreditCard size={14} /> {d.billing.payFee} · {amount}
+    </Button>
   );
 }
 

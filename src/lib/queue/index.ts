@@ -25,7 +25,9 @@ export type JobType =
   | "analytics.sync"
   | "queue.cleanup"
   | "publish.run"
-  | "campaigns.sync";
+  | "campaigns.sync"
+  | "billing.schedules"
+  | "billing.retry";
 
 export interface EnqueueOptions {
   runAt?: Date;

@@ -11,6 +11,7 @@ import { refreshExpiringTokens } from "@/lib/meta/accounts";
 import { syncMedia } from "@/lib/meta/media";
 import { runPublishJob } from "@/lib/meta/publishing";
 import { syncCampaignFromMeta } from "@/lib/meta/marketing";
+import { retryFailedPayments, runDueSchedules } from "@/lib/billing/service";
 import { getGlobalSettings } from "@/lib/settings";
 import { createLogger, errorFields } from "@/lib/logger";
 import type { Prisma } from "@prisma/client";
@@ -398,6 +399,18 @@ registerHandler("campaigns.sync", async (payload) => {
   }
 });
 
+// ---------- periodic: billing (automatic payments + retries) ----------
+
+registerHandler("billing.schedules", async () => {
+  const result = await runDueSchedules();
+  log.info("billing schedules run", result);
+});
+
+registerHandler("billing.retry", async () => {
+  const result = await retryFailedPayments();
+  log.info("billing retry run", result);
+});
+
 // ---------- periodic: queue cleanup ----------
 
 registerHandler("queue.cleanup", async () => {
@@ -421,5 +434,7 @@ export async function ensurePeriodicJobs(): Promise<void> {
   await enqueue("tokens.refresh", {}, { idempotencyKey: `tokens.refresh:${hourKey}` });
   await enqueue("analytics.sync", {}, { idempotencyKey: `analytics.sync:${dayKey}` });
   await enqueue("campaigns.sync", {}, { idempotencyKey: `campaigns.sync:${hourKey}` });
+  await enqueue("billing.schedules", {}, { idempotencyKey: `billing.schedules:${hourKey}` });
+  await enqueue("billing.retry", {}, { idempotencyKey: `billing.retry:${hourKey}` });
   await enqueue("queue.cleanup", {}, { idempotencyKey: `queue.cleanup:${dayKey}` });
 }

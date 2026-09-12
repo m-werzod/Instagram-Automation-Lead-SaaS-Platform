@@ -11,6 +11,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Segmented, Select, Textarea } from "@/components/ui/input";
 import { cn, centsToMoney } from "@/lib/utils";
 import { AdPhonePreview } from "./ad-preview";
+import { computeCampaignQuote, type Pricing } from "@/lib/billing/pricing";
 
 /**
  * Target wizard: content → goal → audience → budget & dates → button → review.
@@ -217,6 +218,14 @@ export function CampaignWizard({
   const [busy, setBusy] = React.useState(false);
   const [estimate, setEstimate] = React.useState<Estimate | null>(null);
   const [estimating, setEstimating] = React.useState(false);
+  const [pricing, setPricing] = React.useState<Pricing | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    api<{ pricing: Pricing }>("/api/billing/pricing", { silent: true })
+      .then((res) => setPricing(res.pricing))
+      .catch(() => setPricing(null));
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -495,6 +504,7 @@ export function CampaignWizard({
                 estimating={estimating}
                 adsReady={adsReady}
                 onEstimate={getEstimate}
+                pricing={pricing}
               />
             )}
 
@@ -760,6 +770,7 @@ function ReviewStep({
   estimating,
   adsReady,
   onEstimate,
+  pricing,
 }: {
   draft: WizardDraft;
   objectiveLabel: string;
@@ -769,10 +780,14 @@ function ReviewStep({
   estimating: boolean;
   adsReady: boolean;
   onEstimate: () => void;
+  pricing: Pricing | null;
 }) {
   const { d } = useI18n();
   const t = d.campaigns.wizard;
   const cents = Math.round(Number(draft.amount) * 100);
+  const quote = pricing
+    ? computeCampaignQuote({ dailyBudgetCents: draft.budgetKind === "daily" ? cents : null, lifetimeBudgetCents: draft.budgetKind === "lifetime" ? cents : null }, pricing)
+    : null;
   const rows: Array<[string, string]> = [
     [d.campaigns.fields.name, draft.name],
     [d.campaigns.objective, objectiveLabel],
@@ -830,7 +845,29 @@ function ReviewStep({
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-xl border border-(--color-border) p-3 text-xs">
           <div className="font-semibold">{t.platformFee}</div>
-          <p className="mt-1 leading-4 text-(--color-fg-muted)">{t.platformFeeNone}</p>
+          {quote && !quote.free ? (
+            <div className="mt-1 space-y-0.5 text-(--color-fg-muted)">
+              {quote.lines.map((l) => (
+                <div key={l.description} className="flex justify-between gap-2">
+                  <span>{l.description}</span>
+                  <span className="tabular-nums">{centsToMoney(l.amountCents, quote.currency)}</span>
+                </div>
+              ))}
+              {quote.taxCents > 0 && (
+                <div className="flex justify-between gap-2">
+                  <span>{d.billing.pricing.tax}</span>
+                  <span className="tabular-nums">{centsToMoney(quote.taxCents, quote.currency)}</span>
+                </div>
+              )}
+              <div className="flex justify-between gap-2 border-t border-(--color-border) pt-1 font-semibold text-(--color-fg)">
+                <span>{d.common.total}</span>
+                <span className="tabular-nums">{centsToMoney(quote.totalCents, quote.currency)}</span>
+              </div>
+              <p className="pt-1 text-[10px] text-(--color-fg-faint)">{t.platformFeeWhen}</p>
+            </div>
+          ) : (
+            <p className="mt-1 leading-4 text-(--color-fg-muted)">{t.platformFeeNone}</p>
+          )}
         </div>
         <div className="rounded-xl border border-(--color-mod-ads)/40 bg-(--color-warn-soft) p-3 text-xs">
           <div className="font-semibold text-(--color-warn)">{t.metaSpend}</div>

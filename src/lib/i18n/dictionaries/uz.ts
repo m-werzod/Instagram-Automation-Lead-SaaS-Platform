@@ -206,6 +206,77 @@ export const uz = {
       DISCONNECTED: "Uzilgan",
       ERROR: "Ulanish xatosi",
     },
+    /* --- hisob qo‘shish ------------------------------------------------- */
+    addAccount: "Instagram hisobini qo‘shish",
+    switchAccount: "Boshqa hisob qo‘shish",
+    switchHint: "Instagram qaysi hisobni tanlashingizni so‘raydi",
+
+    howTitle: "“Ulash”ni bosganda nima bo‘ladi",
+    how1: "Instagramning o‘z sahifasi ochiladi. Parolni instagram.com’da kiritasiz — bu platforma uni hech qachon ko‘rmaydi.",
+    how2: "Avtomatlashtirmoqchi bo‘lgan Instagram hisobiga kirasiz.",
+    how3: "Instagram bu ilova nima qilishi mumkinligini ko‘rsatib, ruxsat so‘raydi. “Ruxsat berish”ni bosing — o‘chirib qoldirilgan ruxsat bu yerda ham ishlamaydi.",
+    how4: "To‘g‘ridan-to‘g‘ri shu yerga qaytasiz va hisob ishga tayyor.",
+
+    needTitle: "Boshlashdan oldin",
+    need1: "Hisob Biznes yoki Ijodkor turida bo‘lishi kerak — Instagram shaxsiy hisoblarga bunga ruxsat bermaydi.",
+    need2: "Hozir o‘sha hisobga kira olishingiz kerak.",
+    need3: "Shaxsiy hisobni o‘zgartirish: Instagram ilovasida Sozlamalar → Hisob turi va vositalar → Professional hisobga o‘tish.",
+
+    setup: {
+      title: "Avval Meta ilovasi sozlamasini tugatish kerak",
+      text: "Instagram faqat Meta’da ro‘yxatdan o‘tgan ilovadan ulanishni qabul qiladi. Bu o‘rnatmada quyidagilar yo‘q:",
+      pasteTitle: "Meta App Dashboard’ga kiritiladigan qiymatlar",
+      whereRedirect: "Instagram → API setup with Instagram login → Business login settings",
+      whereWebhook: "Instagram → Webhooks",
+      redirectUri: "OAuth redirect URI",
+      webhookUrl: "Webhook callback URL",
+      verifyToken: "Verify token",
+      permissions: "Ilova so‘raydigan ruxsatlar",
+      permissionsHint:
+        "Bularning har biri ilovada yoqilgan bo‘lishi shart. Bittasi yetmasa, Instagram butun kirishni “Invalid Scopes” deb rad etadi.",
+      optionalHint: "Qo‘shimcha ruxsatlar. Avval ilovada yoqing, so‘ng META_INSTAGRAM_EXTRA_SCOPES’ga yozing.",
+      httpsTitle: "Instagram https:// manzilni talab qiladi",
+      httpsText:
+        "Instagram Login oddiy http:// manzilni qabul qilmaydi — localhost ham. Hisobni jonli https:// manzilingizdan qo‘shing; qolgan hamma narsa lokalda ishlaydi.",
+      mismatchTitle: "Qaytish manzili bu sayt emas",
+      mismatchText: (redirect: string, app: string) =>
+        `Qaytish manzili ${redirect}, lekin bu sayt ${app} manzilida ishlaydi. Instagram sizni boshqa manzilga yuboradi — u yerda seansingiz yo‘q.`,
+      envHint: "Ularni loyiha ildizidagi .env fayliga qo‘shing va ilovani qayta ishga tushiring.",
+      envHintVercel:
+        "Vercel → Settings → Environment Variables bo‘limiga qo‘shing va qayta deploy qiling — faqat yangi deploy ularni o‘qiydi.",
+      recheck: "Qayta tekshirish",
+      ready: "Sozlama tayyor — endi ulash mumkin",
+      vars: {
+        META_APP_ID: "Meta ilova ID — App Dashboard → App settings → Basic.",
+        META_APP_SECRET: "Meta ilova maxfiy kaliti — shu sahifada, ID yonida.",
+        META_REDIRECT_URI: "Instagram sizni qaytaradigan manzil. Pastdagi manzil bilan aynan bir xil bo‘lishi kerak.",
+        META_WEBHOOK_VERIFY_TOKEN: "O‘zingiz o‘ylab topgan tasodifiy satr, kamida 8 belgi. Meta xuddi shu qiymatni bir marta so‘raydi.",
+        META_INSTAGRAM_APP_ID:
+          "Instagram ilova ID — yuqoridagi Meta ilova ID’dan BOSHQA raqam. Instagram → API setup with Instagram login → Business login settings.",
+        META_INSTAGRAM_APP_SECRET: "Instagram ilova maxfiy kaliti — xuddi shu Business login settings sahifasida.",
+      } as Record<string, string>,
+    },
+
+    connectedN: (n: number) => (n === 1 ? "Hisob ulandi" : `${n} hisob ulandi`),
+    connectErrTitle: "Instagram ulanmadi",
+    connectErrors: {
+      not_configured:
+        "Bu o‘rnatmada hali Meta ilova ma’lumotlari yo‘q, ulanadigan narsa ham yo‘q. Pastdagi sozlama qiymatlarini kiriting.",
+      instagram_app_missing:
+        "Instagram ilova ID va maxfiy kaliti yo‘q. Ular Meta ilova ID’dan alohida qiymatlar — pastdagi qadamlarni ko‘ring.",
+      denied:
+        "Instagram ekranida bekor qildingiz yoki biror ruxsatni o‘chirib qoldirdingiz. Hech narsa o‘zgarmadi. Qaytadan urinib, barcha ruxsatlar yoniq holda “Ruxsat berish”ni bosing.",
+      missing_params: "Instagram sizni ruxsat kodisiz qaytardi. Ulanishni shu sahifadan qaytadan boshlang.",
+      session_mismatch:
+        "Platformadan chiqib ketgansiz yoki boshlaganidan boshqa brauzerda tugatgansiz. Shu yerga kiring va qaytadan boshlang — boshlash va tugatish bitta brauzerda bo‘lishi kerak.",
+      account_not_found: "Bu ulanish boshlangan hisob endi yo‘q. Sahifani yangilab, qayta urinib ko‘ring.",
+      meta_error: "Meta ruxsat berishda muammo borligini aytdi. Pastdagi sozlama qiymatlarini tekshirib, qayta urinib ko‘ring.",
+      connect_failed: "Ulanish tugallanmadi.",
+    } as Record<string, string>,
+
+    webhookFix: "Hodisalarni yoqish",
+    webhookFixOk: "Hodisalar yetib kelmoqda",
+    webhookFixHint: "Bu yoqilmaguncha xabarlar va izohlar platformaga tushmaydi.",
   },
 
   leadButton: {

@@ -208,6 +208,76 @@ export const en = {
       DISCONNECTED: "Disconnected",
       ERROR: "Connection error",
     },
+    /* --- adding an account --------------------------------------------- */
+    addAccount: "Add Instagram account",
+    switchAccount: "Add a different account",
+    switchHint: "Instagram will ask which account to authorise",
+
+    howTitle: "What happens when you tap Connect",
+    how1: "Instagram's own page opens. You type your password on instagram.com — this platform never sees it.",
+    how2: "Sign in to the Instagram account you want answered automatically.",
+    how3: "Instagram shows exactly what this app may do and asks you to allow it. Tap Allow — anything you leave off stays off here too.",
+    how4: "You come straight back here and the account is ready.",
+
+    needTitle: "Before you start",
+    need1: "The account must be a Business or Creator account — Instagram does not allow this for Personal accounts.",
+    need2: "You must be able to sign in to it right now.",
+    need3: "To convert a Personal account, in the Instagram app: Settings → Account type and tools → Switch to professional account.",
+
+    setup: {
+      title: "Finish the Meta app setup first",
+      text: "Instagram only accepts connections from an app registered with Meta. This installation is still missing:",
+      pasteTitle: "Values to paste into the Meta App Dashboard",
+      whereRedirect: "Instagram → API setup with Instagram login → Business login settings",
+      whereWebhook: "Instagram → Webhooks",
+      redirectUri: "OAuth redirect URI",
+      webhookUrl: "Webhook callback URL",
+      verifyToken: "Verify token",
+      permissions: "Permissions this app will ask for",
+      permissionsHint:
+        'Every one of these must be enabled on the app. If even one is missing, Instagram refuses the whole sign-in with "Invalid Scopes".',
+      optionalHint: "Optional extras. Enable them on the app first, then list them in META_INSTAGRAM_EXTRA_SCOPES.",
+      httpsTitle: "Instagram needs an https:// address",
+      httpsText:
+        "Instagram Login refuses a plain http:// redirect — localhost included. Add the account from your live https:// address instead; everything else here works locally.",
+      mismatchTitle: "The redirect address is not this site",
+      mismatchText: (redirect: string, app: string) =>
+        `The redirect points at ${redirect}, but this site runs at ${app}. Instagram would send you to the other address, where your sign-in does not exist.`,
+      envHint: "Add them to the .env file in the project root, then restart the app.",
+      envHintVercel: "Add them in Vercel → Settings → Environment Variables, then redeploy — only a new deployment picks them up.",
+      recheck: "Check again",
+      ready: "Setup is complete — you can connect now",
+      vars: {
+        META_APP_ID: "Meta app ID — App Dashboard → App settings → Basic.",
+        META_APP_SECRET: "Meta app secret — same page, next to the app ID.",
+        META_REDIRECT_URI: "Where Instagram sends you back. Must be exactly the address shown below.",
+        META_WEBHOOK_VERIFY_TOKEN: "Any random string of your own, at least 8 characters. Meta asks you for the same value once.",
+        META_INSTAGRAM_APP_ID:
+          "Instagram app ID — a DIFFERENT number from the Meta app ID above. Instagram → API setup with Instagram login → Business login settings.",
+        META_INSTAGRAM_APP_SECRET: "Instagram app secret — on that same Business login settings page.",
+      } as Record<string, string>,
+    },
+
+    connectedN: (n: number) => (n === 1 ? "Account connected" : `${n} accounts connected`),
+    connectErrTitle: "Instagram could not be connected",
+    connectErrors: {
+      not_configured:
+        "This installation has no Meta app credentials yet, so there is nothing to connect to. Fill in the setup values below.",
+      instagram_app_missing:
+        "The Instagram app ID and secret are missing. They are separate values from the Meta app ID — see the setup steps below.",
+      denied:
+        "You cancelled on Instagram's screen, or left a permission switched off. Nothing was changed. Try again and tap Allow with every permission left on.",
+      missing_params: "Instagram sent you back without an authorisation code. Start the connection again from this page.",
+      session_mismatch:
+        "You were signed out of this platform, or finished in a different browser than you started in. Sign in here and start again — begin and finish in the same browser.",
+      account_not_found: "The account this was started for is no longer here. Reload the page and try again.",
+      meta_error: "Meta reported a problem with the authorisation. Check the setup values below, then try again.",
+      connect_failed: "The connection did not complete.",
+    } as Record<string, string>,
+
+    webhookFix: "Turn on event delivery",
+    webhookFixOk: "Event delivery is on",
+    webhookFixHint: "Until this is on, messages and comments never reach the platform.",
   },
 
   leadButton: {

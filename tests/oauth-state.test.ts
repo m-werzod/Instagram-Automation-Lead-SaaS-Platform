@@ -80,6 +80,54 @@ describe("OAuth state (CSRF)", () => {
       expect(scopes, `${scope} would break the whole dialog`).not.toContain(scope);
     }
   });
+
+  /**
+   * "Add another account" only works if Instagram actually re-asks who is
+   * signing in. Without force_reauth it silently re-approves the account
+   * already logged in in this browser, so a second connect attempt just
+   * re-connects the first account and looks like it did nothing.
+   */
+  it("only asks Instagram to re-authenticate when switching accounts", () => {
+    const state = buildState({ mode: "INSTAGRAM_LOGIN", adminId: "a", nonce: "n" });
+
+    const normal = new URL(instagramAuthorizeUrl(state));
+    expect(normal.searchParams.get("force_reauth")).toBeNull();
+
+    const switching = new URL(instagramAuthorizeUrl(state, true));
+    expect(switching.searchParams.get("force_reauth")).toBe("true");
+    // switching must not change anything else about the request
+    expect(switching.searchParams.get("scope")).toBe(normal.searchParams.get("scope"));
+    expect(switching.searchParams.get("client_id")).toBe(normal.searchParams.get("client_id"));
+    expect(switching.searchParams.get("redirect_uri")).toBe(normal.searchParams.get("redirect_uri"));
+  });
+
+  /**
+   * An ad account is a billing relationship. The Instagram account it belongs
+   * to has to survive the round trip through Facebook inside the SIGNED state —
+   * a query parameter on the way back would be attacker-controlled, and
+   * guessing would silently bill the wrong profile.
+   */
+  it("carries the advertising target account inside the signed state", () => {
+    const state = buildState({
+      mode: "FACEBOOK_LOGIN",
+      adminId: "admin1",
+      nonce: "n1",
+      accountId: "acct_abc",
+    });
+    expect(verifyState(state).accountId).toBe("acct_abc");
+
+    // and it cannot be swapped for another account without breaking the signature
+    const [body, sig] = state.split(".");
+    const forged = Buffer.from(
+      JSON.stringify({ ...JSON.parse(Buffer.from(body!, "base64url").toString()), accountId: "acct_victim" }),
+    ).toString("base64url");
+    expect(() => verifyState(`${forged}.${sig}`)).toThrow(/state/i);
+  });
+
+  it("omits the target account when none was given", () => {
+    const state = buildState({ mode: "INSTAGRAM_LOGIN", adminId: "admin1", nonce: "n1" });
+    expect(verifyState(state).accountId).toBeUndefined();
+  });
 });
 
 describe("password policy", () => {

@@ -81,16 +81,10 @@ export async function finalizeInstagramLogin(code: string): Promise<ConnectResul
   await storeToken({ accountId: account.id, kind: "user", token: long.accessToken, scopes, expiresAt });
   await syncPermissions(account.id, scopes);
 
-  // Webhook subscription (non-fatal)
+  // Webhook subscription is non-fatal: the account is connected either way, and
+  // the admin can retry it from the account card without re-authorizing.
   try {
-    await graphCall({
-      host: "graph.instagram.com",
-      method: "POST",
-      path: `${igUserId}/subscribed_apps`,
-      accessToken: long.accessToken,
-      params: { subscribed_fields: IG_SUBSCRIBED_FIELDS.join(",") },
-    });
-    await prisma.instagramAccount.update({ where: { id: account.id }, data: { webhookSubscribed: true } });
+    await subscribeInstagramWebhooks(account.id, igUserId, long.accessToken);
   } catch (err) {
     warnings.push(`Webhook subscription failed: ${err instanceof Error ? err.message : String(err)}`);
     log.warn("webhook subscribe failed", { accountId: account.id, ...errorFields(err) });
@@ -98,6 +92,43 @@ export async function finalizeInstagramLogin(code: string): Promise<ConnectResul
 
   const fresh = await prisma.instagramAccount.findUniqueOrThrow({ where: { id: account.id } });
   return { accounts: [fresh], warnings };
+}
+
+/**
+ * Subscribe this app to the account's Instagram events (DMs, comments,
+ * mentions). Without it the connection looks healthy but nothing ever arrives,
+ * so it is also exposed as a standalone retry — webhook setup is the step most
+ * likely to fail for reasons outside the authorization itself (app still in
+ * Dev Mode, webhook callback URL not verified in the App Dashboard).
+ */
+export async function subscribeInstagramWebhooks(
+  accountId: string,
+  igUserId: string,
+  accessToken: string,
+): Promise<void> {
+  await graphCall({
+    host: "graph.instagram.com",
+    method: "POST",
+    path: `${igUserId}/subscribed_apps`,
+    accessToken,
+    params: { subscribed_fields: IG_SUBSCRIBED_FIELDS.join(",") },
+  });
+  await prisma.instagramAccount.update({ where: { id: accountId }, data: { webhookSubscribed: true } });
+  log.info("instagram webhooks subscribed", { accountId });
+}
+
+/** Retry the webhook subscription for an already-connected account. */
+export async function resubscribeWebhooks(accountId: string): Promise<void> {
+  const account = await prisma.instagramAccount.findUnique({ where: { id: accountId } });
+  if (!account) throw notFound("Instagram account");
+  if (account.connectionMode !== "INSTAGRAM_LOGIN") {
+    throw new AppError("META_UNSUPPORTED", "Event delivery is managed through the Facebook Page for this account", {
+      reason: "This account was connected with Facebook Login, where webhooks belong to the Page, not the Instagram user.",
+      fix: "Reconnect with Facebook so the Page subscription is refreshed.",
+    });
+  }
+  const access = await resolveAccess(account);
+  await subscribeInstagramWebhooks(account.id, account.igUserId, access.accessToken);
 }
 
 interface FbPage {
@@ -116,8 +147,15 @@ interface FbPage {
  * dialog. So instead of discovering Instagram accounts through Pages, it
  * attaches the ad account, Page and ads token to the Instagram accounts the
  * admin has already connected.
+ *
+ * `targetAccountId` (carried in the signed OAuth state) names the account the
+ * admin actually clicked. It matters as soon as there is more than one
+ * connected account: an ad account is a billing relationship, and silently
+ * attaching one to every account would let a campaign be created against the
+ * wrong Instagram profile. Without it, the single connected account is used,
+ * and with several it is an error rather than a guess.
  */
-export async function finalizeFacebookLogin(code: string): Promise<ConnectResult> {
+export async function finalizeFacebookLogin(code: string, targetAccountId?: string): Promise<ConnectResult> {
   const warnings: string[] = [];
   const short = await fbExchangeCode(code);
   const long = await fbExchangeLongLived(short.accessToken);
@@ -137,14 +175,31 @@ export async function finalizeFacebookLogin(code: string): Promise<ConnectResult
     });
   }
 
-  // The Instagram account(s) that will gain advertising.
-  const targets = await prisma.instagramAccount.findMany({
+  // The Instagram account that will gain advertising.
+  const connected = await prisma.instagramAccount.findMany({
     where: { isDemo: false, status: { not: "DISCONNECTED" } },
   });
-  if (targets.length === 0) {
+  if (connected.length === 0) {
     throw new AppError("VALIDATION", "Connect your Instagram account first", {
       reason: "Advertising is attached to an Instagram account, and none is connected yet.",
       fix: 'Use "Connect Instagram" first, then come back and connect Facebook to enable campaigns.',
+    });
+  }
+
+  let targets = connected;
+  if (targetAccountId) {
+    const picked = connected.find((a) => a.id === targetAccountId);
+    if (!picked) {
+      throw new AppError("VALIDATION", "That Instagram account is no longer connected", {
+        reason: "The account this advertising authorization was started for was disconnected in the meantime.",
+        fix: "Reconnect the Instagram account, then connect Facebook for advertising again.",
+      });
+    }
+    targets = [picked];
+  } else if (connected.length > 1) {
+    throw new AppError("VALIDATION", "Choose which account advertising is for", {
+      reason: "More than one Instagram account is connected, and this authorization did not say which one it belongs to.",
+      fix: 'Start from that account’s own card on the Instagram page and use "Connect Facebook (for ads)" there.',
     });
   }
 

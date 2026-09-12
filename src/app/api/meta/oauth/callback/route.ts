@@ -38,7 +38,9 @@ export async function GET(req: NextRequest) {
     }
 
     const result =
-      state.mode === "FACEBOOK_LOGIN" ? await finalizeFacebookLogin(code) : await finalizeInstagramLogin(code);
+      state.mode === "FACEBOOK_LOGIN"
+        ? await finalizeFacebookLogin(code, state.accountId)
+        : await finalizeInstagramLogin(code);
 
     for (const account of result.accounts) {
       await audit({

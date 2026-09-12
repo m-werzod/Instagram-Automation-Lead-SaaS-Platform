@@ -75,6 +75,14 @@ interface OAuthStatePayload {
   adminId: string;
   nonce: string;
   ts: number;
+  /**
+   * FACEBOOK_LOGIN only: the Instagram account this advertising authorization
+   * belongs to. Carried through the round trip because Facebook gives us no way
+   * to know which card the admin clicked, and attaching an ad account to the
+   * wrong Instagram account is silent and expensive. Absent on older links and
+   * on single-account installs, where "the only account" is unambiguous.
+   */
+  accountId?: string;
 }
 
 function sign(data: string): string {
@@ -108,7 +116,14 @@ export function verifyState(state: string): OAuthStatePayload {
 
 // ---- authorize URLs --------------------------------------------------------
 
-export function instagramAuthorizeUrl(state: string): string {
+/**
+ * @param forceReauth Ask Instagram to sign the person in again instead of
+ *   silently reusing the browser's current Instagram session. Required to
+ *   connect a SECOND account: without it Instagram just re-approves whoever is
+ *   already logged in, so "Add another account" would keep re-connecting the
+ *   same one.
+ */
+export function instagramAuthorizeUrl(state: string, forceReauth = false): string {
   const env = metaEnv();
   // NOTE: Instagram Login uses the INSTAGRAM app id, not the Facebook one.
   const { appId } = instagramAppCredentials();
@@ -118,6 +133,7 @@ export function instagramAuthorizeUrl(state: string): string {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", igLoginScopes().join(","));
   url.searchParams.set("state", state);
+  if (forceReauth) url.searchParams.set("force_reauth", "true");
   return url.toString();
 }
 

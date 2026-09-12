@@ -116,14 +116,28 @@ npm run build         # production build
 
 ## 6. Connecting a real Instagram account
 
-1. Create an app at https://developers.facebook.com/apps.
-2. Add the **Instagram** product → "API setup with Instagram login" (organic automation), and/or
-   **Facebook Login for Business** + Marketing API (required for Campaigns / native ad CTAs / Instant Forms).
-3. Register the OAuth redirect URI: `{APP_URL}/api/meta/oauth/callback`.
-4. Configure webhooks → Instagram: callback `{APP_URL}/api/webhooks/instagram`, verify token =
+Full click-path with every dashboard field: **[docs/INSTAGRAM_SETUP.md](docs/INSTAGRAM_SETUP.md)**.
+The **Instagram** page also detects what is missing and prints the exact values to paste into Meta.
+
+1. Create an app at https://developers.facebook.com/apps → **App settings → Basic** gives
+   `META_APP_ID` / `META_APP_SECRET`.
+2. Add the **Instagram** product → "API setup with Instagram login" → **Business login settings**.
+   Copy the **Instagram app ID/secret** shown there into `META_INSTAGRAM_APP_ID` /
+   `META_INSTAGRAM_APP_SECRET` — these are **different values** from step 1, and using the Facebook
+   ones makes Instagram answer "Invalid platform app". Add **Facebook Login for Business** +
+   Marketing API too if you need Campaigns / native ad CTAs / Instant Forms.
+3. Register the OAuth redirect URI: `{APP_URL}/api/meta/oauth/callback` — character for character.
+   Instagram Login requires **https**, so `http://localhost` is rejected: connect on the deployed
+   site or through an HTTPS tunnel.
+4. Enable `instagram_business_basic`, `instagram_business_manage_messages` and
+   `instagram_business_manage_comments` on the app. One missing permission makes Instagram reject the
+   whole authorization with "Invalid Scopes". Extras go in `META_INSTAGRAM_EXTRA_SCOPES`.
+5. Configure webhooks → Instagram: callback `{APP_URL}/api/webhooks/instagram`, verify token =
    `META_WEBHOOK_VERIFY_TOKEN`. Local dev needs a public HTTPS tunnel (e.g. `cloudflared tunnel --url http://localhost:3000`).
-5. Fill `META_APP_ID`, `META_APP_SECRET` in `.env`, restart.
-6. Settings → Integrations → Instagram → **Connect Instagram** (or **Connect with Facebook (ads)**).
+6. Fill those variables in `.env`, restart, then **Instagram → Connect Instagram**. The account owner
+   signs in on instagram.com and taps Allow; the browser returns here with the account connected.
+   Use **Add a different account** for a second profile, and **Connect Facebook (for ads)** on an
+   account's own card to attach advertising to that profile.
 7. The page shows the real granted permissions and a per-feature capability matrix; anything Meta doesn't
    allow for your account/mode is shown as Unavailable **with the reason**.
 
@@ -157,6 +171,7 @@ src/lib/email/*             EmailService with queued retries
 src/app/api/*               REST surface (zod-validated, audited)
 src/app/(dashboard)/*       control-center UI
 scripts/worker.ts           worker process
+docs/INSTAGRAM_SETUP.md     adding an Instagram account, start to finish
 docs/META_API.md            verified Meta capability reference
 docs/DEPLOYMENT.md          production deployment guide
 ```

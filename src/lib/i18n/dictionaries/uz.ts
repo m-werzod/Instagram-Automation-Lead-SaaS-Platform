@@ -271,6 +271,10 @@ export const uz = {
         "Platformadan chiqib ketgansiz yoki boshlaganidan boshqa brauzerda tugatgansiz. Shu yerga kiring va qaytadan boshlang — boshlash va tugatish bitta brauzerda bo‘lishi kerak.",
       account_not_found: "Bu ulanish boshlangan hisob endi yo‘q. Sahifani yangilab, qayta urinib ko‘ring.",
       meta_error: "Meta ruxsat berishda muammo borligini aytdi. Pastdagi sozlama qiymatlarini tekshirib, qayta urinib ko‘ring.",
+      dev_mode:
+        "Meta rad etdi, chunki ilova Development Mode’da va bu Instagram hisobida ilovada rol yo‘q (“Insufficient developer role”). Ruxsat berayotgan odam buni tuzata olmaydi — Meta App Dashboard → App roles → Roles bo‘limida uning hisobini Instagram Tester sifatida qo‘shing, u Instagram → Sozlamalar → Veb-sayt ruxsatlari → Tester takliflari orqali qabul qilsin, so‘ng havolani qayta yuboring. Har qanday hisobni bu qadamsiz ulash uchun App Review yuborib, ilovani Live qiling.",
+      invalid_scopes:
+        "Instagram butun kirishni rad etdi, chunki so‘ralgan ruxsatlardan biri ilovada yoqilmagan. Instagram → Permissions and features bo‘limida instagram_business_basic, instagram_business_manage_messages va instagram_business_manage_comments’ni yoqing.",
       connect_failed: "Ulanish tugallanmadi.",
     } as Record<string, string>,
 
@@ -310,6 +314,12 @@ export const uz = {
       shareTemplate: (url: string) =>
         `Iltimos, Instagram hisobingizni ulang: shu havolani oching va “Ruxsat berish”ni bosing: ${url}`,
       copyMessage: "Yuboriladigan xabarni nusxalash",
+      whoTitle: "Hozir kim ulana oladi",
+      whoText:
+        "Meta ilovangiz Development Mode’da ekan, faqat ilovada roli bor Instagram hisoblari ruxsat bera oladi — qolganlar “Insufficient developer role” xatosini oladi. Ularni Instagram Tester sifatida qo‘shing yoki ilovani Live holatiga o‘tkazing.",
+      whoStep1: "Meta App Dashboard → App roles → Roles → Add people → Instagram Tester va ularning @foydalanuvchi nomini kiriting.",
+      whoStep2: "Ular Instagram → Sozlamalar → Veb-sayt ruxsatlari → Tester takliflari bo‘limidan taklifni qabul qiladi.",
+      whoStep3: "Shundan so‘ng havolangiz ular uchun ishlaydi. Har qanday mijoz ulanishi uchun App Review yuboring va ilovani Live qiling.",
       statuses: {
         PENDING: "Kutilmoqda",
         USED: "Ulandi",
@@ -554,6 +564,10 @@ export const uz = {
       rate_limited: "Juda ko‘p urinish. Bir necha daqiqadan so‘ng qayta urinib ko‘ring.",
       missing_params: "Instagram ruxsat qaytarmadi. Havolani qayta oching.",
       meta_error: "Instagram ruxsat berishda muammo borligini aytdi. Havolani qayta urinib ko‘ring.",
+      dev_mode:
+        "Meta rad etdi, chunki ilova Development Mode’da va bu Instagram hisobida ilovada rol yo‘q (“Insufficient developer role”). Ruxsat berayotgan odam buni tuzata olmaydi — Meta App Dashboard → App roles → Roles bo‘limida uning hisobini Instagram Tester sifatida qo‘shing, u Instagram → Sozlamalar → Veb-sayt ruxsatlari → Tester takliflari orqali qabul qilsin, so‘ng havolani qayta yuboring. Har qanday hisobni bu qadamsiz ulash uchun App Review yuborib, ilovani Live qiling.",
+      invalid_scopes:
+        "Instagram butun kirishni rad etdi, chunki so‘ralgan ruxsatlardan biri ilovada yoqilmagan. Instagram → Permissions and features bo‘limida instagram_business_basic, instagram_business_manage_messages va instagram_business_manage_comments’ni yoqing.",
       connect_failed: "Ulanish tugallanmadi.",
       failed: "Nimadir xato ketdi. Havolani qayta urinib ko‘ring.",
     } as Record<string, string>,

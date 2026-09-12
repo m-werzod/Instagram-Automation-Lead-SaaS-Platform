@@ -122,6 +122,34 @@ export function verifyState(state: string): OAuthStatePayload {
   return payload;
 }
 
+/**
+ * Map Meta's authorization refusal onto something the UI can explain.
+ *
+ * "Insufficient developer role" is the one that matters most: it does not mean
+ * the person declined, it means the app is in Development Mode and their
+ * Instagram account holds no role on it. Nothing the account owner does can get
+ * past it — only the app owner can, by adding them as an Instagram Tester or by
+ * taking the app Live. Reported as `denied` (its literal error code is
+ * access_denied) it reads as "they cancelled", and the real cause is invisible.
+ */
+export function classifyAuthError(error: string, description: string): string {
+  // Meta puts the reason in a prose description sometimes and in a snake_case
+  // error code other times, so underscores are flattened to spaces and both
+  // fields are searched as one string.
+  const text = `${error} ${description}`.toLowerCase().replace(/_/g, " ");
+  if (
+    text.includes("developer role") ||
+    text.includes("development mode") ||
+    text.includes("app is in development") ||
+    text.includes("not active")
+  ) {
+    return "dev_mode";
+  }
+  if (text.includes("invalid scope")) return "invalid_scopes";
+  if (error === "user_denied" || error === "access_denied") return "denied";
+  return "meta_error";
+}
+
 // ---- authorize URLs --------------------------------------------------------
 
 /**

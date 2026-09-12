@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Info, Instagram, Link2, Plus, Send, UserPlus } from "lucide-react";
+import { AlertTriangle, Info, Instagram, Link2, Plus, Send, ShieldAlert, UserPlus } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
 import { Button } from "@/components/ui/button";
@@ -220,6 +220,27 @@ export function AddAccountDialog({ onChanged }: { onChanged?: () => void | Promi
                 </Button>
               </div>
             )}
+          </section>
+
+          {/* The reason a link fails for a client while working for the admin.
+              Stated before they send one, not discovered afterwards through
+              Meta's "Insufficient developer role". */}
+          <section className="rounded-xl border border-(--color-info)/35 bg-(--color-info-soft) p-3.5">
+            <h3 className="flex items-center gap-2 text-[13px] font-semibold">
+              <ShieldAlert size={15} className="text-(--color-info)" />
+              {t.whoTitle}
+            </h3>
+            <p className="mt-1 text-[11px] leading-5 text-(--color-fg-muted)">{t.whoText}</p>
+            <ol className="mt-2 space-y-1.5">
+              {[t.whoStep1, t.whoStep2, t.whoStep3].map((step, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="mt-px grid h-4 w-4 shrink-0 place-items-center rounded-full bg-(--color-panel-3) text-[9px] font-bold">
+                    {i + 1}
+                  </span>
+                  <span className="text-[11px] leading-5 text-(--color-fg-muted)">{step}</span>
+                </li>
+              ))}
+            </ol>
           </section>
 
           {/* What has already been sent */}

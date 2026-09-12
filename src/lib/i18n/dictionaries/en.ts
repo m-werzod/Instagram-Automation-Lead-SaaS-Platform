@@ -272,6 +272,10 @@ export const en = {
         "You were signed out of this platform, or finished in a different browser than you started in. Sign in here and start again — begin and finish in the same browser.",
       account_not_found: "The account this was started for is no longer here. Reload the page and try again.",
       meta_error: "Meta reported a problem with the authorisation. Check the setup values below, then try again.",
+      dev_mode:
+        "Meta refused because the app is in Development Mode and this Instagram account has no role on it (“Insufficient developer role”). The person authorising cannot fix this — add their account as an Instagram Tester in the Meta App Dashboard under App roles → Roles, have them accept the invite in Instagram → Settings → Website permissions → Tester invites, then send the link again. To connect any account without this step, submit App Review and switch the app to Live.",
+      invalid_scopes:
+        "Instagram rejected the whole sign-in because one of the requested permissions is not enabled on the app. Enable instagram_business_basic, instagram_business_manage_messages and instagram_business_manage_comments under Instagram → Permissions and features.",
       connect_failed: "The connection did not complete.",
     } as Record<string, string>,
 
@@ -311,6 +315,12 @@ export const en = {
       shareTemplate: (url: string) =>
         `Please connect your Instagram account by opening this link and tapping Allow: ${url}`,
       copyMessage: "Copy the message to send",
+      whoTitle: "Who can connect right now",
+      whoText:
+        "While your Meta app is in Development Mode, only Instagram accounts that hold a role on the app can authorise it — everyone else gets “Insufficient developer role”. Add them as an Instagram Tester, or take the app Live.",
+      whoStep1: "Meta App Dashboard → App roles → Roles → Add people → Instagram Tester, and enter their @handle.",
+      whoStep2: "They open Instagram → Settings → Website permissions → Tester invites and accept it.",
+      whoStep3: "Then your link works for them. For clients generally, submit App Review and switch the app to Live.",
       statuses: {
         PENDING: "Waiting",
         USED: "Connected",
@@ -555,6 +565,10 @@ export const en = {
       rate_limited: "Too many attempts. Please wait a few minutes and try again.",
       missing_params: "Instagram did not return an authorisation. Open the link again.",
       meta_error: "Instagram reported a problem with the authorisation. Please try the link again.",
+      dev_mode:
+        "Meta refused because the app is in Development Mode and this Instagram account has no role on it (“Insufficient developer role”). The person authorising cannot fix this — add their account as an Instagram Tester in the Meta App Dashboard under App roles → Roles, have them accept the invite in Instagram → Settings → Website permissions → Tester invites, then send the link again. To connect any account without this step, submit App Review and switch the app to Live.",
+      invalid_scopes:
+        "Instagram rejected the whole sign-in because one of the requested permissions is not enabled on the app. Enable instagram_business_basic, instagram_business_manage_messages and instagram_business_manage_comments under Instagram → Permissions and features.",
       connect_failed: "The connection did not complete.",
       failed: "Something went wrong. Please try the link again.",
     } as Record<string, string>,

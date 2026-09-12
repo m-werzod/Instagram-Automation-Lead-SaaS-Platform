@@ -268,6 +268,10 @@ export const ru = {
         "Вы вышли из платформы или завершили в другом браузере, чем начали. Войдите здесь и начните заново — начинать и заканчивать нужно в одном браузере.",
       account_not_found: "Аккаунта, для которого это начиналось, больше нет. Обновите страницу и попробуйте снова.",
       meta_error: "Meta сообщила о проблеме с авторизацией. Проверьте значения настройки ниже и попробуйте снова.",
+      dev_mode:
+        "Meta отклонила запрос: приложение в режиме Development Mode, а у этого аккаунта Instagram нет роли в нём (“Insufficient developer role”). Человек, выдающий доступ, исправить это не может — добавьте его аккаунт как Instagram Tester в Meta App Dashboard → App roles → Roles, пусть он примет приглашение в Instagram → Настройки → Разрешения сайтов → Приглашения тестировщика, и отправьте ссылку снова. Чтобы подключать любой аккаунт без этого шага, подайте App Review и переведите приложение в Live.",
+      invalid_scopes:
+        "Instagram отклонил весь вход, потому что одно из запрошенных разрешений не включено в приложении. Включите instagram_business_basic, instagram_business_manage_messages и instagram_business_manage_comments в разделе Instagram → Permissions and features.",
       connect_failed: "Подключение не завершилось.",
     } as Record<string, string>,
 
@@ -307,6 +311,12 @@ export const ru = {
       shareTemplate: (url: string) =>
         `Пожалуйста, подключите свой аккаунт Instagram: откройте эту ссылку и нажмите «Разрешить»: ${url}`,
       copyMessage: "Скопировать сообщение для отправки",
+      whoTitle: "Кто может подключиться сейчас",
+      whoText:
+        "Пока ваше приложение Meta в режиме Development Mode, авторизовать его могут только аккаунты Instagram с ролью в приложении — остальные получают “Insufficient developer role”. Добавьте их как Instagram Tester или переведите приложение в режим Live.",
+      whoStep1: "Meta App Dashboard → App roles → Roles → Add people → Instagram Tester и укажите их @имя.",
+      whoStep2: "Они открывают Instagram → Настройки → Разрешения сайтов → Приглашения тестировщика и принимают его.",
+      whoStep3: "После этого ваша ссылка работает для них. Чтобы подключать любых клиентов, подайте App Review и переведите приложение в Live.",
       statuses: {
         PENDING: "Ожидает",
         USED: "Подключено",
@@ -556,6 +566,10 @@ export const ru = {
       rate_limited: "Слишком много попыток. Подождите несколько минут и попробуйте снова.",
       missing_params: "Instagram не вернул авторизацию. Откройте ссылку снова.",
       meta_error: "Instagram сообщил о проблеме с авторизацией. Попробуйте ссылку ещё раз.",
+      dev_mode:
+        "Meta отклонила запрос: приложение в режиме Development Mode, а у этого аккаунта Instagram нет роли в нём (“Insufficient developer role”). Человек, выдающий доступ, исправить это не может — добавьте его аккаунт как Instagram Tester в Meta App Dashboard → App roles → Roles, пусть он примет приглашение в Instagram → Настройки → Разрешения сайтов → Приглашения тестировщика, и отправьте ссылку снова. Чтобы подключать любой аккаунт без этого шага, подайте App Review и переведите приложение в Live.",
+      invalid_scopes:
+        "Instagram отклонил весь вход, потому что одно из запрошенных разрешений не включено в приложении. Включите instagram_business_basic, instagram_business_manage_messages и instagram_business_manage_comments в разделе Instagram → Permissions and features.",
       connect_failed: "Подключение не завершилось.",
       failed: "Что-то пошло не так. Попробуйте ссылку ещё раз.",
     } as Record<string, string>,

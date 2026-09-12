@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { coreEnv } from "@/lib/env";
-import { verifyState } from "@/lib/meta/oauth";
+import { classifyAuthError, verifyState } from "@/lib/meta/oauth";
 import { finalizeFacebookLogin, finalizeInstagramLogin } from "@/lib/meta/accounts";
 import { checkInvite, markInviteUsed } from "@/lib/meta/invites";
 import { prisma } from "@/lib/prisma";
@@ -48,8 +48,17 @@ export async function GET(req: NextRequest) {
 
   const error = search.get("error") ?? search.get("error_reason");
   if (error) {
-    log.warn("oauth denied", { error, description: search.get("error_description") });
-    return land({ error: error === "user_denied" || error === "access_denied" ? "denied" : "meta_error" });
+    const description = search.get("error_description") ?? "";
+    log.warn("oauth denied", { error, description });
+
+    // Meta's own wording is the only thing that distinguishes "the person said
+    // no" from "the app will not let this person say yes". Losing it turns a
+    // fixable configuration problem into an unexplained failure — which is
+    // exactly what an app still in Development Mode looks like to a client.
+    return land({
+      error: classifyAuthError(error, description),
+      ...(description ? { detail: description.slice(0, 300) } : {}),
+    });
   }
 
   const code = search.get("code");

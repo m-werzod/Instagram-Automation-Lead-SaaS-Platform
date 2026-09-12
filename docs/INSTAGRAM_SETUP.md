@@ -201,8 +201,45 @@ plain language and stays until dismissed. The mapping:
 | Panel: *Instagram app ID and secret are missing* | `META_INSTAGRAM_APP_*` unset | §2, §6 |
 | Panel: *you were signed out, or finished in a different browser* | the admin session did not survive the round trip | start and finish in one browser |
 | Panel: *you cancelled, or left a permission switched off* | Allow was declined | retry with every permission on |
+| Panel / Instagram: **"Insufficient developer role"** | the app is in Development Mode and that account holds no role on it | §10 — add them as an Instagram Tester, or go Live |
 | Card: *Event delivery is not active* | webhook subscription failed | press **Turn on event delivery**; if it fails again, §4 |
 
-While the app is in **Development mode**, only accounts added as app testers
-(*App roles → Roles*) can complete the flow. Submit for App Review and switch to
-**Live** before connecting a client's account.
+---
+
+## 10. "Insufficient developer role" — Development Mode
+
+This is the error a **client's** account hits, and it is the most confusing one,
+because Meta reports it as `access_denied` — the same code as "the user tapped
+Cancel". It does not mean they declined. It means the app will not let them
+approve at all.
+
+While a Meta app is in **Development Mode**, only Instagram accounts that hold a
+role on the app can authorize it. Everyone else is refused, and nothing the
+account owner does can change that — only the app owner can.
+
+### Option A — add them as an Instagram Tester (immediate, free)
+
+1. Meta App Dashboard → **App roles → Roles → Add people**.
+2. Choose **Instagram Tester** and enter their `@handle`.
+3. They open Instagram → **Settings → Website permissions → Tester invites** and
+   **accept**. (On some app versions: *Settings and privacy → Website
+   permissions*.)
+4. Send the connect link again. It now works for them.
+
+Good for your own accounts and a handful of known clients. Every account has to
+be added individually, so it does not scale to real onboarding.
+
+### Option B — take the app Live (required for clients generally)
+
+Submit **App Review** for the permissions the app requests
+(`instagram_business_basic`, `instagram_business_manage_messages`,
+`instagram_business_manage_comments`) and switch the app to **Live**. Any
+Business or Creator account can then authorize without being added first.
+
+Review needs a working screencast of the flow and a privacy-policy URL, and
+takes a few days. Until it passes, Option A is the only way to connect an
+account that is not yours.
+
+> The platform detects this specific refusal and prints the fix on screen —
+> both for the admin and on the invited owner's own page — instead of reporting
+> it as a cancellation.

@@ -7,8 +7,8 @@ import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { DEFAULT_ALLOWED_TOOLS, AGENT_TOOLS } from "@/lib/agent/tools";
-import { DEFAULT_MODELS } from "@/lib/ai";
-import { isProviderConfigured } from "@/lib/ai";
+import { aiRuntimeInfo, defaultModelFor, isProviderConfigured, providerTypeOf } from "@/lib/ai";
+import { defaultAiProvider } from "@/lib/env";
 
 export const GET = route(async (req: NextRequest) => {
   const auth = await requireAdmin();
@@ -21,6 +21,9 @@ export const GET = route(async (req: NextRequest) => {
   return ok({
     agents: agents.map((a) => ({ ...a, providerConfigured: isProviderConfigured(a.provider) })),
     availableTools: AGENT_TOOLS.map((t) => ({ id: t.id, risk: t.risk, description: t.def.description })),
+    // what a new assistant starts with — the operator-configured provider and model
+    defaults: { provider: providerTypeOf(defaultAiProvider()), model: defaultModelFor(defaultAiProvider()) },
+    runtime: aiRuntimeInfo(),
   });
 });
 
@@ -28,7 +31,7 @@ const createSchema = z.object({
   accountId: z.string().min(1),
   name: z.string().min(1).max(120),
   description: z.string().max(500).optional(),
-  provider: z.enum(["ANTHROPIC", "OPENAI", "GOOGLE"]).default("ANTHROPIC"),
+  provider: z.enum(["ANTHROPIC", "OPENAI", "GOOGLE"]).optional(),
   model: z.string().max(100).optional(),
   systemPrompt: z.string().min(10).max(20000),
   language: z.string().max(60).optional(),
@@ -45,13 +48,14 @@ export const POST = route(async (req: NextRequest) => {
   await assertAccountAccess(auth, account.id);
 
   const providerName = { ANTHROPIC: "anthropic", OPENAI: "openai", GOOGLE: "google" } as const;
+  const provider = body.provider ?? providerTypeOf(defaultAiProvider());
   const agent = await prisma.aIAgent.create({
     data: {
       accountId: body.accountId,
       name: body.name,
       description: body.description,
-      provider: body.provider,
-      model: body.model?.trim() || DEFAULT_MODELS[providerName[body.provider]],
+      provider,
+      model: body.model?.trim() || defaultModelFor(providerName[provider]),
       systemPrompt: body.systemPrompt,
       language: body.language,
       tone: body.tone,

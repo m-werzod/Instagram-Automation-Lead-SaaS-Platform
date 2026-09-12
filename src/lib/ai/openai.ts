@@ -8,10 +8,27 @@ import {
   type ToolCall,
 } from "./provider";
 
-/** OpenAI Chat Completions mapping. */
+export const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
+
+/**
+ * OpenAI Chat Completions mapping. The protocol is shared by many gateways
+ * (api.airforce, OpenRouter, local proxies), so the base URL is a parameter —
+ * everything else stays identical.
+ */
 export class OpenAIProvider implements AIProvider {
   readonly name = "openai" as const;
-  constructor(private readonly apiKey: string) {}
+  private readonly baseUrl: string;
+
+  constructor(
+    private readonly apiKey: string,
+    baseUrl: string = OPENAI_DEFAULT_BASE_URL,
+  ) {
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+  }
+
+  private get isOfficial(): boolean {
+    return this.baseUrl.includes("api.openai.com");
+  }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const messages: Array<Record<string, unknown>> = [];
@@ -22,7 +39,8 @@ export class OpenAIProvider implements AIProvider {
       model: req.model,
       messages,
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-      ...(req.maxTokens ? { max_completion_tokens: req.maxTokens } : {}),
+      // OpenAI itself deprecated max_tokens for chat; most compatible gateways only know max_tokens.
+      ...(req.maxTokens ? (this.isOfficial ? { max_completion_tokens: req.maxTokens } : { max_tokens: req.maxTokens }) : {}),
       ...(req.tools && req.tools.length > 0
         ? {
             tools: req.tools.map((t) => ({
@@ -33,7 +51,7 @@ export class OpenAIProvider implements AIProvider {
         : {}),
     };
 
-    const json = await aiFetch("openai", "https://api.openai.com/v1/chat/completions", {
+    const json = await aiFetch("openai", `${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify(body),
@@ -44,12 +62,12 @@ export class OpenAIProvider implements AIProvider {
       content?: string | null;
       tool_calls?: Array<{ id: string; function?: { name?: string; arguments?: string } }>;
     };
-    const toolCalls: ToolCall[] = (message.tool_calls ?? []).map((tc) => ({
-      id: tc.id,
+    const toolCalls: ToolCall[] = (message.tool_calls ?? []).map((tc, i) => ({
+      id: tc.id || `call_${i}`,
       name: tc.function?.name ?? "",
       arguments: safeParse(tc.function?.arguments),
     }));
-    const usage = (json.usage ?? {}) as { prompt_tokens?: number; completion_tokens?: number };
+    const usage = (json.usage ?? {}) as { prompt_tokens?: number; completion_tokens?: number; cost?: number };
 
     return {
       text: message.content ?? null,
@@ -57,6 +75,8 @@ export class OpenAIProvider implements AIProvider {
       inputTokens: usage.prompt_tokens ?? 0,
       outputTokens: usage.completion_tokens ?? 0,
       stopReason: (choice.finish_reason as string | undefined) ?? null,
+      // Gateways report the real charge; the official API does not.
+      costUsd: typeof usage.cost === "number" ? usage.cost : null,
     };
   }
 }
@@ -90,10 +110,16 @@ function safeParse(s: string | undefined): Record<string, unknown> {
 export class OpenAIEmbeddings implements EmbeddingProvider {
   readonly model = "text-embedding-3-small";
   readonly dimension = 1536;
-  constructor(private readonly apiKey: string) {}
+  private readonly baseUrl: string;
+  constructor(
+    private readonly apiKey: string,
+    baseUrl: string = OPENAI_DEFAULT_BASE_URL,
+  ) {
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+  }
 
   async embed(texts: string[]): Promise<number[][]> {
-    const json = await aiFetch("openai", "https://api.openai.com/v1/embeddings", {
+    const json = await aiFetch("openai", `${this.baseUrl}/embeddings`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({ model: this.model, input: texts }),

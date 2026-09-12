@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { route, ok } from "@/lib/api";
 import { queueDepth } from "@/lib/queue";
-import { isEmailConfigured, isMetaConfigured, aiKeyFor, defaultAiProvider } from "@/lib/env";
+import { isEmailConfigured, isMetaConfigured } from "@/lib/env";
+import { aiRuntimeInfo } from "@/lib/ai";
 import { getAuth } from "@/lib/auth/session";
 
 /**
@@ -42,7 +43,7 @@ export const GET = route(async () => {
         : { healthy: false },
       email: { configured: isEmailConfigured(), failedCount: failedEmails },
       meta: { configured: isMetaConfigured(), tokenIssues },
-      ai: { provider: defaultAiProvider(), configured: aiKeyFor(defaultAiProvider()) !== null },
+      ai: aiRuntimeInfo(),
       webhooks: { lastEventAt: lastWebhook?.receivedAt ?? null, lastStatus: lastWebhook?.status ?? null },
       worker: {
         note: deadJobs > 0 ? `${deadJobs} dead jobs need attention` : "run `npm run worker` (or QUEUE_INLINE=true in dev)",

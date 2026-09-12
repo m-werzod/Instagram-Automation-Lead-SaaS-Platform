@@ -141,5 +141,26 @@ export function embeddingConfig(): { provider: "openai" | "google"; apiKey: stri
   return { provider, apiKey };
 }
 
+/**
+ * Base URL of the OpenAI-compatible chat API. api.openai.com by default, or any
+ * gateway speaking the same protocol (api.airforce, OpenRouter, a local proxy).
+ * The key for it is AI_API_KEY (or OPENAI_API_KEY).
+ */
+export function openAiBaseUrl(): string {
+  const raw = process.env.AI_API_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || "https://api.openai.com/v1";
+  return raw.replace(/\/+$/, "");
+}
+
+/** Model new agents and background analysis use for the DEFAULT provider, when the operator pins one. */
+export function defaultAiModelOverride(): string | null {
+  return process.env.AI_MODEL?.trim() || null;
+}
+
+/** Hard ceiling for one model call; free-tier gateways can be slow, so the floor is generous. */
+export function aiTimeoutMs(): number {
+  const n = Number(process.env.AI_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 5000 ? n : 60_000;
+}
+
 export const isProd = () => coreEnv().NODE_ENV === "production";
 export const isDev = () => coreEnv().NODE_ENV === "development";

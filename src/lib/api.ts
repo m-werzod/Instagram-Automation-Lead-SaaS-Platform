@@ -4,6 +4,7 @@ import { AppError } from "@/lib/errors";
 import { ConfigError, coreEnv, isProd } from "@/lib/env";
 import { createLogger, errorFields } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
+import { AIProviderError } from "@/lib/ai/provider";
 
 const log = createLogger("api");
 
@@ -55,6 +56,21 @@ export function handleApiError(err: unknown): NextResponse {
       new AppError("CONFIG_MISSING", err.message, {
         reason: "A required environment variable is missing or invalid.",
         fix: "Set the variables listed in .env.example and restart the app.",
+      }),
+    );
+  }
+  if (err instanceof AIProviderError) {
+    log.warn("ai provider error", { provider: err.provider, status: err.status, message: err.message });
+    return fail(
+      new AppError("AI_PROVIDER_ERROR", err.userMessage, {
+        status: err.retryable ? 503 : 502,
+        reason: err.message,
+        fix:
+          err.status === 402 || err.status === 404
+            ? "Change the model in the assistant settings (or AI_MODEL) to one your provider plan includes."
+            : err.retryable
+              ? "Wait a moment and try again — the queue retries automatically."
+              : "Check AI_API_KEY and AI_API_BASE_URL in the environment.",
       }),
     );
   }

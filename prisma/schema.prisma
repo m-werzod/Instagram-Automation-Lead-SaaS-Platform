@@ -386,6 +386,16 @@ model AIAgent {
   // tool permission system (spec §34/§35): ids from src/lib/agent/tools.ts
   allowedTools String[]
 
+  // availability + safety (src/lib/agent/guardrails.ts) — each enforced in the runtime
+  workingHours      Json? // {timezone, days:[0-6], start:"HH:MM", end:"HH:MM"}; null = always on
+  outsideHoursReply String? @db.Text // sent once per 12h when a message arrives outside working hours
+  fallbackReply     String? @db.Text // sent when the model fails or the reply is blocked by a guardrail
+  allowedTopics     String? @db.Text // comma/newline separated; steers the model, shown in the prompt
+  prohibitedTopics  String? @db.Text // comma/newline separated; replies mentioning them are blocked
+  responseLength    String  @default("SHORT") // SHORT | MEDIUM | LONG → max tokens + prompt hint
+  ctaText           String? @db.Text // the call-to-action the assistant works towards
+  faq               String? @db.Text // quick Q&A pairs, injected into the prompt (no upload needed)
+
   defaultLeadFlowId String?
   isDemo            Boolean  @default(false)
   createdAt         DateTime @default(now())

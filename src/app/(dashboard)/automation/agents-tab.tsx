@@ -16,6 +16,11 @@ import { EmptyState } from "@/components/ui/page-header";
 
 /** Agents tab — list, quick ON/OFF, create. Full settings live at /automation/agents/[id]. */
 
+interface Defaults {
+  provider: "ANTHROPIC" | "OPENAI" | "GOOGLE";
+  model: string;
+}
+
 interface AgentRow {
   id: string;
   name: string;
@@ -32,11 +37,13 @@ interface AgentRow {
 export function AgentsTab({ accountId }: { accountId: string }) {
   const { d } = useI18n();
   const [agents, setAgents] = React.useState<AgentRow[] | null>(null);
+  const [defaults, setDefaults] = React.useState<Defaults | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
 
   const load = React.useCallback(async () => {
-    const data = await api<{ agents: AgentRow[] }>(`/api/agents?accountId=${accountId}`, { silent: true });
+    const data = await api<{ agents: AgentRow[]; defaults: Defaults }>(`/api/agents?accountId=${accountId}`, { silent: true });
     setAgents(data.agents);
+    setDefaults(data.defaults);
   }, [accountId]);
 
   React.useEffect(() => {
@@ -126,7 +133,7 @@ export function AgentsTab({ accountId }: { accountId: string }) {
         </>
       )}
 
-      <CreateAgentDialog open={createOpen} onOpenChange={setCreateOpen} accountId={accountId} onCreated={load} />
+      <CreateAgentDialog open={createOpen} onOpenChange={setCreateOpen} accountId={accountId} defaults={defaults} onCreated={load} />
     </div>
   );
 }
@@ -135,17 +142,26 @@ function CreateAgentDialog({
   open,
   onOpenChange,
   accountId,
+  defaults,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   accountId: string;
+  defaults: Defaults | null;
   onCreated: () => Promise<void>;
 }) {
   const { d } = useI18n();
   const [name, setName] = React.useState("");
-  const [provider, setProvider] = React.useState<"ANTHROPIC" | "OPENAI" | "GOOGLE">("ANTHROPIC");
-  const [model, setModel] = React.useState("");
+  const [provider, setProvider] = React.useState<"ANTHROPIC" | "OPENAI" | "GOOGLE">(defaults?.provider ?? "OPENAI");
+  const [model, setModel] = React.useState(defaults?.model ?? "");
+  // the configured provider/model arrive after the first render
+  React.useEffect(() => {
+    if (defaults) {
+      setProvider(defaults.provider);
+      setModel((m) => m || defaults.model);
+    }
+  }, [defaults]);
   const [language, setLanguage] = React.useState(d.langName);
   const [systemPrompt, setSystemPrompt] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -187,11 +203,13 @@ function CreateAgentDialog({
             />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label={d.dashboard.health.ai}>
+            <Field label={d.automation.agents.providerLabel}>
               <Select value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)}>
-                <option value="ANTHROPIC">Claude (Anthropic)</option>
-                <option value="OPENAI">OpenAI</option>
-                <option value="GOOGLE">Google (Gemini)</option>
+                {(["ANTHROPIC", "OPENAI", "GOOGLE"] as const).map((p) => (
+                  <option key={p} value={p}>
+                    {d.automation.agents.providers[p]}
+                  </option>
+                ))}
               </Select>
             </Field>
             <Field label={d.automation.agents.model}>

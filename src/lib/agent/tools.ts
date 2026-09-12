@@ -12,6 +12,10 @@ const log = createLogger("agent.tools");
  * only call tools explicitly enabled in agent.allowedTools, and HIGH_RISK
  * tools additionally never execute side effects that spend money or publish
  * content — they only create drafts for admin review.
+ *
+ * In the test console (dryRun / no conversation) WRITE and HIGH_RISK tools
+ * describe what they WOULD do instead of doing it, so an admin can rehearse
+ * the assistant without creating leads or handing off real conversations.
  */
 
 export type ToolRisk = "READ" | "WRITE" | "HIGH_RISK";
@@ -19,7 +23,10 @@ export type ToolRisk = "READ" | "WRITE" | "HIGH_RISK";
 export interface ToolContext {
   account: InstagramAccount;
   agent: AIAgent;
-  conversation: Conversation;
+  /** null in the test console — there is no real conversation to write against */
+  conversation: Conversation | null;
+  /** test console: simulate side effects */
+  dryRun?: boolean;
 }
 
 export interface ToolResult {
@@ -43,6 +50,10 @@ export interface AgentTool {
 function str(args: Record<string, unknown>, key: string): string {
   const v = args[key];
   return typeof v === "string" ? v : "";
+}
+
+function simulated(ctx: ToolContext): boolean {
+  return Boolean(ctx.dryRun) || ctx.conversation === null;
 }
 
 export const AGENT_TOOLS: AgentTool[] = [
@@ -90,10 +101,18 @@ export const AGENT_TOOLS: AgentTool[] = [
       if (!flowId) {
         return { output: "No lead flow is configured for this agent. Collect name and phone conversationally instead." };
       }
+      if (simulated(ctx)) {
+        const first = await prisma.leadFlowQuestion.findFirst({ where: { flowId }, orderBy: { order: "asc" } });
+        if (!first) return { output: "The lead flow has no questions yet." };
+        return {
+          output: `TEST MODE: the questionnaire would start now with "${first.prompt}". Do not send another message.`,
+          effects: { startedFlowMessages: [{ text: first.prompt }], suppressReply: true },
+        };
+      }
       const outcome = await startFlowSession({
         flowId,
         accountId: ctx.account.id,
-        conversationId: ctx.conversation.id,
+        conversationId: ctx.conversation!.id,
       });
       if (outcome.sessionStatus !== "ACTIVE") {
         return { output: "The lead flow could not be started (disabled or empty)." };
@@ -123,17 +142,23 @@ export const AGENT_TOOLS: AgentTool[] = [
       },
     },
     async execute(args, ctx) {
-      const name = str(args, "name") || ctx.conversation.username || null;
+      const name = str(args, "name") || ctx.conversation?.username || null;
       const phone = str(args, "phone") || null;
       const email = str(args, "email") || null;
       if (!name && !phone && !email) {
         return { output: "Refused: no contact details provided. Ask the user for at least a name or phone number." };
       }
+      if (simulated(ctx)) {
+        return {
+          output: `TEST MODE: a lead would be created (name: ${name ?? "—"}, phone: ${phone ?? "—"}, email: ${email ?? "—"}) and the team notified. Tell the user their details were received.`,
+        };
+      }
+      const conversation = ctx.conversation!;
       const lead = await prisma.lead.create({
         data: {
           accountId: ctx.account.id,
-          igsid: ctx.conversation.igsid,
-          conversationId: ctx.conversation.id,
+          igsid: conversation.igsid,
+          conversationId: conversation.id,
           name,
           phone,
           email,
@@ -143,7 +168,7 @@ export const AGENT_TOOLS: AgentTool[] = [
         },
       });
       await prisma.leadEvent.create({ data: { leadId: lead.id, type: "CREATED", data: { by: "ai_agent" } } });
-      await prisma.conversation.update({ where: { id: ctx.conversation.id }, data: { leadId: lead.id } });
+      await prisma.conversation.update({ where: { id: conversation.id }, data: { leadId: lead.id } });
       const { enqueue } = await import("@/lib/queue");
       await enqueue("lead.process", { leadId: lead.id }, { idempotencyKey: `lead.process:${lead.id}` });
       log.info("agent created lead", { leadId: lead.id, agentId: ctx.agent.id });
@@ -169,10 +194,11 @@ export const AGENT_TOOLS: AgentTool[] = [
       if (!["NEW", "CONTACTED", "QUALIFIED", "IN_PROGRESS", "WON", "LOST"].includes(status)) {
         return { output: "Invalid status." };
       }
-      if (!ctx.conversation.leadId) return { output: "No lead is attached to this conversation yet." };
-      await prisma.lead.update({ where: { id: ctx.conversation.leadId }, data: { status } });
+      if (simulated(ctx)) return { output: `TEST MODE: the lead status would become ${status}.` };
+      if (!ctx.conversation!.leadId) return { output: "No lead is attached to this conversation yet." };
+      await prisma.lead.update({ where: { id: ctx.conversation!.leadId }, data: { status } });
       await prisma.leadEvent.create({
-        data: { leadId: ctx.conversation.leadId, type: "STATUS_CHANGED", data: { status, by: "ai_agent" } },
+        data: { leadId: ctx.conversation!.leadId, type: "STATUS_CHANGED", data: { status, by: "ai_agent" } },
       });
       return { output: `Lead status updated to ${status}.` };
     },
@@ -194,8 +220,16 @@ export const AGENT_TOOLS: AgentTool[] = [
       if (!ctx.agent.humanHandoffEnabled) {
         return { output: "Human handoff is disabled for this agent; continue assisting as best you can." };
       }
+      if (simulated(ctx)) {
+        return {
+          output:
+            "TEST MODE: the conversation would be handed to a human admin and AI replies would stop. Send ONE short final message telling the user a team member will reply soon.",
+          effects: { handedOff: true },
+        };
+      }
+      const conversation = ctx.conversation!;
       await prisma.conversation.update({
-        where: { id: ctx.conversation.id },
+        where: { id: conversation.id },
         data: { status: "HUMAN", aiEnabled: false },
       });
       const { queueAdminAlert } = await import("@/lib/email");
@@ -207,7 +241,7 @@ export const AGENT_TOOLS: AgentTool[] = [
       await audit({
         action: "AI_HANDOFF_TO_HUMAN",
         resourceType: "conversation",
-        resourceId: ctx.conversation.id,
+        resourceId: conversation.id,
         after: { reason: str(args, "reason") },
       });
       return {
@@ -250,6 +284,9 @@ export const AGENT_TOOLS: AgentTool[] = [
     },
     async execute(args, ctx) {
       const budget = typeof args.dailyBudgetUsd === "number" ? Math.round(args.dailyBudgetUsd * 100) : 500;
+      if (simulated(ctx)) {
+        return { output: `TEST MODE: a draft campaign "${str(args, "name")}" would be created for admin review. Nothing is spent.` };
+      }
       const campaign = await prisma.campaign.create({
         data: {
           accountId: ctx.account.id,

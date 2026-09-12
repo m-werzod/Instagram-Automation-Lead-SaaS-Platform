@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getProvider, recordUsage, DEFAULT_MODELS } from "@/lib/ai";
+import { getProvider, recordUsage, defaultModelFor } from "@/lib/ai";
 import { defaultAiProvider } from "@/lib/env";
 import { AppError, notFound } from "@/lib/errors";
 import { SUPPORTED_CTA_TYPES, SUPPORTED_OBJECTIVES } from "@/lib/meta/marketing";
@@ -33,7 +33,7 @@ export async function analyzeContent(contentId: string): Promise<AnalysisOutput>
 
   const providerName = defaultAiProvider();
   const providerType = providerTypeMap[providerName];
-  const model = DEFAULT_MODELS[providerName];
+  const model = defaultModelFor(providerName);
   const provider = getProvider(providerType);
 
   const ctaValues = SUPPORTED_CTA_TYPES.map((c) => c.value).join(" | ");

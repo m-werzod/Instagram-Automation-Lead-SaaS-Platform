@@ -7,6 +7,8 @@ import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { TOOLS_BY_ID } from "@/lib/agent/tools";
+import { aiRuntimeInfo, isProviderConfigured } from "@/lib/ai";
+import { Prisma } from "@prisma/client";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
   const auth = await requireAdmin();
@@ -20,11 +22,39 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
   });
   if (!agent) throw notFound("Agent");
   await assertAccountAccess(auth, agent.accountId);
-  const flows = await prisma.leadFlow.findMany({
-    where: { accountId: agent.accountId },
-    select: { id: true, name: true, enabled: true },
+  const since = new Date(Date.now() - 30 * 86400_000);
+  const [flows, usageAgg, failures, recentErrors] = await Promise.all([
+    prisma.leadFlow.findMany({ where: { accountId: agent.accountId }, select: { id: true, name: true, enabled: true } }),
+    prisma.aIUsage.aggregate({
+      where: { agentId: id, createdAt: { gte: since } },
+      _count: true,
+      _sum: { inputTokens: true, outputTokens: true, costUsd: true },
+      _avg: { latencyMs: true },
+    }),
+    prisma.aIUsage.count({ where: { agentId: id, createdAt: { gte: since }, success: false } }),
+    prisma.aIUsage.findMany({
+      where: { agentId: id, success: false },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { error: true, createdAt: true, purpose: true, model: true },
+    }),
+  ]);
+  return ok({
+    agent,
+    flows,
+    providerConfigured: isProviderConfigured(agent.provider),
+    runtime: aiRuntimeInfo(),
+    usage: {
+      days: 30,
+      calls: usageAgg._count,
+      failures,
+      inputTokens: usageAgg._sum.inputTokens ?? 0,
+      outputTokens: usageAgg._sum.outputTokens ?? 0,
+      costUsd: usageAgg._sum.costUsd ?? 0,
+      avgLatencyMs: usageAgg._avg.latencyMs ? Math.round(usageAgg._avg.latencyMs) : null,
+    },
+    recentErrors,
   });
-  return ok({ agent, flows });
 });
 
 const updateSchema = z.object({
@@ -51,6 +81,23 @@ const updateSchema = z.object({
   maxRepliesPerUserPerHour: z.number().int().min(1).max(200).optional(),
   allowedTools: z.array(z.string()).optional(),
   defaultLeadFlowId: z.string().nullable().optional(),
+  // availability + safety — enforced by src/lib/agent/guardrails.ts
+  workingHours: z
+    .object({
+      timezone: z.string().min(1).max(64),
+      days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+      start: z.string().regex(/^([01]d|2[0-3]):[0-5]d$/),
+      end: z.string().regex(/^([01]d|2[0-3]):[0-5]d$/),
+    })
+    .nullable()
+    .optional(),
+  outsideHoursReply: z.string().max(900).nullable().optional(),
+  fallbackReply: z.string().max(900).nullable().optional(),
+  allowedTopics: z.string().max(2000).nullable().optional(),
+  prohibitedTopics: z.string().max(2000).nullable().optional(),
+  responseLength: z.enum(["SHORT", "MEDIUM", "LONG"]).optional(),
+  ctaText: z.string().max(500).nullable().optional(),
+  faq: z.string().max(20000).nullable().optional(),
 });
 
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
@@ -74,7 +121,14 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
     if (!flow) throw validationError("Lead flow does not belong to this agent's Instagram account");
   }
 
-  const agent = await prisma.aIAgent.update({ where: { id }, data: body });
+  const { workingHours, ...rest } = body;
+  const agent = await prisma.aIAgent.update({
+    where: { id },
+    data: {
+      ...rest,
+      ...(workingHours !== undefined ? { workingHours: workingHours === null ? Prisma.JsonNull : workingHours } : {}),
+    },
+  });
 
   const promptChanged = body.systemPrompt !== undefined && body.systemPrompt !== existing.systemPrompt;
   await audit({
@@ -105,6 +159,8 @@ function sanitizeToggles(body: Record<string, unknown>) {
     "provider",
     "model",
     "allowedTools",
+    "responseLength",
+    "workingHours",
   ];
   return Object.fromEntries(Object.entries(body).filter(([k]) => keys.includes(k)));
 }

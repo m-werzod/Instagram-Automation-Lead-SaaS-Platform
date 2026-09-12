@@ -193,9 +193,9 @@ export default function LeadsPage() {
                   ) : (
                     <Badge
                       style={{
-                        background: `color-mix(in srgb, ${meta.color} 12%, white)`,
+                        background: `color-mix(in srgb, ${meta.color} 12%, var(--color-panel))`,
                         color: meta.color,
-                        borderColor: `color-mix(in srgb, ${meta.color} 30%, white)`,
+                        borderColor: `color-mix(in srgb, ${meta.color} 30%, var(--color-panel))`,
                       }}
                     >
                       {col.length}

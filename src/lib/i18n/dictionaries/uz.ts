@@ -96,6 +96,11 @@ export const uz = {
     demo: "demo",
   },
 
+  theme: {
+    label: "Ko‘rinish",
+    modes: { light: "Yorug‘", dark: "Tungi", system: "Avto" },
+  },
+
   auth: {
     title: "Xush kelibsiz",
     subtitle: "Boshqaruv paneliga kiring",

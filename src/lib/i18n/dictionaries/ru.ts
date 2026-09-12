@@ -93,6 +93,11 @@ export const ru = {
     demo: "демо",
   },
 
+  theme: {
+    label: "Оформление",
+    modes: { light: "Светлая", dark: "Тёмная", system: "Авто" },
+  },
+
   auth: {
     title: "С возвращением",
     subtitle: "Войдите в панель управления",

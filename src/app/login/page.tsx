@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Instagram, Eye, EyeOff, AlertCircle, ShieldCheck, CheckCircle2, Globe } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
+import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { LOCALES, LOCALE_LABELS, type Locale } from "@/lib/i18n/config";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -167,8 +168,9 @@ export default function LoginPage() {
   const { d, locale, setLocale } = useI18n();
   return (
     <div className="flex min-h-dvh items-center justify-center bg-(--color-bg) p-4">
-      {/* language switcher */}
-      <div className="fixed right-4 top-4 flex items-center gap-1.5">
+      {/* theme + language, reachable before signing in */}
+      <div className="fixed right-4 top-4 flex items-center gap-2">
+        <ThemeToggle />
         <Globe size={14} className="text-(--color-fg-faint)" aria-hidden />
         <Select
           aria-label={d.common.language}
@@ -184,7 +186,7 @@ export default function LoginPage() {
         </Select>
       </div>
 
-      <div className="grid w-full max-w-4xl overflow-hidden rounded-2xl border border-(--color-border) bg-white shadow-xl md:grid-cols-2">
+      <div className="grid w-full max-w-4xl overflow-hidden rounded-2xl border border-(--color-border) bg-(--color-panel) shadow-xl md:grid-cols-2">
         {/* brand panel */}
         <div className="ig-gradient relative hidden flex-col justify-between p-8 text-white md:flex">
           <div className="flex items-center gap-2.5">

@@ -10,11 +10,11 @@ const buttonVariants = cva(
       variant: {
         default: "bg-(--color-accent) text-white shadow-sm hover:bg-(--color-accent-hover) active:scale-[0.98]",
         secondary:
-          "bg-white text-(--color-fg) border border-(--color-border-strong) shadow-sm hover:bg-(--color-panel-2) hover:border-(--color-fg-faint)",
+          "bg-(--color-panel) text-(--color-fg) border border-(--color-border-strong) shadow-sm hover:bg-(--color-panel-2) hover:border-(--color-fg-faint)",
         ghost: "text-(--color-fg-muted) hover:text-(--color-fg) hover:bg-(--color-panel-2)",
         danger: "bg-(--color-danger-soft) text-(--color-danger) border border-(--color-danger)/30 hover:bg-(--color-danger)/15",
         success: "bg-(--color-ok-soft) text-(--color-ok) border border-(--color-ok)/30 hover:bg-(--color-ok)/15",
-        outline: "border border-(--color-border-strong) bg-white text-(--color-fg) shadow-sm hover:bg-(--color-panel-2)",
+        outline: "border border-(--color-border-strong) bg-(--color-panel) text-(--color-fg) shadow-sm hover:bg-(--color-panel-2)",
         instagram: "ig-gradient text-white shadow-sm hover:opacity-90 active:scale-[0.98]",
       },
       size: {

@@ -137,7 +137,7 @@ function TabBar({ tab, onSelect, labels }: { tab: TabId; onSelect: (t: TabId) =>
           onClick={() => onSelect(t)}
           className={cn(
             "flex items-center gap-1.5 whitespace-nowrap rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors",
-            tab === t ? "bg-white text-(--color-fg) shadow-sm" : "text-(--color-fg-muted) hover:text-(--color-fg)",
+            tab === t ? "bg-(--color-surface-raised) text-(--color-fg) shadow-sm" : "text-(--color-fg-muted) hover:text-(--color-fg)",
           )}
         >
           {icons[t]} {labels[t]}

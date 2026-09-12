@@ -107,8 +107,8 @@ export function LandingWizard({
   const q = step >= 1 && step <= total ? questions[step - 1]! : null;
 
   return (
-    <div className="flex min-h-dvh justify-center bg-(--color-bg) sm:items-center sm:py-8">
-      <div className="flex w-full max-w-md flex-col overflow-hidden bg-white sm:min-h-[600px] sm:rounded-3xl sm:border sm:border-(--color-border) sm:shadow-xl">
+    <div className="flex min-h-dvh justify-center bg-slate-100 sm:items-center sm:py-8">
+      <div className="flex w-full max-w-md flex-col overflow-hidden bg-white sm:min-h-[600px] sm:rounded-3xl sm:border sm:border-slate-200 sm:shadow-xl">
         <div className="ig-gradient h-1.5 w-full shrink-0" />
 
         {/* intro */}

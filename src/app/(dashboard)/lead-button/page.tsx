@@ -358,7 +358,7 @@ export default function LeadButtonPage() {
                   colours/shape/size below (crucial on mobile, where the phone
                   preview is far above these controls). Reflects the spec exactly
                   via the same leadButtonStyle used by the real landing page. */}
-              <div className="sticky top-0 z-10 -mx-4 -mt-3.5 mb-1 border-b border-(--color-border) bg-white/95 px-4 py-3 backdrop-blur">
+              <div className="sticky top-0 z-10 -mx-4 -mt-3.5 mb-1 border-b border-(--color-border) bg-(--color-panel)/95 px-4 py-3 backdrop-blur">
                 <div className="mb-1.5 text-center text-[10px] font-semibold uppercase tracking-wide text-(--color-fg-faint)">
                   {d.common.preview}
                 </div>

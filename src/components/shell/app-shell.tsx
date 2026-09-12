@@ -27,6 +27,7 @@ import { LOCALES, LOCALE_LABELS, type Locale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 import { AccountProvider, useAccounts } from "./account-context";
 import { Select } from "@/components/ui/input";
+import { ThemeToggle } from "./theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 
@@ -224,12 +225,12 @@ function SidebarBody({
                 item.child ? "ml-4 pl-2.5" : "pl-2.5",
                 active ? "text-(--color-fg)" : "text-(--color-fg-muted) hover:bg-(--color-panel-2) hover:text-(--color-fg)",
               )}
-              style={active ? { background: `color-mix(in srgb, ${item.color} 10%, white)` } : undefined}
+              style={active ? { background: `color-mix(in srgb, ${item.color} 10%, var(--color-panel))` } : undefined}
             >
               <span
                 className="grid h-7 w-7 shrink-0 place-items-center rounded-lg transition-colors"
                 style={{
-                  background: active ? item.color : `color-mix(in srgb, ${item.color} 12%, white)`,
+                  background: active ? item.color : `color-mix(in srgb, ${item.color} 12%, var(--color-panel))`,
                   color: active ? "#fff" : item.color,
                 }}
                 aria-hidden
@@ -243,6 +244,11 @@ function SidebarBody({
       </nav>
 
       <div className="border-t border-(--color-border) p-3">
+        {/* Phone-only home for the theme control; the header owns it at sm+. */}
+        <div className="mb-3 flex items-center justify-between gap-2 sm:hidden">
+          <span className="text-[11px] font-medium text-(--color-fg-muted)">{d.theme.label}</span>
+          <ThemeToggle />
+        </div>
         <div className="flex items-center gap-2">
           <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-(--color-accent-soft) text-xs font-bold text-(--color-accent)">
             {admin.name.charAt(0).toUpperCase()}
@@ -288,22 +294,22 @@ function Shell({ admin, children }: { admin: AdminIdentity; children: React.Reac
   return (
     <div className="flex h-dvh overflow-hidden">
       {/* desktop rail — always docked at lg+ */}
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-(--color-border) bg-white lg:flex">
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-(--color-border) bg-(--color-panel) lg:flex">
         <SidebarBody admin={admin} pathname={pathname} onLogout={logout} />
       </aside>
 
       {/* mobile drawer — mounted only while open, so no off-canvas transform race */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <div className="absolute inset-0 bg-slate-900/40" onClick={() => setMobileOpen(false)} aria-hidden />
-          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-(--color-border) bg-white shadow-2xl">
+          <div className="absolute inset-0 bg-(--color-scrim)" onClick={() => setMobileOpen(false)} aria-hidden />
+          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-(--color-border) bg-(--color-panel) shadow-2xl">
             <SidebarBody admin={admin} pathname={pathname} onNavigate={() => setMobileOpen(false)} onLogout={logout} />
           </aside>
         </div>
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-(--color-border) bg-white px-4">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-(--color-border) bg-(--color-panel) px-4">
           <button
             className="rounded-lg p-1.5 text-(--color-fg-muted) hover:bg-(--color-panel-2) lg:hidden"
             onClick={() => setMobileOpen(true)}
@@ -312,7 +318,10 @@ function Shell({ admin, children }: { admin: AdminIdentity; children: React.Reac
             <Menu size={18} />
           </button>
 
-          <div className="flex min-w-0 items-center gap-2">
+          {/* min-w-24 is load-bearing: the right-hand group is ml-auto, so
+              without a floor this collapses to 0px on a narrow phone and the
+              account switcher silently disappears. */}
+          <div className="flex min-w-24 items-center gap-2">
             <span className="hidden text-xs text-(--color-fg-faint) sm:inline">{d.shell.workingOn}</span>
             <Select
               className="h-8 w-full min-w-0 max-w-56 text-xs"
@@ -333,6 +342,9 @@ function Shell({ admin, children }: { admin: AdminIdentity; children: React.Reac
 
           <div className="ml-auto flex items-center gap-2.5">
             <MasterSwitchPill />
+            {/* Below sm the header cannot hold this AND the account switcher —
+                it moves into the drawer there (see SidebarBody). */}
+            <ThemeToggle className="hidden sm:inline-flex" />
             <LanguageSwitcher compact />
           </div>
         </header>

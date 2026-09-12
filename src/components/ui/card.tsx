@@ -58,7 +58,7 @@ export function IconChip({
   return (
     <span
       className={cn("grid shrink-0 place-items-center rounded-lg", className)}
-      style={{ width: size, height: size, background: `color-mix(in srgb, ${color} 13%, white)`, color }}
+      style={{ width: size, height: size, background: `color-mix(in srgb, ${color} 13%, var(--color-panel))`, color }}
       aria-hidden
     >
       {children}

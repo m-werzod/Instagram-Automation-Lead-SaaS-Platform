@@ -16,6 +16,13 @@
   --color-panel-3: #e9edf5;
   --color-border: #e4e9f2;
   --color-border-strong: #cbd5e4;
+  /* the chip/tab surface that sits ON TOP of --color-panel-2 (active segment,
+     selected tab). Identical to --color-panel in light mode; in dark mode it
+     has to go LIGHTER than panel-2 instead, so it needs its own token. */
+  --color-surface-raised: #ffffff;
+  /* modal / drawer scrim. Always a dark wash — never derived from --color-fg,
+     which inverts in dark mode and would wash the page out with white. */
+  --color-scrim: rgb(15 23 42 / 0.40);
 
   /* text — slate, high contrast on white (faint still ≥4.5:1 for small text) */
   --color-fg: #101828;
@@ -54,6 +61,67 @@
 
   --shadow-card: 0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.06);
   --shadow-pop: 0 4px 6px -2px rgb(16 24 40 / 0.05), 0 12px 16px -4px rgb(16 24 40 / 0.1);
+}
+
+/*
+ * DARK THEME — easy on the eyes, not just inverted.
+ *
+ *  · no pure black background (#000 makes light text bloom/halate on OLED) and
+ *    no pure white text (#fff on dark is the classic eye-strain pairing) —
+ *    the palette runs from a deep blue-slate ground to a soft off-white ink
+ *  · every brand/module hue is LIGHTENED and de-saturated, because the light
+ *    theme's hues were darkened for white panels and read as mud on dark ones
+ *  · body text keeps >= 4.5:1 and the faint tier >= 5.8:1 against its surface
+ *  · shadows get deeper and softer: on dark surfaces elevation has to come
+ *    from shadow spread, since a lighter panel alone reads as "selected"
+ *
+ * `data-theme` is written by the inline script in the root layout before first
+ * paint (see src/lib/theme/config.ts), so there is never a flash of light.
+ */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* surfaces — deep blue-slate, each step a clearly readable elevation */
+  --color-bg: #0e1118;
+  --color-panel: #161a23;
+  --color-panel-2: #1d222d;
+  --color-panel-3: #262c39;
+  --color-border: #272d3a;
+  --color-border-strong: #3c4455;
+  --color-surface-raised: #333b4c;
+  --color-scrim: rgb(2 4 10 / 0.66);
+
+  /* text — soft off-white, never #ffffff */
+  --color-fg: #e5e9f0;
+  --color-fg-muted: #a7b1c4;
+  --color-fg-faint: #8a95aa;
+
+  /* semantic — lifted and softened for dark ground */
+  --color-accent: #8b87f7;
+  --color-accent-hover: #a6a2ff;
+  --color-accent-soft: #222140;
+  --color-ok: #4ade80;
+  --color-ok-soft: #11291d;
+  --color-warn: #fbbf24;
+  --color-warn-soft: #2c2211;
+  --color-danger: #f87171;
+  --color-danger-soft: #2d1719;
+  --color-info: #38bdf8;
+  --color-info-soft: #0f2835;
+  --color-on: #4ade80;
+  --color-off: #7e8a9f;
+
+  /* module hues — lightened counterparts of the light-theme set */
+  --color-mod-overview: #60a5fa;
+  --color-mod-instagram: #f472b6;
+  --color-mod-ai: #a78bfa;
+  --color-mod-content: #22d3ee;
+  --color-mod-leads: #4ade80;
+  --color-mod-ads: #fbbf24;
+  --color-mod-system: #94a3b8;
+
+  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.4), 0 1px 3px 0 rgb(0 0 0 / 0.3);
+  --shadow-pop: 0 4px 8px -2px rgb(0 0 0 / 0.5), 0 14px 24px -6px rgb(0 0 0 / 0.55);
 }
 
 html {
@@ -149,4 +217,20 @@ input[type="color"]::-webkit-color-swatch {
   border-radius: 999px;
   background: #1a1a1f;
   z-index: 30;
+}
+
+/*
+ * Switching theme should feel like a dimmer, not a strobe. The transition is
+ * armed only while `data-theme-switching` is set (200ms, by the theme
+ * provider) — transitioning every element permanently would make normal
+ * navigation and hover feel laggy.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-theme-switching] body,
+  html[data-theme-switching] body *:not(svg):not(path) {
+    transition:
+      background-color 180ms ease,
+      border-color 180ms ease,
+      color 180ms ease;
+  }
 }

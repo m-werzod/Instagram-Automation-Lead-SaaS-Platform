@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const baseField =
-  "w-full rounded-lg border border-(--color-border-strong) bg-white px-3 text-sm text-(--color-fg) placeholder:text-(--color-fg-faint) focus:outline-2 focus:outline-offset-0 focus:outline-(--color-accent) disabled:opacity-50 disabled:bg-(--color-panel-2)";
+  "w-full rounded-lg border border-(--color-border-strong) bg-(--color-panel) px-3 text-sm text-(--color-fg) placeholder:text-(--color-fg-faint) focus:outline-2 focus:outline-offset-0 focus:outline-(--color-accent) disabled:opacity-50 disabled:bg-(--color-panel-2)";
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => <input ref={ref} className={cn(baseField, "h-9", className)} {...props} />,
@@ -69,7 +69,7 @@ export function Segmented<T extends string>({
           className={cn(
             "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
             value === o.value
-              ? "bg-white text-(--color-fg) shadow-sm"
+              ? "bg-(--color-surface-raised) text-(--color-fg) shadow-sm"
               : "text-(--color-fg-muted) hover:text-(--color-fg)",
           )}
         >

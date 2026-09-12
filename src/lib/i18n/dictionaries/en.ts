@@ -98,6 +98,11 @@ export const en = {
     demo: "demo",
   },
 
+  theme: {
+    label: "Appearance",
+    modes: { light: "Light", dark: "Dark", system: "Auto" },
+  },
+
   auth: {
     title: "Welcome back",
     subtitle: "Sign in to your control panel",

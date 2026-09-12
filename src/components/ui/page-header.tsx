@@ -46,7 +46,7 @@ export function EmptyState({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-dashed border-(--color-border-strong) bg-white px-6 py-12 text-center">
+    <div className="rounded-xl border border-dashed border-(--color-border-strong) bg-(--color-panel) px-6 py-12 text-center">
       {icon && <div className="mb-3 flex justify-center">{icon}</div>}
       <p className="text-sm font-semibold">{title}</p>
       {description && <p className="mx-auto mt-1.5 max-w-md text-xs leading-5 text-(--color-fg-muted)">{description}</p>}

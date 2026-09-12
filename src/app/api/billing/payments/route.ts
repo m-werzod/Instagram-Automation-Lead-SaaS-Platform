@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, enforceRateLimit } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { assertAccountAccess } from "@/lib/auth/access";
 import { audit } from "@/lib/audit";
@@ -25,6 +25,7 @@ export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
   requirePaymentConfig();
+  enforceRateLimit(`billing-pay:${auth.admin.id}`, 20, 60_000);
   const body = await parseBody(req, schema);
 
   const campaign = await prisma.campaign.findUnique({ where: { id: body.campaignId } });

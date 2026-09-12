@@ -64,6 +64,7 @@ export const en = {
 
   nav: {
     dashboard: "Dashboard",
+    admin: "Admin overview",
     instagram: "Instagram",
     content: "Posts & Reels",
     messages: "Messages",
@@ -75,6 +76,7 @@ export const en = {
     settings: "Settings",
     tagline: {
       dashboard: "Status and today's numbers at a glance",
+      admin: "Platform-wide numbers for administrators",
       instagram: "Connect and manage your Instagram account",
       content: "Your published posts and Reels",
       messages: "Instagram direct messages",
@@ -676,6 +678,23 @@ export const en = {
       LOST: "Lost",
     },
     source: "Source",
+    assignedTo: "Assigned to",
+    unassigned: "Unassigned",
+    lastInteraction: "Last interaction",
+    qualification: {
+      title: "AI qualification",
+      levels: { LOW: "Low", MEDIUM: "Medium", HIGH: "High" },
+    },
+    eventTypes: {
+      CREATED: "Lead created",
+      STATUS_CHANGED: "Status changed",
+      NOTE_ADDED: "Note added",
+      EMAIL_SENT: "Email sent",
+      EMAIL_FAILED: "Email failed",
+      ASSIGNED: "Assignment changed",
+      AI_QUALIFIED: "Qualified by AI",
+    },
+
     sources: {
       instagram_dm: "Instagram DM",
       instagram_comment: "Comment",
@@ -1058,6 +1077,37 @@ export const en = {
       loadMore: "Load more",
       empty: "No records",
     },
+  },
+
+  adminOverview: {
+    title: "Admin overview",
+    subtitle: "Real numbers across every user and Instagram account — nothing here is estimated.",
+    users: "Users",
+    owners: "Owners",
+    admins: "Administrators",
+    restrictedUsers: "Restricted users",
+    accounts: "Instagram accounts",
+    connected: "connected",
+    campaigns: "Ad campaigns",
+    active: "active",
+    agents: "AI assistants",
+    leads: "Leads",
+    qualified: "qualified",
+    won: "won",
+    last7d: "in the last 7 days",
+    adSpend: "Meta advertising spend",
+    adSpendHint: "From Meta's own campaign insights — never estimated. Billed by Meta directly, not by this platform.",
+    noSpendYet: "No spend reported by Meta yet",
+    platformRevenue: "Platform revenue",
+    failedPayments: "failed payments",
+    systemHealth: "System health",
+    deadJobs: "Dead queue jobs",
+    failedWebhooks: "Failed webhook deliveries",
+    tokenIssues: "Instagram tokens needing reconnect",
+    recentFailures: "Failures in the last 24h",
+    recentActivity: "Recent activity",
+    goToUsers: "Manage users",
+    goToAuditLog: "Full audit log",
   },
 
   billing: {

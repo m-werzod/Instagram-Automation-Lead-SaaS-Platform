@@ -204,6 +204,34 @@ export const AGENT_TOOLS: AgentTool[] = [
     },
   },
   {
+    id: "qualify_lead",
+    risk: "WRITE",
+    def: {
+      name: "qualify_lead",
+      description:
+        "Record your assessment of how sales-ready this lead is, based ONLY on what they actually said. Use after they have shared enough (need, budget signal, timeline, intent) to judge — not on the first message.",
+      parameters: {
+        type: "object",
+        properties: {
+          score: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"], description: "LOW = just curious, MEDIUM = interested but undecided, HIGH = ready to proceed" },
+          summary: { type: "string", description: "One or two sentences: why this score, citing what the customer said" },
+        },
+        required: ["score", "summary"],
+      },
+    },
+    async execute(args, ctx) {
+      const score = str(args, "score");
+      if (score !== "LOW" && score !== "MEDIUM" && score !== "HIGH") return { output: "Invalid score — use LOW, MEDIUM or HIGH." };
+      if (!ctx.agent.leadQualification) return { output: "Lead qualification is disabled for this agent." };
+      if (simulated(ctx)) return { output: `TEST MODE: this lead would be qualified as ${score} — "${str(args, "summary")}".` };
+      if (!ctx.conversation!.leadId) return { output: "No lead is attached to this conversation yet — create one first with create_lead." };
+      const aiQualification = { score, summary: str(args, "summary").slice(0, 500), qualifiedAt: new Date().toISOString(), agentId: ctx.agent.id };
+      await prisma.lead.update({ where: { id: ctx.conversation!.leadId }, data: { aiQualification, lastInteractionAt: new Date() } });
+      await prisma.leadEvent.create({ data: { leadId: ctx.conversation!.leadId, type: "AI_QUALIFIED", data: aiQualification } });
+      return { output: `Lead qualification recorded: ${score}.` };
+    },
+  },
+  {
     id: "handoff_to_human",
     risk: "WRITE",
     def: {
@@ -315,6 +343,7 @@ export const DEFAULT_ALLOWED_TOOLS = [
   "create_lead",
   "update_lead_status",
   "handoff_to_human",
+  "qualify_lead",
   "do_not_reply",
 ];
 

@@ -3,9 +3,9 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
-import { assertAccountAccess } from "@/lib/auth/access";
+import { assertAccountAccess, grantedAccountIds } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
-import { notFound } from "@/lib/errors";
+import { notFound, validationError } from "@/lib/errors";
 import { runAutomations } from "@/lib/automation/engine";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
@@ -18,6 +18,7 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
       campaign: { select: { id: true, name: true } },
       flow: { select: { id: true, name: true } },
       content: { select: { id: true, caption: true, permalink: true } },
+      assignedAdmin: { select: { id: true, name: true, login: true } },
       events: { orderBy: { createdAt: "desc" }, take: 50 },
     },
   });
@@ -33,6 +34,7 @@ const updateSchema = z.object({
   phone: z.string().max(40).nullable().optional(),
   email: z.string().email().nullable().optional(),
   notes: z.string().max(4000).nullable().optional(),
+  assignedAdminId: z.string().nullable().optional(),
 });
 
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
@@ -44,6 +46,17 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   const existing = await prisma.lead.findUnique({ where: { id } });
   if (!existing) throw notFound("Lead");
   await assertAccountAccess(auth, existing.accountId);
+
+  if (body.assignedAdminId) {
+    const assignee = await prisma.admin.findUnique({ where: { id: body.assignedAdminId }, select: { id: true, isActive: true, role: true } });
+    if (!assignee || !assignee.isActive) throw notFound("Assignee");
+    if (assignee.role === "USER") {
+      const ids = await grantedAccountIds(assignee.id);
+      if (!ids.includes(existing.accountId)) {
+        throw validationError("This user does not have access to this Instagram account — grant it in Settings → Users first");
+      }
+    }
+  }
 
   const lead = await prisma.lead.update({ where: { id }, data: body });
 
@@ -61,6 +74,11 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   }
   if (body.notes !== undefined && body.notes !== existing.notes) {
     await prisma.leadEvent.create({ data: { leadId: id, type: "NOTE_ADDED", adminId: auth.admin.id } });
+  }
+  if (body.assignedAdminId !== undefined && body.assignedAdminId !== existing.assignedAdminId) {
+    await prisma.leadEvent.create({
+      data: { leadId: id, type: "ASSIGNED", adminId: auth.admin.id, data: { assignedAdminId: body.assignedAdminId } },
+    });
   }
 
   await audit({

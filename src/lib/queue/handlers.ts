@@ -9,6 +9,7 @@ import { deliverEmailEvent, notifyLeadSubmitted } from "@/lib/email";
 import { deliverLeadToTelegram } from "@/lib/telegram";
 import { refreshExpiringTokens } from "@/lib/meta/accounts";
 import { syncMedia } from "@/lib/meta/media";
+import { touchLead } from "@/lib/leads";
 import { runPublishJob } from "@/lib/meta/publishing";
 import { syncCampaignFromMeta } from "@/lib/meta/marketing";
 import { retryFailedPayments, runDueSchedules } from "@/lib/billing/service";
@@ -150,6 +151,8 @@ async function handleInboundMessage(ev: Extract<NormalizedEvent, { type: "messag
     }
     throw err;
   }
+
+  if (conversation.leadId) await touchLead(conversation.leadId);
 
   // fire automations
   await runAutomations("MESSAGE_RECEIVED", {

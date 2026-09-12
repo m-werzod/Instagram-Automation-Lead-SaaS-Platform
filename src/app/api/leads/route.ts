@@ -35,6 +35,7 @@ export const GET = route(async (req: NextRequest) => {
       account: { select: { username: true } },
       campaign: { select: { id: true, name: true } },
       flow: { select: { id: true, name: true } },
+      assignedAdmin: { select: { id: true, name: true, login: true } },
     },
     orderBy: { createdAt: "desc" },
     take: 500,

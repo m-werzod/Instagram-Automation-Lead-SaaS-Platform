@@ -18,6 +18,7 @@ import {
   Menu,
   X,
   Globe,
+  ShieldCheck,
   type LucideIcon, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/client/api";
@@ -42,6 +43,8 @@ interface NavItem {
   icon: LucideIcon;
   color: string;
   child?: boolean;
+  /** OWNER/ADMIN only — hidden for the restricted USER role. */
+  staffOnly?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -51,6 +54,14 @@ const NAV: NavItem[] = [
     what: (d) => d.nav.tagline.dashboard,
     icon: LayoutDashboard,
     color: "var(--color-mod-overview)",
+  },
+  {
+    href: "/admin",
+    label: (d) => d.nav.admin,
+    what: (d) => d.nav.tagline.admin,
+    icon: ShieldCheck,
+    color: "var(--color-mod-system)",
+    staffOnly: true,
   },
   {
     href: "/instagram",
@@ -217,7 +228,7 @@ function SidebarBody({
       </div>
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
-        {NAV.map((item) => {
+        {NAV.filter((item) => !item.staffOnly || admin.role !== "USER").map((item) => {
           const active = isActivePath(pathname, item.href);
           const Icon = item.icon;
           return (

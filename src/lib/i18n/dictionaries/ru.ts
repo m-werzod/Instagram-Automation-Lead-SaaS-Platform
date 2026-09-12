@@ -59,6 +59,7 @@ export const ru = {
 
   nav: {
     dashboard: "Панель",
+    admin: "Обзор администратора",
     instagram: "Instagram",
     content: "Посты и Reels",
     messages: "Сообщения",
@@ -70,6 +71,7 @@ export const ru = {
     settings: "Настройки",
     tagline: {
       dashboard: "Статус и сегодняшние цифры одним взглядом",
+      admin: "Общие показатели платформы для администраторов",
       instagram: "Подключение и управление Instagram-аккаунтом",
       content: "Ваши опубликованные посты и Reels",
       messages: "Личные сообщения Instagram",
@@ -677,6 +679,23 @@ export const ru = {
       LOST: "Потерян",
     },
     source: "Источник",
+    assignedTo: "Назначено",
+    unassigned: "Не назначено",
+    lastInteraction: "Последнее взаимодействие",
+    qualification: {
+      title: "Оценка AI",
+      levels: { LOW: "Низкая", MEDIUM: "Средняя", HIGH: "Высокая" },
+    },
+    eventTypes: {
+      CREATED: "Лид создан",
+      STATUS_CHANGED: "Статус изменён",
+      NOTE_ADDED: "Добавлена заметка",
+      EMAIL_SENT: "Письмо отправлено",
+      EMAIL_FAILED: "Письмо не отправлено",
+      ASSIGNED: "Назначение изменено",
+      AI_QUALIFIED: "Оценено AI",
+    },
+
     sources: {
       instagram_dm: "Директ Instagram",
       instagram_comment: "Комментарий",
@@ -1069,6 +1088,37 @@ export const ru = {
       loadMore: "Загрузить ещё",
       empty: "Записей нет",
     },
+  },
+
+  adminOverview: {
+    title: "Обзор администратора",
+    subtitle: "Реальные цифры по всем пользователям и Instagram-аккаунтам — здесь ничего не оценивается приблизительно.",
+    users: "Пользователи",
+    owners: "Владельцы",
+    admins: "Администраторы",
+    restrictedUsers: "Ограниченные пользователи",
+    accounts: "Instagram-аккаунты",
+    connected: "подключено",
+    campaigns: "Рекламные кампании",
+    active: "активны",
+    agents: "AI-ассистенты",
+    leads: "Лиды",
+    qualified: "квалифицированные",
+    won: "выиграно",
+    last7d: "за последние 7 дней",
+    adSpend: "Рекламные расходы Meta",
+    adSpendHint: "Из собственной статистики кампаний Meta — никогда не оценивается. Списывается напрямую Meta, а не платформой.",
+    noSpendYet: "Meta ещё не сообщила о расходах",
+    platformRevenue: "Доход платформы",
+    failedPayments: "неуспешных платежей",
+    systemHealth: "Состояние системы",
+    deadJobs: "Зависшие задачи в очереди",
+    failedWebhooks: "Неудачные доставки вебхуков",
+    tokenIssues: "Instagram-токены, требующие переподключения",
+    recentFailures: "Сбои за последние 24 часа",
+    recentActivity: "Последние действия",
+    goToUsers: "Управление пользователями",
+    goToAuditLog: "Полный журнал действий",
   },
 
   billing: {

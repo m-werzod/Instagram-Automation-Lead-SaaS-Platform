@@ -124,11 +124,21 @@ Set these under **Settings → Environment Variables** (Production, and Preview 
 | `META_APP_ID` / `META_APP_SECRET` | from your Meta app |
 | `META_REDIRECT_URI` | `https://<your-app>.vercel.app/api/meta/oauth/callback` |
 | `META_WEBHOOK_VERIFY_TOKEN` | any random string, also entered in the Meta dashboard |
-| `AI_PROVIDER` + key | e.g. `anthropic` + `ANTHROPIC_API_KEY` |
+| `AI_PROVIDER` + key | `anthropic` + `ANTHROPIC_API_KEY`, or `openai` + `AI_API_KEY` for an OpenAI-compatible gateway |
+| `AI_API_BASE_URL` | only for `AI_PROVIDER=openai` against a gateway other than api.openai.com (e.g. `https://api.airforce/v1`) |
+| `AI_MODEL` | pins the model new agents use — required on gateways whose plan only includes specific models |
 | `EMAIL_*`, `LEAD_NOTIFICATION_EMAIL` | SMTP settings for lead notifications |
+| `PAYMENT_SECRET_KEY` | Stripe secret key (`sk_test_…` / `sk_live_…`) — omit to run with billing off |
+| `PAYMENT_WEBHOOK_SECRET` | from the Stripe webhook endpoint below (`whsec_…`) — required if `PAYMENT_SECRET_KEY` is set |
+| `PAYMENT_PUBLISHABLE_KEY` | optional; not required by the hosted-Checkout flow this app uses |
 
 Then **Deploy**. Afterwards, register the deployed URLs in the Meta app dashboard (redirect URI and the
-webhook callback `https://<your-app>.vercel.app/api/webhooks/instagram`).
+webhook callback `https://<your-app>.vercel.app/api/webhooks/instagram`), and — if billing is enabled —
+add a Stripe webhook endpoint at `https://<your-app>.vercel.app/api/webhooks/stripe` subscribed to
+`checkout.session.completed`, `payment_intent.succeeded`, `payment_intent.payment_failed`,
+`payment_intent.canceled`, `payment_intent.processing`, `charge.refunded`, `payment_method.attached`,
+`payment_method.detached`, `payment_method.updated`, `customer.updated`; copy its signing secret into
+`PAYMENT_WEBHOOK_SECRET` and redeploy.
 
 ### 9.4 Processing the queue (required)
 

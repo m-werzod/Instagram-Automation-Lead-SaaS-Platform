@@ -62,6 +62,7 @@ export const uz = {
 
   nav: {
     dashboard: "Boshqaruv",
+    admin: "Admin ko‘rinishi",
     instagram: "Instagram",
     content: "Postlar va Reels",
     messages: "Xabarlar",
@@ -73,6 +74,7 @@ export const uz = {
     settings: "Sozlamalar",
     tagline: {
       dashboard: "Holat va bugungi raqamlar bir qarashda",
+      admin: "Administratorlar uchun platforma bo‘yicha raqamlar",
       instagram: "Instagram hisobingizni ulash va boshqarish",
       content: "Chop etilgan postlar va Reels’laringiz",
       messages: "Instagram’dagi shaxsiy xabarlar",
@@ -675,6 +677,23 @@ export const uz = {
       LOST: "Yo‘qotildi",
     },
     source: "Manba",
+    assignedTo: "Biriktirilgan",
+    unassigned: "Biriktirilmagan",
+    lastInteraction: "So‘nggi aloqa",
+    qualification: {
+      title: "AI baholashi",
+      levels: { LOW: "Past", MEDIUM: "O‘rtacha", HIGH: "Yuqori" },
+    },
+    eventTypes: {
+      CREATED: "Lid yaratildi",
+      STATUS_CHANGED: "Holat o‘zgardi",
+      NOTE_ADDED: "Izoh qo‘shildi",
+      EMAIL_SENT: "Xat yuborildi",
+      EMAIL_FAILED: "Xat yuborilmadi",
+      ASSIGNED: "Biriktirish o‘zgardi",
+      AI_QUALIFIED: "AI tomonidan baholandi",
+    },
+
     sources: {
       instagram_dm: "Instagram DM",
       instagram_comment: "Izoh",
@@ -1057,6 +1076,37 @@ export const uz = {
       loadMore: "Yana yuklash",
       empty: "Yozuvlar yo‘q",
     },
+  },
+
+  adminOverview: {
+    title: "Admin ko‘rinishi",
+    subtitle: "Har bir foydalanuvchi va Instagram hisobi bo‘yicha haqiqiy raqamlar — bu yerda hech narsa taxmin qilinmagan.",
+    users: "Foydalanuvchilar",
+    owners: "Egalari",
+    admins: "Administratorlar",
+    restrictedUsers: "Cheklangan foydalanuvchilar",
+    accounts: "Instagram hisoblari",
+    connected: "ulangan",
+    campaigns: "Reklama kampaniyalari",
+    active: "faol",
+    agents: "AI yordamchilar",
+    leads: "Lidlar",
+    qualified: "sifatli",
+    won: "yutilgan",
+    last7d: "so‘nggi 7 kunda",
+    adSpend: "Meta reklama xarajati",
+    adSpendHint: "Metaning o‘z kampaniya statistikasidan — hech qachon taxmin qilinmaydi. To‘g‘ridan-to‘g‘ri Meta tomonidan yechiladi, bu platforma tomonidan emas.",
+    noSpendYet: "Meta hali xarajat haqida ma’lumot bermagan",
+    platformRevenue: "Platforma daromadi",
+    failedPayments: "muvaffaqiyatsiz to‘lovlar",
+    systemHealth: "Tizim salomatligi",
+    deadJobs: "O‘lik navbat vazifalari",
+    failedWebhooks: "Muvaffaqiyatsiz webhook yetkazishlari",
+    tokenIssues: "Qayta ulanish kerak bo‘lgan Instagram tokenlari",
+    recentFailures: "So‘nggi 24 soatdagi xatolar",
+    recentActivity: "So‘nggi amallar",
+    goToUsers: "Foydalanuvchilarni boshqarish",
+    goToAuditLog: "To‘liq amallar jurnali",
   },
 
   billing: {

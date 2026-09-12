@@ -156,6 +156,7 @@ model Admin {
   connectInvites  ConnectInvite[]
   accountAccess   AccountAccess[]
   paymentCustomer PaymentCustomer?
+  assignedLeads   Lead[]
 }
 
 model Session {
@@ -571,35 +572,42 @@ model LeadAnswer {
 // ---------- CRM ----------
 
 model Lead {
-  id             String           @id @default(cuid())
-  accountId      String
-  account        InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  igsid          String? // instagram user (if from DM)
-  conversationId String?
-  name           String?
-  phone          String?
-  email          String?
-  answers        Json? // [{question, answer}] snapshot at submission
-  source         String           @default("instagram_dm") // instagram_dm | instagram_comment | landing_page | lead_ad | manual
-  campaignId     String?
-  campaign       Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  contentId      String?
-  content        ContentItem?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
-  flowId         String?
-  flow           LeadFlow?        @relation(fields: [flowId], references: [id], onDelete: SetNull)
-  ctaConfigId    String? // which Lead Button captured this lead
-  ctaConfig      CtaConfig?       @relation(fields: [ctaConfigId], references: [id], onDelete: SetNull)
-  status         LeadStatus       @default(NEW)
-  notes          String?          @db.Text
-  isDemo         Boolean          @default(false)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id                String           @id @default(cuid())
+  accountId         String
+  account           InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  igsid             String? // instagram user (if from DM)
+  conversationId    String?
+  name              String?
+  phone             String?
+  email             String?
+  answers           Json? // [{question, answer}] snapshot at submission
+  source            String           @default("instagram_dm") // instagram_dm | instagram_comment | landing_page | lead_ad | manual
+  campaignId        String?
+  campaign          Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  contentId         String?
+  content           ContentItem?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  flowId            String?
+  flow              LeadFlow?        @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  ctaConfigId       String? // which Lead Button captured this lead
+  ctaConfig         CtaConfig?       @relation(fields: [ctaConfigId], references: [id], onDelete: SetNull)
+  status            LeadStatus       @default(NEW)
+  notes             String?          @db.Text
+  assignedAdminId   String? // which staff/user member is working this lead
+  assignedAdmin     Admin?           @relation(fields: [assignedAdminId], references: [id], onDelete: SetNull)
+  /// Set by the AI's qualify_lead tool — {score: LOW|MEDIUM|HIGH, summary, signals}.
+  /// Never invented outside a real model call; null until the AI (or nobody) has assessed it.
+  aiQualification   Json?
+  lastInteractionAt DateTime? // most recent message/answer/status change touching this lead
+  isDemo            Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
 
   events LeadEvent[]
 
   @@index([accountId, status])
   @@index([accountId, createdAt])
   @@index([ctaConfigId])
+  @@index([assignedAdminId])
 }
 
 model LeadEvent {

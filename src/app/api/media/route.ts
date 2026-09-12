@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { route, ok, assertSameOrigin } from "@/lib/api";
+import { route, ok, assertSameOrigin, enforceRateLimit } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { assertAccountAccess } from "@/lib/auth/access";
 import { notFound, validationError } from "@/lib/errors";
@@ -19,6 +19,7 @@ const ALLOWED = new Set(["image/jpeg", "video/mp4", "video/quicktime"]);
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
+  enforceRateLimit(`media-upload:${auth.admin.id}`, 20, 60_000);
 
   const form = await req.formData().catch(() => null);
   if (!form) throw validationError("Expected multipart/form-data with a file");

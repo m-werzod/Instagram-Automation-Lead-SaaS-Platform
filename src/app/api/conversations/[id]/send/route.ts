@@ -6,6 +6,7 @@ import { requireAdmin } from "@/lib/auth/guard";
 import { assertAccountAccess } from "@/lib/auth/access";
 import { notFound } from "@/lib/errors";
 import { sendInstagramText } from "@/lib/meta/messaging";
+import { touchLead } from "@/lib/leads";
 
 const sendSchema = z.object({
   text: z.string().min(1).max(950),
@@ -45,5 +46,6 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
       data: { lastMessageAt: new Date(), lastMessagePreview: body.text.slice(0, 140) },
     }),
   ]);
+  if (conversation.leadId) await touchLead(conversation.leadId);
   return ok({ message });
 });

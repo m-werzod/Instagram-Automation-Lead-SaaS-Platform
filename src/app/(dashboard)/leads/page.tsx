@@ -16,6 +16,8 @@ import {
   History,
   MailCheck,
   CalendarClock,
+  Sparkles,
+  Clock,
 } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { api } from "@/lib/client/api";
@@ -51,8 +53,17 @@ const STATUS_META: Record<Status, { color: string; tone: BadgeTone | null }> = {
   LOST: { color: "#dc2626", tone: "danger" },
 };
 
+type QualificationLevel = "LOW" | "MEDIUM" | "HIGH";
+
+interface AiQualification {
+  score: QualificationLevel;
+  summary: string;
+  qualifiedAt: string;
+}
+
 interface LeadRow {
   id: string;
+  accountId: string;
   name: string | null;
   phone: string | null;
   email: string | null;
@@ -60,13 +71,19 @@ interface LeadRow {
   source: string;
   isDemo: boolean;
   createdAt: string;
+  lastInteractionAt: string | null;
   conversationId: string | null;
   answers: Array<{ question: string; answer: string }> | { items?: Array<{ question: string; answer: string }> } | null;
   notes: string | null;
+  aiQualification: AiQualification | null;
+  assignedAdminId: string | null;
+  assignedAdmin: { id: string; name: string; login: string } | null;
   account: { username: string };
   campaign: { id: string; name: string } | null;
   flow: { id: string; name: string } | null;
 }
+
+const QUALIFICATION_TONE: Record<QualificationLevel, "default" | "warn" | "ok"> = { LOW: "default", MEDIUM: "warn", HIGH: "ok" };
 
 function sourceLabel(d: Dictionary, source: string): string {
   return (d.leads.sources as Record<string, string>)[source] ?? source;
@@ -282,6 +299,26 @@ function LeadCard({
           <span className="shrink-0 text-[10px] text-(--color-fg-faint)">{shortDate(lead.createdAt)}</span>
         </div>
 
+        {(lead.aiQualification || lead.assignedAdmin) && (
+          <div className="flex items-center justify-between gap-2">
+            {lead.aiQualification ? (
+              <Badge tone={QUALIFICATION_TONE[lead.aiQualification.score]} title={lead.aiQualification.summary}>
+                <Sparkles size={10} /> {d.leads.qualification.levels[lead.aiQualification.score]}
+              </Badge>
+            ) : (
+              <span />
+            )}
+            {lead.assignedAdmin && (
+              <span
+                className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-(--color-accent-soft) text-[9px] font-bold text-(--color-accent)"
+                title={`${d.leads.assignedTo}: ${lead.assignedAdmin.name}`}
+              >
+                {lead.assignedAdmin.name.charAt(0).toUpperCase()}
+              </span>
+            )}
+          </div>
+        )}
+
         <Select
           className="h-7 text-[11px]"
           value={lead.status}
@@ -315,6 +352,9 @@ function LeadDetailDialog({
   const [status, setStatus] = React.useState<Status>(lead.status);
   const [notes, setNotes] = React.useState(lead.notes ?? "");
   const [savingNotes, setSavingNotes] = React.useState(false);
+  const [assignedAdminId, setAssignedAdminId] = React.useState(lead.assignedAdminId ?? "");
+  const [assignees, setAssignees] = React.useState<Array<{ id: string; name: string; login: string; role: string }>>([]);
+  const [assigning, setAssigning] = React.useState(false);
   const [events, setEvents] = React.useState<Array<{ id: string; type: string; createdAt: string; data: unknown }>>([]);
   const [emails, setEmails] = React.useState<Array<{ id: string; status: string; subject: string; lastError: string | null }>>([]);
 
@@ -328,7 +368,28 @@ function LeadDetailDialog({
         setEmails(res.emails);
       })
       .catch(() => undefined);
-  }, [lead.id]);
+    api<{ admins: Array<{ id: string; name: string; login: string; role: string }> }>(
+      `/api/leads/assignees?accountId=${lead.accountId}`,
+      { silent: true },
+    )
+      .then((res) => setAssignees(res.admins))
+      .catch(() => undefined);
+  }, [lead.id, lead.accountId]);
+
+  async function changeAssignee(next: string) {
+    const prev = assignedAdminId;
+    setAssignedAdminId(next);
+    setAssigning(true);
+    try {
+      await api(`/api/leads/${lead.id}`, { method: "PATCH", json: { assignedAdminId: next || null } });
+      toast.success(d.common.saved);
+      await onChanged();
+    } catch {
+      setAssignedAdminId(prev);
+    } finally {
+      setAssigning(false);
+    }
+  }
 
   const answers = Array.isArray(lead.answers) ? lead.answers : (lead.answers?.items ?? []);
 
@@ -364,20 +425,44 @@ function LeadDetailDialog({
         <div className="grid gap-5 sm:grid-cols-2">
           {/* LEFT: status, contact, answers, notes */}
           <div className="space-y-4">
-            <Field label={d.common.status}>
-              <Select value={status} onChange={(e) => void changeStatus(e.target.value as Status)}>
-                {STATUSES.map((s) => (
-                  <option key={s} value={s}>
-                    {d.leads.statuses[s]}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={d.common.status}>
+                <Select value={status} onChange={(e) => void changeStatus(e.target.value as Status)}>
+                  {STATUSES.map((s) => (
+                    <option key={s} value={s}>
+                      {d.leads.statuses[s]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label={d.leads.assignedTo}>
+                <Select value={assignedAdminId} disabled={assigning} onChange={(e) => void changeAssignee(e.target.value)}>
+                  <option value="">{d.leads.unassigned}</option>
+                  {assignees.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.login})
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+
+            {lead.aiQualification && (
+              <div className={cn("rounded-xl border px-3 py-2 text-xs leading-5", "border-(--color-mod-ai)/25 bg-(--color-mod-ai)/10")}>
+                <div className="flex items-center gap-1.5 font-semibold text-(--color-mod-ai)">
+                  <Sparkles size={12} /> {d.leads.qualification.title}:{" "}
+                  <Badge tone={QUALIFICATION_TONE[lead.aiQualification.score]}>{d.leads.qualification.levels[lead.aiQualification.score]}</Badge>
+                </div>
+                <p className="mt-1 text-(--color-fg)">{lead.aiQualification.summary}</p>
+                <p className="mt-1 text-[10px] text-(--color-fg-faint)">{formatDate(lead.aiQualification.qualifiedAt)}</p>
+              </div>
+            )}
 
             <div className="rounded-xl border border-(--color-border) bg-(--color-panel-2) px-3 py-1.5">
               <InfoRow icon={<Phone size={13} />} label={d.leads.detail.phone} value={lead.phone} mono />
               <InfoRow icon={<Mail size={13} />} label={d.leads.detail.email} value={lead.email} />
               <InfoRow icon={<CalendarClock size={13} />} label={d.leads.detail.created} value={formatDate(lead.createdAt)} />
+              <InfoRow icon={<Clock size={13} />} label={d.leads.lastInteraction} value={lead.lastInteractionAt ? formatDate(lead.lastInteractionAt) : null} />
             </div>
 
             {(lead.campaign || lead.flow || lead.conversationId) && (
@@ -444,7 +529,7 @@ function LeadDetailDialog({
               {events.length === 0 && <p className="text-(--color-fg-faint)">{d.common.none}</p>}
               {events.map((ev) => (
                 <div key={ev.id} className="flex items-center justify-between gap-2 border-b border-(--color-border) py-1.5 last:border-0">
-                  <span className="font-medium">{ev.type}</span>
+                  <span className="font-medium">{(d.leads.eventTypes as Record<string, string>)[ev.type] ?? ev.type}</span>
                   <span className="shrink-0 text-(--color-fg-faint)">{formatDate(ev.createdAt)}</span>
                 </div>
               ))}

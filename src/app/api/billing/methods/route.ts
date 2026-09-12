@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, enforceRateLimit } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { audit } from "@/lib/audit";
 import { coreEnv } from "@/lib/env";
@@ -27,6 +27,7 @@ export const POST = route(async (req: NextRequest) => {
   const auth = await requireAdmin();
   requirePaymentConfig();
   const customer = await ensureCustomer(auth.admin);
+  enforceRateLimit(`billing-methods:${auth.admin.id}`, 10, 60_000);
   const base = coreEnv().APP_URL;
   const session = await provider().createSetupSession({
     customerId: customer.providerCustomerId,

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { Instagram, Link2, Plus, Send, UserPlus } from "lucide-react";
+import { AlertTriangle, Info, Instagram, Link2, Plus, Send, UserPlus } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,46 @@ interface InviteRow {
 }
 
 const TTL_CHOICES = [24, 72, 168] as const;
+
+/**
+ * A link built from APP_URL=localhost resolves to the recipient's OWN device,
+ * where nothing is listening — so it silently opens nothing. That is invisible
+ * from the admin's side, where the very same URL works perfectly.
+ */
+function isLocalOnly(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname.endsWith(".local");
+  } catch {
+    return false;
+  }
+}
+
+function Note({
+  tone,
+  icon,
+  title,
+  text,
+}: {
+  tone: "danger" | "info";
+  icon: React.ReactNode;
+  title: string;
+  text: string;
+}) {
+  const skin =
+    tone === "danger"
+      ? "border-(--color-danger)/40 bg-(--color-danger-soft) text-(--color-danger)"
+      : "border-(--color-info)/35 bg-(--color-info-soft) text-(--color-info)";
+  return (
+    <div className={`flex items-start gap-2.5 rounded-lg border p-3 ${skin}`}>
+      <span className="mt-0.5 shrink-0">{icon}</span>
+      <div className="min-w-0">
+        <p className="text-xs font-semibold text-(--color-fg)">{title}</p>
+        <p className="mt-0.5 text-[11px] leading-5 text-(--color-fg-muted)">{text}</p>
+      </div>
+    </div>
+  );
+}
 
 export function AddAccountDialog({ onChanged }: { onChanged?: () => void | Promise<void> }) {
   const { d } = useI18n();
@@ -135,13 +175,25 @@ export function AddAccountDialog({ onChanged }: { onChanged?: () => void | Promi
             <p className="mt-1 text-xs leading-5 text-(--color-fg-muted)">{t.linkText}</p>
 
             {freshUrl ? (
-              <div className="mt-3 space-y-2 rounded-lg border border-(--color-ok)/35 bg-(--color-ok-soft) p-3">
-                <p className="text-xs font-semibold text-(--color-fg)">{t.createdTitle}</p>
-                <CopyField label={t.linkLabel} value={freshUrl} />
-                <p className="text-[11px] leading-5 text-(--color-fg-muted)">{t.createdHint}</p>
-                <Button size="sm" variant="secondary" onClick={() => setFreshUrl(null)}>
-                  <Plus size={13} /> {t.create}
-                </Button>
+              <div className="mt-3 space-y-2.5">
+                {/* Loudest thing on screen when the link cannot possibly work. */}
+                {isLocalOnly(freshUrl) && (
+                  <Note tone="danger" icon={<AlertTriangle size={15} />} title={t.localWarnTitle} text={t.localWarnText} />
+                )}
+
+                <div className="space-y-2 rounded-lg border border-(--color-ok)/35 bg-(--color-ok-soft) p-3">
+                  <p className="text-xs font-semibold text-(--color-fg)">{t.createdTitle}</p>
+                  <CopyField label={t.linkLabel} value={freshUrl} />
+                  <CopyField label={t.copyMessage} value={t.shareTemplate(freshUrl)} />
+                  <p className="text-[11px] leading-5 text-(--color-fg-muted)">{t.createdHint}</p>
+                  <Button size="sm" variant="secondary" onClick={() => setFreshUrl(null)}>
+                    <Plus size={13} /> {t.create}
+                  </Button>
+                </div>
+
+                {/* The other way this looks "broken": waiting for something to
+                    show up inside Instagram, which never happens by itself. */}
+                <Note tone="info" icon={<Info size={15} />} title={t.mustOpenTitle} text={t.mustOpenText} />
               </div>
             ) : (
               <div className="mt-3 flex flex-wrap items-end gap-2">

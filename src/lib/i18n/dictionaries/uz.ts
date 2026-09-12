@@ -301,6 +301,15 @@ export const uz = {
       none: "Hozircha havola yo‘q.",
       revoke: "Bekor qilish",
       revokeConfirm: "Bu havola bekor qilinsinmi? Havola bor odam endi ulana olmaydi.",
+      localWarnTitle: "Bu havola faqat sizning kompyuteringizda ishlaydi",
+      localWarnText:
+        "U localhost manziliga ishora qiladi — bu faqat shu kompyuter. Boshqa odamning telefonida u umuman hech narsa ochmaydi. Platformaga uning ochiq veb-manzili orqali kiring va havolani o‘sha yerda yarating.",
+      mustOpenTitle: "Ular bu havolani ochishlari shart",
+      mustOpenText:
+        "Ularning Instagramida o‘z-o‘zidan hech narsa paydo bo‘lmaydi. Instagram ruxsat so‘rovini yetkazib bera olmaydi va ular havolani ochib “Ruxsat berish”ni bosmaguncha Sozlamalar → Ilovalar va veb-saytlar bo‘limida ham hech narsa ko‘rinmaydi. Havolani ularga xabar orqali yuboring.",
+      shareTemplate: (url: string) =>
+        `Iltimos, Instagram hisobingizni ulang: shu havolani oching va “Ruxsat berish”ni bosing: ${url}`,
+      copyMessage: "Yuboriladigan xabarni nusxalash",
       statuses: {
         PENDING: "Kutilmoqda",
         USED: "Ulandi",

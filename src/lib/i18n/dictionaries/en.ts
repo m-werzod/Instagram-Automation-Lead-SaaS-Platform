@@ -302,6 +302,15 @@ export const en = {
       none: "No links yet.",
       revoke: "Cancel link",
       revokeConfirm: "Cancel this link? Whoever has it will no longer be able to connect.",
+      localWarnTitle: "This link only works on your own computer",
+      localWarnText:
+        "It points at localhost, which is this machine and nothing else — on anyone else's phone it opens nothing at all. Sign in to the platform at its public web address and create the link there instead.",
+      mustOpenTitle: "They have to open this link",
+      mustOpenText:
+        "Nothing appears inside their Instagram on its own. Instagram has no way to deliver a permission request, and nothing shows up under Settings → Apps and websites until they open this link and tap Allow. Send it to them in a message.",
+      shareTemplate: (url: string) =>
+        `Please connect your Instagram account by opening this link and tapping Allow: ${url}`,
+      copyMessage: "Copy the message to send",
       statuses: {
         PENDING: "Waiting",
         USED: "Connected",

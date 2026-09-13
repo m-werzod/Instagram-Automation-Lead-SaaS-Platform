@@ -51,6 +51,8 @@ export const campaignFieldsSchema = z.object({
   destinationUrl: z.string().url().nullable().optional(),
   leadFlowId: z.string().nullable().optional(),
   contentId: z.string().nullable().optional(),
+  /** Which Lead Button (CtaConfig) this ad uses, if any — see marketing.ts's resolveCtaAndUrl. */
+  ctaConfigId: z.string().nullable().optional(),
   metaFormId: z.string().max(40).nullable().optional(),
   creativeSpec: creativeSpecSchema,
 });

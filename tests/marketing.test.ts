@@ -5,6 +5,7 @@ import {
   parseAdAccountBillingStatus,
   parseCampaignInsights,
   parseReachEstimate,
+  resolveCtaAndUrl,
   statusFromMeta,
   targetingProblem,
 } from "@/lib/meta/marketing";
@@ -179,5 +180,32 @@ describe("ad account billing status (Path 1 — Meta bills the ad account direct
   it("ignores a zero disable_reason (Meta's 'no reason' sentinel)", () => {
     expect(parseAdAccountBillingStatus("a", { account_status: 1, disable_reason: 0 }).disableReason).toBeNull();
     expect(parseAdAccountBillingStatus("a", { account_status: 2, disable_reason: 1 }).disableReason).toBe("1");
+  });
+});
+
+/**
+ * When a campaign is linked to a Lead Button (CtaConfig), its ctaType/destination
+ * should win — but only for whichever half the CtaConfig actually specifies, so a
+ * Lead Button with no ctaType of its own still falls back to the campaign's.
+ */
+describe("resolveCtaAndUrl", () => {
+  const campaign = { ctaType: "SIGN_UP", destinationUrl: "https://campaign.example/own" };
+
+  it("passes the campaign's own values through when nothing is linked", () => {
+    expect(resolveCtaAndUrl(campaign, null)).toEqual({ ctaType: "SIGN_UP", destinationUrl: "https://campaign.example/own" });
+  });
+
+  it("a linked Lead Button with a hosted landing page wins over the campaign's own destination", () => {
+    const linked = { ctaType: "LEARN_MORE", url: null, landingSlug: "abc123" };
+    expect(resolveCtaAndUrl(campaign, linked)).toEqual({ ctaType: "LEARN_MORE", destinationUrl: "http://localhost:3000/f/abc123" });
+  });
+
+  it("a linked CtaConfig with only a plain url (not a hosted landing page) uses that url", () => {
+    const linked = { ctaType: "LEARN_MORE", url: "https://example.com/promo", landingSlug: null };
+    expect(resolveCtaAndUrl(campaign, linked)).toEqual({ ctaType: "LEARN_MORE", destinationUrl: "https://example.com/promo" });
+  });
+
+  it("falls back to the campaign's own ctaType/destination for whichever half the link doesn't specify", () => {
+    expect(resolveCtaAndUrl(campaign, { ctaType: null, url: null, landingSlug: null })).toEqual(campaign);
   });
 });

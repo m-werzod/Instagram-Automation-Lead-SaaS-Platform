@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { Field, Input, Select, Textarea, Segmented } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/page-header";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 
@@ -33,6 +33,7 @@ const ACTION_KEYS = [
   "SET_LEAD_STATUS",
   "NOTIFY_ADMIN",
   "SET_AI",
+  "SEND_COMMENT_RESOURCE",
 ] as const;
 
 const CONDITION_FIELDS = ["text", "source", "lead_status", "username"] as const;
@@ -57,6 +58,8 @@ interface AutomationRow {
   description: string | null;
   enabled: boolean;
   trigger: string;
+  contentId: string | null;
+  content: { id: string; caption: string | null; mediaProductType: string | null; thumbnailUrl: string | null } | null;
   conditions: Array<{ field: string; op: string; value: string }>;
   actions: Array<{ type: string; params: Record<string, unknown> }>;
   runCount: number;
@@ -161,6 +164,11 @@ export function RulesTab({ accountId }: { accountId: string }) {
                   <Badge tone="accent">
                     {d.automation.rules.when}: {triggerLabel(d, a.trigger)}
                   </Badge>
+                  {a.trigger === "COMMENT_RECEIVED" && (
+                    <Badge>
+                      {a.content ? `${d.automation.rules.scopedTo}: ${a.content.caption?.slice(0, 30) || d.automation.rules.untitledPost}` : d.automation.rules.allPosts}
+                    </Badge>
+                  )}
                   {a.conditions.map((c, i) => (
                     <Badge key={i}>
                       {c.field} {c.op} &ldquo;{c.value}&rdquo;
@@ -264,6 +272,13 @@ function CreateRuleDialog({
   const [flowId, setFlowId] = React.useState("");
   const [flows, setFlows] = React.useState<Array<{ id: string; name: string }>>([]);
   const [leadStatus, setLeadStatus] = React.useState<string>("CONTACTED");
+  const [contentId, setContentId] = React.useState(""); // "" = every post/reel on the account
+  const [contentItems, setContentItems] = React.useState<Array<{ id: string; caption: string | null }>>([]);
+  const [resourceMode, setResourceMode] = React.useState<"template" | "ai">("template");
+  const [resourceId, setResourceId] = React.useState("");
+  const [resourceAgentId, setResourceAgentId] = React.useState("");
+  const [resources, setResources] = React.useState<Array<{ id: string; name: string }>>([]);
+  const [agents, setAgents] = React.useState<Array<{ id: string; name: string }>>([]);
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
@@ -274,9 +289,19 @@ function CreateRuleDialog({
         if (data.flows[0]) setFlowId(data.flows[0].id);
       })
       .catch(() => undefined);
+    api<{ items: Array<{ id: string; caption: string | null }> }>(`/api/content?accountId=${accountId}`, { silent: true })
+      .then((data) => setContentItems(data.items))
+      .catch(() => undefined);
+    api<{ resources: Array<{ id: string; name: string }> }>(`/api/comment-resources?accountId=${accountId}`, { silent: true })
+      .then((data) => setResources(data.resources))
+      .catch(() => undefined);
+    api<{ agents: Array<{ id: string; name: string }> }>(`/api/agents?accountId=${accountId}`, { silent: true })
+      .then((data) => setAgents(data.agents))
+      .catch(() => undefined);
   }, [open, accountId]);
 
-  const needsText = ["SEND_MESSAGE", "SEND_PRIVATE_REPLY", "REPLY_COMMENT", "NOTIFY_ADMIN"].includes(actionType);
+  const isResourceAction = actionType === "SEND_COMMENT_RESOURCE";
+  const needsText = ["SEND_MESSAGE", "SEND_PRIVATE_REPLY", "REPLY_COMMENT", "NOTIFY_ADMIN"].includes(actionType) || isResourceAction;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -287,7 +312,17 @@ function CreateRuleDialog({
           ? { type: actionType, params: { status: leadStatus } }
           : actionType === "SET_AI"
             ? { type: actionType, params: { enabled: false } }
-            : { type: actionType, params: { text: actionText } };
+            : isResourceAction
+              ? {
+                  type: actionType,
+                  params: {
+                    mode: resourceMode,
+                    text: actionText,
+                    resourceId: resourceId || undefined,
+                    agentId: resourceMode === "ai" ? resourceAgentId : undefined,
+                  },
+                }
+              : { type: actionType, params: { text: actionText } };
     setBusy(true);
     try {
       await api("/api/automations", {
@@ -296,6 +331,7 @@ function CreateRuleDialog({
           accountId,
           name,
           trigger,
+          contentId: trigger === "COMMENT_RECEIVED" && contentId ? contentId : null,
           conditions: condValue ? [{ field: condField, op: condOp, value: condValue }] : [],
           actions: [action],
           enabled: false,
@@ -325,6 +361,19 @@ function CreateRuleDialog({
               ))}
             </Select>
           </Field>
+
+          {trigger === "COMMENT_RECEIVED" && (
+            <Field label={d.automation.rules.scope} hint={d.automation.rules.scopeHint}>
+              <Select value={contentId} onChange={(e) => setContentId(e.target.value)}>
+                <option value="">{d.automation.rules.allPosts}</option>
+                {contentItems.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.caption?.slice(0, 60) || d.automation.rules.untitledPost}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
 
           {/* optional condition — raw field/operator identifiers, empty value = always */}
           <div>
@@ -361,15 +410,53 @@ function CreateRuleDialog({
             </Select>
           </Field>
 
+          {isResourceAction && (
+            <Segmented
+              value={resourceMode}
+              onChange={(v) => setResourceMode(v as "template" | "ai")}
+              options={[
+                { value: "template", label: d.automation.rules.modeTemplate },
+                { value: "ai", label: d.automation.rules.modeAi },
+              ]}
+            />
+          )}
           {needsText && (
             <Textarea
               rows={2}
               aria-label={d.automation.rules.then}
-              placeholder={d.conversations.composerPh}
+              placeholder={isResourceAction && resourceMode === "ai" ? d.automation.rules.aiInstructionPh : d.conversations.composerPh}
               value={actionText}
               onChange={(e) => setActionText(e.target.value)}
               required
             />
+          )}
+          {isResourceAction && (
+            <>
+              <Field label={d.automation.rules.resource} hint={d.automation.rules.resourceHint}>
+                <Select value={resourceId} onChange={(e) => setResourceId(e.target.value)}>
+                  <option value="">{d.common.none}</option>
+                  {resources.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              {resourceMode === "ai" && (
+                <Field label={d.automation.rules.composingAgent}>
+                  <Select value={resourceAgentId} onChange={(e) => setResourceAgentId(e.target.value)} required>
+                    <option value="" disabled>
+                      {d.common.select}
+                    </option>
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
+            </>
           )}
           {actionType === "START_LEAD_FLOW" && (
             <Field label={actionLabel(d, "START_LEAD_FLOW")}>

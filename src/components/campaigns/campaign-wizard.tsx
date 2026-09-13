@@ -35,6 +35,14 @@ export interface ContentOption {
   mediaProductType: string | null;
 }
 
+/** The account's Lead Button (ONE per account — see /api/lead-button), as this wizard needs it. */
+interface LinkedLeadButton {
+  id: string;
+  landingUrl: string | null;
+  contentId: string | null;
+  ctaType: string | null;
+}
+
 interface City {
   key: string;
   name: string;
@@ -51,6 +59,8 @@ export interface WizardDraft {
   name: string;
   objective: string;
   contentId: string | null;
+  /** The Lead Button (CtaConfig) this ad uses, if the admin picked the account's existing one. */
+  ctaConfigId: string | null;
   adText: string;
   countries: string[];
   cities: City[];
@@ -74,6 +84,7 @@ export interface WizardInitial {
   name: string;
   objective: string;
   contentId: string | null;
+  ctaConfigId: string | null;
   dailyBudgetCents: number | null;
   lifetimeBudgetCents: number | null;
   currency: string;
@@ -111,6 +122,7 @@ function emptyDraft(currency: string, prefill?: { contentId?: string; ctaType?: 
     name: "",
     objective: "OUTCOME_TRAFFIC",
     contentId: prefill?.contentId || null,
+    ctaConfigId: null,
     adText: "",
     countries: ["UZ"],
     cities: [],
@@ -138,6 +150,7 @@ function fromInitial(c: WizardInitial): WizardDraft {
     name: c.name,
     objective: c.objective,
     contentId: c.contentId,
+    ctaConfigId: c.ctaConfigId,
     adText: c.creativeSpec?.message ?? "",
     countries: t.countries ?? [],
     cities: (t.cities ?? []).map((x) => ({ key: x.key, name: x.name ?? x.key, radius: x.radius ?? 25, distanceUnit: x.distanceUnit ?? "kilometer" })),
@@ -180,6 +193,7 @@ function toPayload(dr: WizardDraft) {
     destinationType: dr.objective === "OUTCOME_TRAFFIC" ? "WEBSITE" : dr.objective === "OUTCOME_ENGAGEMENT" ? "INSTAGRAM_DIRECT" : dr.objective === "OUTCOME_LEADS" ? "LEAD_FORM" : null,
     destinationUrl: dr.destinationUrl.trim() || null,
     contentId: dr.contentId,
+    ctaConfigId: dr.ctaConfigId,
     metaFormId: dr.metaFormId.trim() || null,
     creativeSpec: dr.contentId ? null : { message: dr.adText.trim() || dr.name.trim() },
   };
@@ -222,6 +236,7 @@ export function CampaignWizard({
   const [estimate, setEstimate] = React.useState<Estimate | null>(null);
   const [estimating, setEstimating] = React.useState(false);
   const [pricing, setPricing] = React.useState<Pricing | null>(null);
+  const [leadButton, setLeadButton] = React.useState<LinkedLeadButton | null>(null);
 
   React.useEffect(() => {
     if (!open) return;
@@ -229,6 +244,13 @@ export function CampaignWizard({
       .then((res) => setPricing(res.pricing))
       .catch(() => setPricing(null));
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    api<{ leadButton: LinkedLeadButton | null }>(`/api/lead-button?accountId=${accountId}`, { silent: true })
+      .then((res) => setLeadButton(res.leadButton))
+      .catch(() => setLeadButton(null));
+  }, [open, accountId]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -243,6 +265,10 @@ export function CampaignWizard({
   };
 
   const selectedContent = draft.contentId ? contentOptions.find((c) => c.id === draft.contentId) ?? null : null;
+  // The Lead Button is a singleton per account — "does this reel have one" is
+  // really "is the account's one Lead Button pointed at this reel, or at none in particular".
+  const matchingLeadButton =
+    leadButton?.landingUrl && (leadButton.contentId === draft.contentId || leadButton.contentId === null) ? leadButton : null;
   const objective = options.objectives.find((o) => o.value === draft.objective);
   const ctaLabel =
     draft.objective === "OUTCOME_AWARENESS" && !draft.destinationUrl ? null : options.ctaTypes.find((c) => c.value === draft.ctaType)?.label ?? draft.ctaType;
@@ -461,9 +487,37 @@ export function CampaignWizard({
                 <Field label={d.campaigns.fields.name} className="sm:col-span-2">
                   <Input value={draft.name} onChange={(e) => patch({ name: e.target.value })} maxLength={150} placeholder={t.namePh} />
                 </Field>
+
+                {(draft.objective === "OUTCOME_TRAFFIC" || draft.objective === "OUTCOME_AWARENESS") && (
+                  <div className="sm:col-span-2">
+                    {matchingLeadButton ? (
+                      <Segmented
+                        value={draft.ctaConfigId ? "existing" : "custom"}
+                        onChange={(v) =>
+                          patch(
+                            v === "existing"
+                              ? { ctaConfigId: matchingLeadButton.id, ctaType: matchingLeadButton.ctaType ?? draft.ctaType, destinationUrl: matchingLeadButton.landingUrl ?? draft.destinationUrl }
+                              : { ctaConfigId: null },
+                          )
+                        }
+                        options={[
+                          { value: "existing", label: t.useLeadButton },
+                          { value: "custom", label: t.customButton },
+                        ]}
+                      />
+                    ) : (
+                      <a
+                        href={`/lead-button${draft.contentId ? `?contentId=${draft.contentId}` : ""}`}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-(--color-accent) underline underline-offset-2"
+                      >
+                        <ExternalLink size={13} /> {t.setUpLeadButton}
+                      </a>
+                    )}
+                  </div>
+                )}
                 {draft.objective !== "OUTCOME_ENGAGEMENT" && (
-                  <Field label={t.ctaType} hint={t.ctaFixedLook}>
-                    <Select value={draft.ctaType} onChange={(e) => patch({ ctaType: e.target.value })}>
+                  <Field label={t.ctaType} hint={draft.ctaConfigId ? t.fromLeadButton : t.ctaFixedLook}>
+                    <Select value={draft.ctaType} disabled={Boolean(draft.ctaConfigId)} onChange={(e) => patch({ ctaType: e.target.value })}>
                       {options.ctaTypes.map((c) => (
                         <option key={c.value} value={c.value}>
                           {c.label}
@@ -473,8 +527,13 @@ export function CampaignWizard({
                   </Field>
                 )}
                 {(draft.objective === "OUTCOME_TRAFFIC" || draft.objective === "OUTCOME_AWARENESS") && (
-                  <Field label={t.destination} hint={draft.objective === "OUTCOME_AWARENESS" ? t.destinationOptional : undefined}>
-                    <Input value={draft.destinationUrl} onChange={(e) => patch({ destinationUrl: e.target.value })} placeholder={t.destinationPh} />
+                  <Field label={t.destination} hint={draft.ctaConfigId ? t.fromLeadButton : draft.objective === "OUTCOME_AWARENESS" ? t.destinationOptional : undefined}>
+                    <Input
+                      value={draft.destinationUrl}
+                      disabled={Boolean(draft.ctaConfigId)}
+                      onChange={(e) => patch({ destinationUrl: e.target.value })}
+                      placeholder={t.destinationPh}
+                    />
                   </Field>
                 )}
                 {draft.objective === "OUTCOME_ENGAGEMENT" && (

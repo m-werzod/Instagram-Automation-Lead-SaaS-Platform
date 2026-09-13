@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { registerHandler, enqueue } from "./index";
 import { parseWebhookPayload, type NormalizedEvent, type WebhookPayload } from "@/lib/meta/webhooks";
 import { runAutomations } from "@/lib/automation/engine";
-import { generateAndSendReply } from "@/lib/agent/runtime";
+import { generateAndSendReply, generateAndSendCommentReply } from "@/lib/agent/runtime";
 import { getActiveSession, handleFlowAnswer, findFlowByKeyword, startFlowSession } from "@/lib/leadflow/engine";
 import { sendInstagramText } from "@/lib/meta/messaging";
 import { deliverEmailEvent, notifyLeadSubmitted } from "@/lib/email";
@@ -243,14 +243,31 @@ async function handleComment(ev: Extract<NormalizedEvent, { type: "comment" }>):
   // never react to our own comments
   if (ev.fromId && ev.fromId === account.igUserId) return;
 
+  // Resolve Meta's media id to our local ContentItem so rules can be scoped to
+  // one specific post/reel. A post the platform hasn't synced yet simply has
+  // no match — account-wide rules (contentId: null) still fire normally.
+  const content = ev.mediaId
+    ? await prisma.contentItem.findUnique({ where: { accountId_mediaId: { accountId: account.id, mediaId: ev.mediaId } } })
+    : null;
+
+  // Independent of each other, same as MESSAGE_RECEIVED automations vs. ai.reply
+  // below: a static rule and the AI comment-reply agent may both react to the
+  // same comment — one privately (resource rules), one publicly (AI reply).
   await runAutomations("COMMENT_RECEIVED", {
     accountId: account.id,
     commentId: ev.commentId,
     mediaId: ev.mediaId ?? undefined,
+    contentId: content?.id,
     text: ev.text ?? "",
     username: ev.fromUsername ?? undefined,
   });
-};
+
+  await enqueue(
+    "comment.ai_reply",
+    { accountId: account.id, commentId: ev.commentId, text: ev.text ?? "" },
+    { idempotencyKey: `comment.ai_reply:${ev.commentId}`, maxAttempts: 3 },
+  );
+}
 
 // ---------- ai.reply ----------
 
@@ -259,6 +276,16 @@ registerHandler("ai.reply", async (payload) => {
   if (!conversationId) return;
   const outcome = await generateAndSendReply(conversationId, String(payload.messageId ?? ""));
   log.info("ai.reply outcome", { conversationId, ...outcome });
+});
+
+// ---------- comment.ai_reply ----------
+
+registerHandler("comment.ai_reply", async (payload) => {
+  const accountId = String(payload.accountId ?? "");
+  const commentId = String(payload.commentId ?? "");
+  if (!accountId || !commentId) return;
+  const outcome = await generateAndSendCommentReply(accountId, commentId, String(payload.text ?? ""));
+  log.info("comment.ai_reply outcome", { accountId, commentId, ...outcome });
 });
 
 // ---------- lead.process ----------

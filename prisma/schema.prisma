@@ -242,8 +242,9 @@ model InstagramAccount {
   aiUsage        AIUsage[]
   connectInvites ConnectInvite[]
   accessGrants   AccountAccess[]
-  mediaAssets    MediaAsset[]
-  publishJobs    PublishJob[]
+  mediaAssets      MediaAsset[]
+  publishJobs      PublishJob[]
+  commentResources CommentResource[]
 }
 
 model InstagramToken {
@@ -328,10 +329,11 @@ model ContentItem {
   isDemo           Boolean          @default(false)
   syncedAt         DateTime         @default(now())
 
-  analysis   ContentAnalysis?
-  ctaConfigs CtaConfig[]
-  campaigns  Campaign[]
-  leads      Lead[]
+  analysis    ContentAnalysis?
+  ctaConfigs  CtaConfig[]
+  campaigns   Campaign[]
+  leads       Lead[]
+  automations Automation[]
 
   @@unique([accountId, mediaId])
   @@index([accountId, timestamp])
@@ -643,7 +645,8 @@ model CtaConfig {
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
-  leads Lead[]
+  leads     Lead[]
+  campaigns Campaign[]
 
   @@index([accountId])
 }
@@ -669,6 +672,12 @@ model Campaign {
   leadFlowId          String?
   contentId           String? // boost existing media (source_instagram_media_id)
   content             ContentItem?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  /// Which Lead Button (CtaConfig, kind EXTERNAL_LINK) this ad uses — set once at
+  /// creation from whichever the admin picked, not re-derived on sync (Meta ad
+  /// creatives are immutable after creation anyway). Purely additive: nothing
+  /// requires this to be set, ctaType/destinationUrl above still drive the ad.
+  ctaConfigId         String?
+  ctaConfig           CtaConfig?       @relation(fields: [ctaConfigId], references: [id], onDelete: SetNull)
   creativeSpec        Json?
   createdByAi         Boolean          @default(false)
   createdByAdminId    String?
@@ -694,6 +703,7 @@ model Campaign {
   billingSchedules BillingSchedule[]
 
   @@index([accountId, status])
+  @@index([ctaConfigId])
 }
 
 // ---------- automations ----------
@@ -708,6 +718,9 @@ model Automation {
   trigger     AutomationTriggerType
   conditions  Json // [{field, op, value}] — AND-combined
   actions     Json // [{type, params}] — executed in order
+  /// Scopes a COMMENT_RECEIVED rule to one post/reel; null = every post on the account.
+  contentId   String?
+  content     ContentItem?          @relation(fields: [contentId], references: [id], onDelete: SetNull)
   runCount    Int                   @default(0)
   lastRunAt   DateTime?
   isDemo      Boolean               @default(false)
@@ -717,6 +730,7 @@ model Automation {
   runs AutomationRun[]
 
   @@index([accountId, trigger, enabled])
+  @@index([contentId])
 }
 
 model AutomationRun {
@@ -845,6 +859,28 @@ model MediaAsset {
   accountId    String
   account      InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   kind         String // IMAGE | VIDEO
+  mimeType     String
+  sizeBytes    Int
+  data         Bytes?
+  externalUrl  String?
+  uploadedById String?
+  createdAt    DateTime         @default(now())
+
+  @@index([accountId, createdAt])
+}
+
+/// A file an admin uploads to hand to people who comment on a post (a price
+/// list, a catalogue, a lookbook) — served publicly at /r/{id} the same way
+/// MediaAsset is, but deliberately a separate model: this table is never fed
+/// into Instagram's publish pipeline (so it accepts PDFs/docs MediaAsset's
+/// upload route rightly rejects) and keeps a human-facing `name`, which
+/// publishing has no use for.
+model CommentResource {
+  id           String           @id @default(cuid())
+  accountId    String
+  account      InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name         String // admin-facing label, e.g. "Price list PDF"
+  kind         String // IMAGE | VIDEO | FILE — decides native attachment vs link-in-text at send time
   mimeType     String
   sizeBytes    Int
   data         Bytes?

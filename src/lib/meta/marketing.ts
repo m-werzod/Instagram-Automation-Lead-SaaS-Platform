@@ -1,7 +1,8 @@
-import type { Campaign, InstagramAccount } from "@prisma/client";
+import type { Campaign, CtaConfig, InstagramAccount } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { AppError, metaUnsupported } from "@/lib/errors";
 import { createLogger, errorFields } from "@/lib/logger";
+import { coreEnv } from "@/lib/env";
 import { graphCall, MetaApiError } from "./client";
 import { resolveAdsAccess } from "./tokens";
 import type { Prisma } from "@prisma/client";
@@ -402,7 +403,42 @@ export function buildCallToAction(campaign: Pick<Campaign, "ctaType" | "objectiv
   }
 }
 
+/** `/f/{slug}` — kept local rather than imported from src/app/api/lead-button/route.ts's
+ *  identical landingUrlFor, since lib/ code importing from app/api/ would invert this
+ *  codebase's dependency direction. Small intentional duplication. */
+function ctaConfigDestinationUrl(cta: Pick<CtaConfig, "url" | "landingSlug">): string | null {
+  return cta.landingSlug ? `${coreEnv().APP_URL}/f/${cta.landingSlug}` : cta.url;
+}
+
+/**
+ * Pure (unit-tested): when a campaign is linked to a Lead Button (CtaConfig),
+ * its ctaType/destination win over the campaign's own plain columns — with
+ * the campaign's own values as the fallback for whichever half the CtaConfig
+ * doesn't specify. `linkedCta` is null for a campaign with no Lead Button.
+ */
+export function resolveCtaAndUrl(
+  campaign: Pick<Campaign, "ctaType" | "destinationUrl">,
+  linkedCta: Pick<CtaConfig, "ctaType" | "url" | "landingSlug"> | null,
+): { ctaType: string | null; destinationUrl: string | null } {
+  if (!linkedCta) return { ctaType: campaign.ctaType, destinationUrl: campaign.destinationUrl };
+  return {
+    ctaType: linkedCta.ctaType ?? campaign.ctaType,
+    destinationUrl: ctaConfigDestinationUrl(linkedCta) ?? campaign.destinationUrl,
+  };
+}
+
 async function buildCreative(account: InstagramAccount, campaign: Campaign): Promise<Record<string, unknown>> {
+  // A linked Lead Button's CTA/destination win, resolved once here — read live
+  // at creation time only (Meta ad creatives are immutable afterward, so
+  // there is never a later "sync" moment to re-derive this into).
+  if (campaign.ctaConfigId) {
+    const linkedCta = await prisma.ctaConfig.findUnique({
+      where: { id: campaign.ctaConfigId },
+      select: { ctaType: true, url: true, landingSlug: true },
+    });
+    campaign = { ...campaign, ...resolveCtaAndUrl(campaign, linkedCta) };
+  }
+
   // Boost an existing Instagram post/Reel — the verified pattern:
   // instagram_user_id + source_instagram_media_id (organic post is never modified;
   // Meta renders a copy of it as an ad, with the CTA button attached).

@@ -18,7 +18,8 @@ export interface WorkingHours {
   end: string;
 }
 
-const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+/** "HH:MM" 24h. Exported so every place that validates working-hours input (the API schema included) shares one pattern instead of risking a second, drifting copy. */
+export const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 export function parseWorkingHours(json: unknown): WorkingHours | null {
   if (!json || typeof json !== "object") return null;

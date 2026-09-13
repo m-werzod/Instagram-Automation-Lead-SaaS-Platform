@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, enforceRateLimit, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { isStaff } from "@/lib/auth/access";
 import { audit } from "@/lib/audit";
@@ -34,6 +34,7 @@ const actionSchema = z.object({ action: z.enum(["pay", "retry", "cancel", "sync"
 export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireAdmin();
+  enforceRateLimit(`billing-pay:${auth.admin.id}`, 20, 60_000);
   requirePaymentConfig();
   const id = await pathParam(ctx, "id");
   const body = await parseBody(req, actionSchema);

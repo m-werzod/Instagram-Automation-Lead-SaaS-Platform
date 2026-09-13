@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { formEncode, verifyStripeSignature, summarizeIntent, cardFromPaymentMethod } from "@/lib/billing/stripe";
 import {
   computeCampaignQuote,
@@ -9,6 +9,7 @@ import {
   nextRetryAt,
   paymentStatusFromIntent,
 } from "@/lib/billing/pricing";
+import { paymentConfig, paymentsConfigured, requirePaymentConfig } from "@/lib/billing/config";
 import { hmacSha256 } from "@/lib/crypto";
 
 /**
@@ -135,5 +136,48 @@ describe("reading Stripe objects", () => {
     const c = cardFromPaymentMethod({ id: "pm_1", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030, fingerprint: "x" } });
     expect(c).toEqual({ id: "pm_1", brand: "visa", last4: "4242", expMonth: 12, expYear: 2030 });
     expect(JSON.stringify(c)).not.toContain("fingerprint");
+  });
+});
+
+/**
+ * "Configured" must mean the whole payment path works, not just that a secret
+ * key exists — a webhook secret missing would silently strand every
+ * asynchronous outcome (card setup, off-session charge confirmation) as if
+ * everything were fine.
+ */
+describe("payment configuration gating", () => {
+  afterEach(() => {
+    delete process.env.PAYMENT_SECRET_KEY;
+    delete process.env.PAYMENT_WEBHOOK_SECRET;
+    delete process.env.PAYMENT_PROVIDER;
+  });
+
+  it("is unconfigured with no secret key at all", () => {
+    expect(paymentConfig()).toBeNull();
+    expect(paymentsConfigured()).toBe(false);
+    expect(() => requirePaymentConfig()).toThrow(/not configured/);
+  });
+
+  it("paymentConfig() itself still returns a null webhookSecret (the webhook route needs that distinction)", () => {
+    process.env.PAYMENT_SECRET_KEY = "sk_test_123";
+    expect(paymentConfig()).toMatchObject({ secretKey: "sk_test_123", webhookSecret: null });
+  });
+
+  it("a secret key alone, with no webhook secret, is NOT fully configured", () => {
+    process.env.PAYMENT_SECRET_KEY = "sk_test_123";
+    expect(paymentsConfigured()).toBe(false);
+    try {
+      requirePaymentConfig();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect((err as { reason?: string }).reason).toMatch(/webhook/i);
+    }
+  });
+
+  it("both keys present is fully configured", () => {
+    process.env.PAYMENT_SECRET_KEY = "sk_test_123";
+    process.env.PAYMENT_WEBHOOK_SECRET = "whsec_123";
+    expect(paymentsConfigured()).toBe(true);
+    expect(requirePaymentConfig()).toMatchObject({ secretKey: "sk_test_123", webhookSecret: "whsec_123" });
   });
 });

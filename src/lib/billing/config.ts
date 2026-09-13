@@ -26,8 +26,15 @@ export function paymentConfig(): PaymentConfig | null {
   };
 }
 
+/**
+ * "Configured" requires a webhook secret too, not just a secret key. Without
+ * one, the webhook route (correctly) 503s every Stripe event — a Checkout
+ * setup or an async payment outcome would never confirm, so the rest of the
+ * app must not present itself as fully working when only half of it is wired.
+ */
 export function paymentsConfigured(): boolean {
-  return paymentConfig() !== null;
+  const cfg = paymentConfig();
+  return Boolean(cfg && cfg.webhookSecret);
 }
 
 export function requirePaymentConfig(): PaymentConfig {
@@ -36,6 +43,12 @@ export function requirePaymentConfig(): PaymentConfig {
     throw new AppError("PAYMENT_NOT_CONFIGURED", "Payments are not configured on this installation", {
       reason: "PAYMENT_SECRET_KEY is not set, so no payment provider is connected.",
       fix: "Set PAYMENT_SECRET_KEY (Stripe secret key) and PAYMENT_WEBHOOK_SECRET in the environment, then restart.",
+    });
+  }
+  if (!cfg.webhookSecret) {
+    throw new AppError("PAYMENT_NOT_CONFIGURED", "Payments are not fully configured on this installation", {
+      reason: "PAYMENT_SECRET_KEY is set but PAYMENT_WEBHOOK_SECRET is not, so Stripe's webhook is rejected — card setup and payment outcomes would never confirm.",
+      fix: "Create the webhook endpoint in the Stripe Dashboard and set PAYMENT_WEBHOOK_SECRET, then restart.",
     });
   }
   return cfg;

@@ -57,6 +57,10 @@ export const POST = route(async (req: NextRequest) => {
     const content = await prisma.contentItem.findFirst({ where: { id: body.contentId, accountId: account.id } });
     if (!content) throw notFound("Selected content (must belong to the same account)");
   }
+  if (body.ctaConfigId) {
+    const cta = await prisma.ctaConfig.findFirst({ where: { id: body.ctaConfigId, accountId: account.id } });
+    if (!cta) throw notFound("Selected Lead Button (must belong to the same account)");
+  }
 
   const campaign = await prisma.campaign.create({
     data: {
@@ -75,6 +79,7 @@ export const POST = route(async (req: NextRequest) => {
       destinationUrl: body.destinationUrl ?? null,
       leadFlowId: body.leadFlowId ?? null,
       contentId: body.contentId ?? null,
+      ctaConfigId: body.ctaConfigId ?? null,
       metaFormId: body.metaFormId ?? null,
       creativeSpec: (body.creativeSpec ?? undefined) as Prisma.InputJsonValue | undefined,
       createdByAdminId: auth.admin.id,

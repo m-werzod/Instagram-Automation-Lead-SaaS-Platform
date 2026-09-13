@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   Film,
@@ -134,8 +135,19 @@ const COLOR_PRESETS: Array<Pick<ButtonSpec, "bg" | "fg" | "border">> = [
 ];
 
 export default function LeadButtonPage() {
+  return (
+    <React.Suspense fallback={null}>
+      <LeadButtonPageInner />
+    </React.Suspense>
+  );
+}
+
+function LeadButtonPageInner() {
   const { d } = useI18n();
   const { selected, loading: accountsLoading } = useAccounts();
+  // Arriving from Content's "Use for the Lead Button" or the campaign wizard's
+  // "Set up a Lead Button" link — point the (singleton) Lead Button at this reel.
+  const preselectContentId = useSearchParams().get("contentId");
 
   const [leadButton, setLeadButton] = React.useState<LeadButtonDto | null>(null);
   const [draft, setDraft] = React.useState<Draft | null>(null);
@@ -164,18 +176,22 @@ export default function LeadButtonPage() {
       setLeadButton(lbRes.leadButton);
       setNativeCtaTypes(lbRes.nativeCtaTypes);
       setAdsReady(lbRes.adsReady);
-      const next = lbRes.leadButton ? draftFrom(lbRes.leadButton) : starterDraft(d);
+      const original = lbRes.leadButton ? draftFrom(lbRes.leadButton) : starterDraft(d);
+      // Explicit intent from the link that brought them here — override
+      // whatever the draft would otherwise show, but never auto-save it, and
+      // never let the override itself hide a real pending change from `dirty`.
+      const next = preselectContentId ? { ...original, contentId: preselectContentId } : original;
       setDraft(next);
       // A brand-new (unsaved) Lead Button must start dirty so the first
       // "Save" is enabled without requiring a cosmetic change first.
-      setBaseline(lbRes.leadButton ? JSON.stringify(next) : "");
+      setBaseline(lbRes.leadButton ? JSON.stringify(original) : "");
       const vids = contentRes.items.filter((i) => i.mediaProductType === "REELS" || i.mediaType === "VIDEO");
       setReels(vids.length ? vids : contentRes.items);
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
+  }, [selected?.id, preselectContentId]);
 
   React.useEffect(() => {
     void load();
@@ -655,9 +671,10 @@ export default function LeadButtonPage() {
                   </Field>
                   {adsReady ? (
                     <Button asChild variant="secondary" disabled={!leadButton?.landingUrl}>
-                      <Link
-                        href={`/campaigns?new=1&contentId=${draft.contentId ?? ""}&cta=${draft.ctaType ?? "SIGN_UP"}&url=${encodeURIComponent(leadButton?.landingUrl ?? "")}`}
-                      >
+                      {/* The campaign wizard looks up this account's Lead Button itself
+                          (see campaign-wizard.tsx) — passing contentId is enough, and
+                          reflects what's actually SAVED rather than this draft's in-memory state. */}
+                      <Link href={`/campaigns?new=1&contentId=${draft.contentId ?? ""}`}>
                         <Megaphone size={14} /> {d.leadButton.delivery.adCreate}
                       </Link>
                     </Button>

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { allConditionsMatch, conditionMatches, OUTBOUND_ACTIONS, type AutomationCondition, type TriggerContext } from "@/lib/automation/engine";
+import {
+  allConditionsMatch,
+  conditionMatches,
+  contentScopeMatches,
+  OUTBOUND_ACTIONS,
+  type AutomationCondition,
+  type TriggerContext,
+} from "@/lib/automation/engine";
 
 const ctx: TriggerContext = {
   accountId: "a1",
@@ -50,6 +57,30 @@ describe("automation condition matching", () => {
   });
 
   it("outbound action set covers exactly the message-sending actions", () => {
-    expect([...OUTBOUND_ACTIONS].sort()).toEqual(["REPLY_COMMENT", "SEND_MESSAGE", "SEND_PRIVATE_REPLY", "START_LEAD_FLOW"].sort());
+    expect([...OUTBOUND_ACTIONS].sort()).toEqual(
+      ["REPLY_COMMENT", "SEND_MESSAGE", "SEND_PRIVATE_REPLY", "SEND_COMMENT_RESOURCE", "START_LEAD_FLOW"].sort(),
+    );
+  });
+});
+
+/**
+ * A rule scoped to one post/reel must only fire for comments on THAT post —
+ * an unscoped rule (contentId null) still applies to every post, so a typo
+ * here would either silence every comment-resource rule or spam every post.
+ */
+describe("contentScopeMatches", () => {
+  it("an unscoped rule (null/undefined contentId) matches every comment", () => {
+    expect(contentScopeMatches(null, { accountId: "a1", contentId: "post_1" })).toBe(true);
+    expect(contentScopeMatches(undefined, { accountId: "a1", contentId: "post_1" })).toBe(true);
+    expect(contentScopeMatches(null, { accountId: "a1" })).toBe(true);
+  });
+
+  it("a scoped rule only matches its own post", () => {
+    expect(contentScopeMatches("post_1", { accountId: "a1", contentId: "post_1" })).toBe(true);
+    expect(contentScopeMatches("post_1", { accountId: "a1", contentId: "post_2" })).toBe(false);
+  });
+
+  it("a scoped rule never matches a comment whose post couldn't be resolved locally", () => {
+    expect(contentScopeMatches("post_1", { accountId: "a1" })).toBe(false);
   });
 });

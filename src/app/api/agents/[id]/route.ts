@@ -7,6 +7,7 @@ import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
 import { TOOLS_BY_ID } from "@/lib/agent/tools";
+import { HHMM } from "@/lib/agent/guardrails";
 import { aiRuntimeInfo, isProviderConfigured } from "@/lib/ai";
 import { Prisma } from "@prisma/client";
 
@@ -86,8 +87,8 @@ const updateSchema = z.object({
     .object({
       timezone: z.string().min(1).max(64),
       days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
-      start: z.string().regex(/^([01]d|2[0-3]):[0-5]d$/),
-      end: z.string().regex(/^([01]d|2[0-3]):[0-5]d$/),
+      start: z.string().regex(HHMM),
+      end: z.string().regex(HHMM),
     })
     .nullable()
     .optional(),

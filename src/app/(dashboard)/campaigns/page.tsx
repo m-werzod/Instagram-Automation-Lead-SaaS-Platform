@@ -99,6 +99,7 @@ interface CampaignRow {
   publishedAt: string | null;
   stoppedAt: string | null;
   contentId: string | null;
+  ctaConfigId: string | null;
   content: { id: string; caption: string | null; thumbnailUrl: string | null; mediaUrl: string | null; mediaProductType: string | null; permalink: string | null } | null;
   account: { username: string; connectionMode: string; adAccountId: string | null; fbPageId: string | null };
   _count: { leads: number };
@@ -108,8 +109,6 @@ interface CampaignRow {
 interface Prefill {
   fromLeadButton: boolean;
   contentId: string;
-  ctaType: string | null;
-  destinationUrl: string;
 }
 
 const STATUS_TONE: Record<string, "default" | "ok" | "warn" | "danger" | "accent" | "info"> = {
@@ -148,11 +147,14 @@ function CampaignsInner() {
   const adsCapability = selected?.capabilities.find((c) => c.key === "ads");
   const adsAvailable = Boolean(adsCapability?.available);
 
+  // The wizard self-discovers any existing Lead Button for this contentId (see
+  // campaign-wizard.tsx's leadButton fetch) — this only needs to say WHICH reel and
+  // whether to auto-open, not carry a snapshot of the Lead Button's own fields.
   const prefill = React.useMemo<Prefill | null>(() => {
     const fromLeadButton = params.get("new") === "1";
     const contentId = params.get("contentId") ?? "";
     if (!fromLeadButton && !contentId) return null;
-    return { fromLeadButton, contentId, ctaType: params.get("cta"), destinationUrl: params.get("url") ?? "" };
+    return { fromLeadButton, contentId };
   }, [params]);
 
   const autoOpened = React.useRef(false);

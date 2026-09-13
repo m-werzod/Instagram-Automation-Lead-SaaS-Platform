@@ -68,6 +68,10 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
     const content = await prisma.contentItem.findFirst({ where: { id: body.contentId, accountId: existing.accountId } });
     if (!content) throw notFound("Selected content (must belong to the same account)");
   }
+  if (body.ctaConfigId) {
+    const cta = await prisma.ctaConfig.findFirst({ where: { id: body.ctaConfigId, accountId: existing.accountId } });
+    if (!cta) throw notFound("Selected Lead Button (must belong to the same account)");
+  }
   if (editable && !onlyArchiving) {
     const merged = {
       dailyBudgetCents: body.dailyBudgetCents !== undefined ? body.dailyBudgetCents : existing.dailyBudgetCents,

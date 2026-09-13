@@ -57,6 +57,7 @@ interface ContentRow {
     recommendedCta: string | null;
     topic: string | null;
   } | null;
+  ctaConfigs: Array<{ id: string; name: string; kind: string; enabled: boolean }>;
 }
 
 type Potential = "LOW" | "MEDIUM" | "HIGH";
@@ -356,6 +357,12 @@ function MediaCard({
           </div>
         )}
 
+        {item.ctaConfigs.some((c) => c.kind === "EXTERNAL_LINK" && c.enabled) && (
+          <Link href={`/lead-button?contentId=${item.id}`} className="inline-flex w-fit items-center gap-1 text-[10px] font-medium text-(--color-accent) underline underline-offset-2">
+            <MousePointerClick size={10} /> {d.content.hasLeadButton}
+          </Link>
+        )}
+
         <div className="mt-auto flex flex-col gap-1.5 pt-1">
           {!item.analysis && (
             <Button size="sm" variant="secondary" className="w-full" disabled={busy === item.id} onClick={onAnalyze}>
@@ -364,7 +371,7 @@ function MediaCard({
             </Button>
           )}
           <Button asChild size="sm" variant="secondary" className="h-auto min-h-7 w-full whitespace-normal py-1 text-center">
-            <Link href="/lead-button">
+            <Link href={`/lead-button?contentId=${item.id}`}>
               <MousePointerClick size={13} /> {d.content.useForLeadButton}
             </Link>
           </Button>

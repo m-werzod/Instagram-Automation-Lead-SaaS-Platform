@@ -2,6 +2,7 @@ import type { InstagramAccount } from "@prisma/client";
 import { AppError } from "@/lib/errors";
 import { graphCall } from "./client";
 import { resolveAccess } from "./tokens";
+import type { ResourceKind } from "@/lib/resources";
 
 /**
  * Instagram DM send layer (Messaging API v25.0 — see docs/META_API.md §3).
@@ -97,6 +98,49 @@ export async function sendPrivateReplyToComment(
     recipient: { comment_id: commentId },
     message: { text: clampTextBytes(text) },
   });
+}
+
+/**
+ * Pure (unit-tested): the message body/bodies a resource + caption produce.
+ * Meta's Send API documents image/video/audio attachment TYPES only — there
+ * is no generic "file" attachment (unlike Messenger) — so an IMAGE/VIDEO
+ * resource attaches natively and anything else (PDF, docs) sends as a link
+ * inside the text instead. Never faked as a real attachment when it isn't one.
+ *
+ * A message is one or the other, not both (Meta's messaging payload takes a
+ * single `message.attachment` OR `message.text`), so a caption alongside a
+ * native attachment goes out as a short second message rather than assuming
+ * an unconfirmed combined shape.
+ */
+export function buildResourceMessages(
+  text: string,
+  resource: { kind: ResourceKind; url: string } | null,
+): Array<Record<string, unknown>> {
+  if (!resource || resource.kind === "FILE") {
+    const combined = resource ? `${text}\n\n${resource.url}`.trim() : text;
+    return [{ text: clampTextBytes(combined) }];
+  }
+  const attachmentType = resource.kind === "IMAGE" ? "image" : "video";
+  const messages: Array<Record<string, unknown>> = [
+    { attachment: { type: attachmentType, payload: { url: resource.url, is_reusable: false } } },
+  ];
+  if (text.trim()) messages.push({ text: clampTextBytes(text) });
+  return messages;
+}
+
+/** Private reply carrying a resource (comment-resource automations) — see buildResourceMessages(). */
+export async function sendPrivateReplyResourceToComment(
+  account: InstagramAccount,
+  commentId: string,
+  text: string,
+  resource: { kind: ResourceKind; url: string } | null,
+): Promise<SendResult[]> {
+  const recipient = { comment_id: commentId };
+  const results: SendResult[] = [];
+  for (const message of buildResourceMessages(text, resource)) {
+    results.push(await sendRaw(account, { recipient, message }));
+  }
+  return results;
 }
 
 async function sendRaw(account: InstagramAccount, body: Record<string, unknown>): Promise<SendResult> {

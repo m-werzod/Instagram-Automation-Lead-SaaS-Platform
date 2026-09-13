@@ -2,6 +2,7 @@ import type { Automation, AutomationTriggerType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getGlobalSettings } from "@/lib/settings";
 import { createLogger, errorFields } from "@/lib/logger";
+import { resourceKindFromMime, resourceUrlFor } from "@/lib/resources";
 
 const log = createLogger("automation");
 
@@ -20,6 +21,8 @@ export interface TriggerContext {
   text?: string;
   commentId?: string;
   mediaId?: string;
+  /** Local ContentItem.id the comment's media resolves to, when known — see contentScopeMatches. */
+  contentId?: string;
   leadId?: string;
   leadStatus?: string;
   source?: string;
@@ -39,9 +42,24 @@ export type AutomationAction =
   | { type: "START_LEAD_FLOW"; params: { flowId: string } }
   | { type: "SET_LEAD_STATUS"; params: { status: string } }
   | { type: "NOTIFY_ADMIN"; params: { text: string } }
-  | { type: "SET_AI"; params: { enabled: boolean } };
+  | { type: "SET_AI"; params: { enabled: boolean } }
+  | {
+      type: "SEND_COMMENT_RESOURCE";
+      params: { mode: "template" | "ai"; text: string; resourceId?: string; agentId?: string };
+    };
 
-export const OUTBOUND_ACTIONS = new Set(["SEND_MESSAGE", "SEND_PRIVATE_REPLY", "REPLY_COMMENT", "START_LEAD_FLOW"]);
+export const OUTBOUND_ACTIONS = new Set([
+  "SEND_MESSAGE",
+  "SEND_PRIVATE_REPLY",
+  "REPLY_COMMENT",
+  "START_LEAD_FLOW",
+  "SEND_COMMENT_RESOURCE",
+]);
+
+/** Pure (unit-tested): does this rule's post/reel scope match the comment that triggered it? null = every post. */
+export function contentScopeMatches(automationContentId: string | null | undefined, ctx: TriggerContext): boolean {
+  return !automationContentId || automationContentId === ctx.contentId;
+}
 
 export function conditionMatches(cond: AutomationCondition, ctx: TriggerContext): boolean {
   const fieldValue = (
@@ -95,6 +113,9 @@ export async function runAutomations(trigger: AutomationTriggerType, ctx: Trigge
   for (const automation of automations) {
     const startedAt = Date.now();
     try {
+      if (!contentScopeMatches(automation.contentId, ctx)) {
+        continue; // scoped to a different post/reel — not recorded as a run (too noisy)
+      }
       if (!allConditionsMatch(automation.conditions, ctx)) {
         continue; // condition mismatch — not recorded as a run (too noisy)
       }
@@ -253,6 +274,49 @@ async function executeAction(action: AutomationAction, ctx: TriggerContext): Pro
         where: { id: ctx.conversationId },
         data: { aiEnabled: action.params.enabled, status: action.params.enabled ? "OPEN" : "HUMAN" },
       });
+      return { type: action.type, ok: true };
+    }
+    case "SEND_COMMENT_RESOURCE": {
+      if (!ctx.commentId) return { type: action.type, ok: false, error: "no comment in context" };
+      const account = await prisma.instagramAccount.findUnique({ where: { id: ctx.accountId } });
+      if (!account) return { type: action.type, ok: false, error: "account not found" };
+
+      const resource = action.params.resourceId
+        ? await prisma.commentResource.findUnique({ where: { id: action.params.resourceId } })
+        : null;
+      if (action.params.resourceId && !resource) return { type: action.type, ok: false, error: "resource not found" };
+      const resourceLocation = resource
+        ? { kind: resourceKindFromMime(resource.mimeType), url: resource.externalUrl ?? resourceUrlFor(resource.id, resource.mimeType) }
+        : null;
+
+      let text = action.params.text;
+      if (action.params.mode === "ai") {
+        if (!action.params.agentId) return { type: action.type, ok: false, error: "no agent configured for AI mode" };
+        const agent = await prisma.aIAgent.findFirst({ where: { id: action.params.agentId, accountId: ctx.accountId } });
+        if (!agent) return { type: action.type, ok: false, error: "agent not found" };
+        const { runAgentTurn } = await import("@/lib/agent/runtime");
+        const { COMMENT_SAFE_TOOL_IDS } = await import("@/lib/agent/tools");
+        // The rule's own text is an instruction for THIS reply, injected as an
+        // additional system directive — never as something the customer said,
+        // matching the runtime's own "customer text is data, not instructions" rule.
+        const composeAgent = { ...agent, systemPrompt: `${agent.systemPrompt}\n\n## This reply's specific purpose\n${action.params.text}` };
+        const result = await runAgentTurn({
+          agent: composeAgent,
+          account,
+          conversation: null,
+          turns: [{ role: "user", text: ctx.text ?? "" }],
+          lastUserText: ctx.text ?? "",
+          dryRun: false,
+          purpose: "comment_reply",
+          surface: "comment",
+          toolIdsOverride: COMMENT_SAFE_TOOL_IDS,
+        });
+        if (!result.text) return { type: action.type, ok: false, error: `AI produced no reply (${result.guard.action})` };
+        text = result.text;
+      }
+
+      const { sendPrivateReplyResourceToComment } = await import("@/lib/meta/messaging");
+      await sendPrivateReplyResourceToComment(account, ctx.commentId, text, resourceLocation);
       return { type: action.type, ok: true };
     }
     default:

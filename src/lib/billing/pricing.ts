@@ -25,6 +25,17 @@ export const DEFAULT_PRICING: Pricing = {
   taxPercent: 0,
 };
 
+/**
+ * Every amount in this file is stored as "cents" (1/100th of a unit) and sent
+ * to Stripe's `amount`/`unit_amount` as-is. That is only correct for a normal
+ * 2-decimal currency — for one of Stripe's zero-decimal currencies (JPY, KRW,
+ * VND, …) the same integer means whole units, a 100x overcharge. Deliberately
+ * kept to currencies confirmed both 2-decimal AND commonly usable as a Stripe
+ * presentment currency; add to this list only after checking both at
+ * https://docs.stripe.com/currencies, never just because a customer asked.
+ */
+export const SUPPORTED_PRICING_CURRENCIES = ["USD", "EUR", "GBP"] as const;
+
 export interface QuoteLine {
   description: string;
   amountCents: number;

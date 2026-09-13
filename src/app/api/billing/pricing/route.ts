@@ -5,7 +5,7 @@ import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin, requireOwner } from "@/lib/auth/guard";
 import { audit } from "@/lib/audit";
 import { getPricing, toPricing } from "@/lib/billing/service";
-import { computeCampaignQuote } from "@/lib/billing/pricing";
+import { computeCampaignQuote, SUPPORTED_PRICING_CURRENCIES } from "@/lib/billing/pricing";
 
 /** Centralised pricing. Anyone signed in may read it (the wizard shows the fee); only the OWNER changes it. */
 export const GET = route(async (req: NextRequest) => {
@@ -22,7 +22,9 @@ export const GET = route(async (req: NextRequest) => {
 });
 
 const putSchema = z.object({
-  currency: z.string().length(3).transform((s) => s.toUpperCase()),
+  // Restricted to currencies confirmed 2-decimal in Stripe's model — see
+  // SUPPORTED_PRICING_CURRENCIES' own comment for why this isn't free text.
+  currency: z.enum(SUPPORTED_PRICING_CURRENCIES),
   campaignFeeCents: z.number().int().min(0).max(100_000_000),
   campaignFeePercent: z.number().min(0).max(100),
   planName: z.string().max(120).nullable(),

@@ -97,7 +97,14 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
   return (inputTokens * p.inPerM + outputTokens * p.outPerM) / 1_000_000;
 }
 
-export type UsagePurpose = "reply" | "content_analysis" | "embedding" | "campaign_draft" | "test" | "lead_qualification";
+export type UsagePurpose =
+  | "reply"
+  | "comment_reply"
+  | "content_analysis"
+  | "embedding"
+  | "campaign_draft"
+  | "test"
+  | "lead_qualification";
 
 export interface UsageRecord {
   accountId?: string | null;

@@ -17,6 +17,7 @@ const log = createLogger("queue");
 export type JobType =
   | "webhook.process"
   | "ai.reply"
+  | "comment.ai_reply"
   | "lead.process"
   | "email.send"
   | "telegram.send"

@@ -1,11 +1,14 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, enforceRateLimit } from "@/lib/api";
 import { requireStaff } from "@/lib/auth/guard";
 import { hashPassword, checkPasswordPolicy, checkLoginFormat, normalizeLogin } from "@/lib/auth/password";
 import { forbidden, validationError } from "@/lib/errors";
 import { audit, AuditActions } from "@/lib/audit";
+import { wouldLeaveUserWithoutAccounts } from "@/lib/auth/access";
+import { LIMITS } from "@/lib/rate-limit";
+import { isUniqueConstraintError } from "@/lib/prisma-errors";
 
 /**
  * Users of the platform. Three roles:
@@ -48,11 +51,15 @@ const createSchema = z.object({
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
   const auth = await requireStaff();
+  enforceRateLimit(`admin-write:${auth.admin.id}`, LIMITS.ADMIN_WRITE.limit, LIMITS.ADMIN_WRITE.windowMs);
   const body = await parseBody(req, createSchema);
 
   // Only an OWNER may mint another administrator; an ADMIN onboards USERs.
   if (body.role !== "USER" && auth.admin.role !== "OWNER") {
     throw forbidden("Only the OWNER can create administrator accounts");
+  }
+  if (wouldLeaveUserWithoutAccounts({ finalRole: body.role, roleIsChanging: true, providedAccountIds: body.accountIds, existingGrantCount: 0 })) {
+    throw validationError("A USER must have at least one Instagram account assigned");
   }
 
   const loginCheck = checkLoginFormat(body.login);
@@ -77,17 +84,25 @@ export const POST = route(async (req: NextRequest) => {
     if (found !== accountIds.length) throw validationError("One of the selected Instagram accounts does not exist");
   }
 
-  const admin = await prisma.admin.create({
-    data: {
-      login,
-      email,
-      name: body.name,
-      passwordHash: await hashPassword(body.password),
-      role: body.role,
-      accountAccess: { create: accountIds.map((accountId) => ({ accountId, grantedById: auth.admin.id })) },
-    },
-    select: { id: true, login: true, email: true, name: true, role: true, isActive: true },
-  });
+  let admin;
+  try {
+    admin = await prisma.admin.create({
+      data: {
+        login,
+        email,
+        name: body.name,
+        passwordHash: await hashPassword(body.password),
+        role: body.role,
+        accountAccess: { create: accountIds.map((accountId) => ({ accountId, grantedById: auth.admin.id })) },
+      },
+      select: { id: true, login: true, email: true, name: true, role: true, isActive: true },
+    });
+  } catch (err) {
+    // Race with a concurrent create using the same login/email — the pre-checks
+    // above already cover the common case; this closes the narrow gap between them.
+    if (isUniqueConstraintError(err)) throw validationError("A user with this login or email already exists");
+    throw err;
+  }
 
   await audit({
     adminId: auth.admin.id,

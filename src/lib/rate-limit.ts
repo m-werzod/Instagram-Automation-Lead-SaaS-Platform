@@ -54,6 +54,8 @@ export const LIMITS = {
   API_WRITE: { limit: 120, windowMs: 60_000 },
   /** expensive AI calls per session */
   AI: { limit: 20, windowMs: 60_000 },
+  /** creating/editing admin or user accounts, per acting admin */
+  ADMIN_WRITE: { limit: 10, windowMs: 5 * 60_000 },
 } as const;
 
 /** test hook */

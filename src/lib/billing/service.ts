@@ -5,6 +5,7 @@ import { AppError, notFound } from "@/lib/errors";
 import { audit } from "@/lib/audit";
 import { queueAdminAlert } from "@/lib/email";
 import { createLogger, errorFields } from "@/lib/logger";
+import { isUniqueConstraintError } from "@/lib/prisma-errors";
 import { paymentsConfigured, requirePaymentConfig } from "./config";
 import { StripeProvider, type StripeIntentSummary } from "./stripe";
 import {
@@ -147,23 +148,41 @@ export interface CreatePaymentInput {
 export async function createPayment(input: CreatePaymentInput): Promise<Payment> {
   const existing = await prisma.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing) return existing;
-  return prisma.payment.create({
-    data: {
-      customerId: input.customer.id,
-      kind: input.kind,
-      description: input.description,
-      amountCents: input.quote.totalCents,
-      currency: input.quote.currency,
-      status: "PENDING",
-      idempotencyKey: input.idempotencyKey,
-      campaignId: input.campaignId ?? null,
-      scheduleId: input.scheduleId ?? null,
-      dueAt: input.dueAt ?? new Date(),
-    },
-  });
+  try {
+    return await prisma.payment.create({
+      data: {
+        customerId: input.customer.id,
+        kind: input.kind,
+        description: input.description,
+        amountCents: input.quote.totalCents,
+        currency: input.quote.currency,
+        status: "PENDING",
+        idempotencyKey: input.idempotencyKey,
+        campaignId: input.campaignId ?? null,
+        scheduleId: input.scheduleId ?? null,
+        dueAt: input.dueAt ?? new Date(),
+      },
+    });
+  } catch (err) {
+    // Race with a concurrent create using the same idempotency key — the
+    // findUnique above already covers the common case; this closes the gap
+    // between it and the create (same pattern as the invoice-number retry below).
+    if (isUniqueConstraintError(err)) {
+      const winner = await prisma.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+      if (winner) return winner;
+    }
+    throw err;
+  }
 }
 
-/** Campaign fee: one payment per campaign; the quote is recomputed server-side from the current pricing. */
+/**
+ * Campaign fee: the quote is recomputed server-side from the current pricing
+ * every time. The idempotency key includes the quoted amount specifically so
+ * a pricing change never silently keeps an old, stale amount attached to a
+ * still-unpaid payment while the campaign displays the new one — it mints a
+ * fresh payment instead, and any other unpaid one for this campaign at the
+ * old amount is canceled so the admin never sees two live quotes for one ad.
+ */
 export async function createCampaignFeePayment(customer: PaymentCustomer, campaignId: string): Promise<{ payment: Payment | null; quote: Quote }> {
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
   if (!campaign) throw notFound("Campaign");
@@ -172,12 +191,24 @@ export async function createCampaignFeePayment(customer: PaymentCustomer, campai
     await prisma.campaign.update({ where: { id: campaignId }, data: { platformFeeCents: 0 } });
     return { payment: null, quote };
   }
+
+  const stale = await prisma.payment.findMany({
+    where: { campaignId, kind: "CAMPAIGN_FEE", status: { in: ["PENDING", "FAILED"] } },
+  });
+  const staleAtOldPrice = stale.filter((p) => p.amountCents !== quote.totalCents || p.currency !== quote.currency);
+  if (staleAtOldPrice.length > 0) {
+    await prisma.payment.updateMany({
+      where: { id: { in: staleAtOldPrice.map((p) => p.id) } },
+      data: { status: "CANCELED", canceledAt: new Date() },
+    });
+  }
+
   const payment = await createPayment({
     customer,
     kind: "CAMPAIGN_FEE",
     description: `Platform service fee — campaign "${campaign.name}"`,
     quote,
-    idempotencyKey: `campaign-fee:${campaign.id}`,
+    idempotencyKey: `campaign-fee:${campaign.id}:${quote.totalCents}${quote.currency}`,
     campaignId: campaign.id,
   });
   await prisma.campaign.update({ where: { id: campaignId }, data: { platformFeeCents: quote.totalCents } });
@@ -221,7 +252,6 @@ export async function collectPayment(payment: Payment, customer: PaymentCustomer
     throw new AppError("VALIDATION", `This payment is ${payment.status.toLowerCase()} and cannot be collected`);
   }
   const base = coreEnv().APP_URL;
-  const attempt = payment.attempts + 1;
   const metadata = { paymentId: payment.id, customerId: customer.id, kind: payment.kind, ...(payment.campaignId ? { campaignId: payment.campaignId } : {}) };
 
   const defaultMethod = customer.defaultPaymentMethodId
@@ -229,7 +259,20 @@ export async function collectPayment(payment: Payment, customer: PaymentCustomer
     : null;
 
   if (opts.allowOffSession && customer.autoPay && defaultMethod) {
-    await prisma.payment.update({ where: { id: payment.id }, data: { status: "PROCESSING", attempts: attempt } });
+    // Compare-and-swap on the row's CURRENT status: only one of two concurrent
+    // triggers on the same payment (e.g. a manual retry vs. the hourly auto-retry
+    // job) can win this update, so they can never mint two distinct, non-deduped
+    // Stripe idempotency keys for what should be a single charge attempt.
+    const claim = await prisma.payment.updateMany({
+      where: { id: payment.id, status: payment.status },
+      data: { status: "PROCESSING", attempts: { increment: 1 } },
+    });
+    const current = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    if (claim.count === 0) {
+      // Someone else already claimed this attempt — hand back the current state
+      // rather than racing them to also charge it.
+      return { payment: current, checkoutUrl: null };
+    }
     const summary = await provider().chargeOffSession({
       customerId: customer.providerCustomerId,
       paymentMethodId: defaultMethod.providerMethodId,
@@ -237,12 +280,13 @@ export async function collectPayment(payment: Payment, customer: PaymentCustomer
       currency: payment.currency,
       description: payment.description,
       metadata,
-      idempotencyKey: `${payment.idempotencyKey}:${attempt}`,
+      idempotencyKey: `${payment.idempotencyKey}:${current.attempts}`,
     });
     const updated = await applyIntent(payment.id, summary, { source: "off_session" });
     return { payment: updated, checkoutUrl: null };
   }
 
+  const attempt = payment.attempts + 1;
   const session = await provider().createPaymentSession({
     customerId: customer.providerCustomerId,
     amountCents: payment.amountCents,
@@ -305,7 +349,7 @@ async function onPaymentSucceeded(payment: Payment, source: string): Promise<voi
       });
       break;
     } catch (err) {
-      if (typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2002") continue;
+      if (isUniqueConstraintError(err)) continue;
       log.warn("invoice not created", { paymentId: payment.id, ...errorFields(err) });
       break;
     }
@@ -382,7 +426,7 @@ export async function recordAndProcessEvent(event: ProviderEvent): Promise<"proc
       data: { provider: "stripe", providerEventId: event.id, type: event.type, payload: event as unknown as Prisma.InputJsonValue, status: "RECEIVED" },
     });
   } catch (err) {
-    if (typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2002") return "duplicate";
+    if (isUniqueConstraintError(err)) return "duplicate";
     throw err;
   }
   try {

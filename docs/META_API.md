@@ -246,3 +246,36 @@ holds. Two paths exist for a SaaS in this position:
 `7` Pending risk review, `8` Pending settlement, `9` In grace period, `100` Pending closure, `101` Closed.
 `201`/`202` are query *filter* values only (`ANY_ACTIVE`/`ANY_CLOSED`) — Meta never returns them on a real
 account, so they are not in the label map.
+
+## 15. Comment AI-reply, resource-sending, and Campaign–Lead-Button linking (2026-09-13)
+
+**AI replies to comments** — `handleComment` (`src/lib/queue/handlers.ts`) now always enqueues
+`comment.ai_reply` alongside the existing `runAutomations("COMMENT_RECEIVED", …)` call (the two are
+independent, exactly like `MESSAGE_RECEIVED` automations vs. `ai.reply` for DMs). The job runs
+`generateAndSendCommentReply` (`src/lib/agent/runtime.ts`), gated on `AIAgent.commentReplyEnabled`
+(previously a fully wired but unread toggle), and posts via the existing public
+`POST /{comment-id}/replies` (`replyToComment`). No 24h-window check applies — that rule is DM-specific —
+and there is no "away message" outside working hours; it just stays quiet. Tool access is restricted to
+READ-tier only (`COMMENT_SAFE_TOOL_IDS`): every WRITE/HIGH_RISK tool's `execute()` treats a null
+`ctx.conversation` (there is no Conversation for a comment) as the test console and only *describes* an
+action, so offering them for a live comment reply would silently do nothing while the model believes it
+acted.
+
+**Send a resource to commenters on a selected post** — a new `CommentResource` model (deliberately
+separate from `MediaAsset`, which is publish-pipeline-only and JPEG/MP4/MOV-only) stores a file an admin
+uploads, served publicly at `/r/{id}`. A rule (`Automation`, optionally scoped to one `contentId` via the
+new `SEND_COMMENT_RESOURCE` action) sends it as a **private reply** (`sendPrivateReplyResourceToComment`,
+`src/lib/meta/messaging.ts`) — never a public one, since Meta's public comment-reply endpoint is text-only.
+Honest about what Instagram's Send API actually supports: an IMAGE/VIDEO resource attaches as a real
+`message.attachment` (documented types only — there is no generic "file" attachment, unlike Messenger);
+anything else (PDF, DOCX, ZIP) sends as a link inside the text instead of pretending to attach. A caption
+alongside a native attachment goes out as a separate, second message rather than an unconfirmed combined
+payload — see `buildResourceMessages`.
+
+**Campaign ↔ Lead Button linking** — `Campaign.ctaConfigId` (new, nullable FK to `CtaConfig`) lets a boost
+reference the account's Lead Button (`CtaConfig` kind `EXTERNAL_LINK`) it was built from. Read live only at
+`buildCreative()` time (`resolveCtaAndUrl`, `src/lib/meta/marketing.ts`) — never re-synced afterward, because
+Meta ad creatives are immutable once created, so there is no later moment where re-deriving it would matter.
+The Lead Button itself stays what it already was: **one CtaConfig per account** (`loadLeadButton` in
+`src/app/api/lead-button/route.ts` never scopes by `contentId`) — "does this reel have a Lead Button"
+reduces to "is the account's one Lead Button currently pointed at this reel, or at none in particular."

@@ -5,7 +5,8 @@ import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathPa
 import { requireAdmin } from "@/lib/auth/guard";
 import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
-import { notFound } from "@/lib/errors";
+import { notFound, validationError } from "@/lib/errors";
+import { conditionSchema, actionSchema } from "@/lib/validation/automation";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (_req, ctx: RouteCtx) => {
@@ -24,8 +25,10 @@ const updateSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   description: z.string().max(500).nullable().optional(),
   enabled: z.boolean().optional(),
-  conditions: z.array(z.object({ field: z.string(), op: z.string(), value: z.string() })).max(10).optional(),
-  actions: z.array(z.object({ type: z.string(), params: z.record(z.unknown()) })).min(1).max(10).optional(),
+  /** Scopes a COMMENT_RECEIVED rule to one post/reel; null = every post on the account. */
+  contentId: z.string().min(1).nullable().optional(),
+  conditions: z.array(conditionSchema).max(10).optional(),
+  actions: z.array(actionSchema).min(1).max(10).optional(),
 });
 
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
@@ -38,12 +41,29 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   if (!existing) throw notFound("Automation");
   await assertAccountAccess(auth, existing.accountId);
 
+  if (body.contentId) {
+    const content = await prisma.contentItem.findFirst({ where: { id: body.contentId, accountId: existing.accountId } });
+    if (!content) throw validationError("Selected post/reel does not belong to this account");
+  }
+  for (const action of body.actions ?? []) {
+    if (action.type !== "SEND_COMMENT_RESOURCE") continue;
+    if (action.params.resourceId) {
+      const resource = await prisma.commentResource.findFirst({ where: { id: action.params.resourceId, accountId: existing.accountId } });
+      if (!resource) throw validationError("Selected resource does not belong to this account");
+    }
+    if (action.params.agentId) {
+      const agent = await prisma.aIAgent.findFirst({ where: { id: action.params.agentId, accountId: existing.accountId } });
+      if (!agent) throw validationError("Selected agent does not belong to this account");
+    }
+  }
+
   const automation = await prisma.automation.update({
     where: { id },
     data: {
       name: body.name,
       description: body.description,
       enabled: body.enabled,
+      contentId: body.contentId !== undefined ? body.contentId : undefined,
       conditions: body.conditions !== undefined ? (body.conditions as unknown as Prisma.InputJsonValue) : undefined,
       actions: body.actions !== undefined ? (body.actions as unknown as Prisma.InputJsonValue) : undefined,
     },

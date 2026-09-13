@@ -29,9 +29,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ToggleRow } from "@/components/ui/switch";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Field, Input } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { cn, centsToMoney, formatDate } from "@/lib/utils";
-import type { Pricing, Quote } from "@/lib/billing/pricing";
+import { SUPPORTED_PRICING_CURRENCIES, type Pricing, type Quote } from "@/lib/billing/pricing";
 
 /**
  * Billing — the platform's own service payments. Meta advertising spend never
@@ -546,8 +546,14 @@ function PricingCard({ pricing, onSaved }: { pricing: Pricing; onSaved: () => Pr
       <CardBody className="space-y-3">
         {free && <p className="rounded-lg bg-(--color-panel-2) px-3 py-2 text-xs text-(--color-fg-muted)">{t.free}</p>}
         <div className="grid gap-3 sm:grid-cols-3">
-          <Field label={t.currency}>
-            <Input value={form.currency} maxLength={3} onChange={f("currency")} />
+          <Field label={t.currency} hint={t.currencyHint}>
+            <Select value={form.currency} onChange={(e) => setForm((prev) => ({ ...prev, currency: e.target.value }))}>
+              {SUPPORTED_PRICING_CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </Select>
           </Field>
           <Field label={`${t.campaignFee} (${form.currency})`}>
             <Input type="number" min="0" step="0.01" value={form.campaignFee} onChange={f("campaignFee")} />

@@ -13,14 +13,16 @@ import { Segmented } from "@/components/ui/input";
 import { AgentsTab } from "./agents-tab";
 import { RulesTab } from "./rules-tab";
 import { KnowledgeTab } from "./knowledge-tab";
+import { ResourcesTab } from "./resources-tab";
 
 /**
  * AI & Automation — one place for everything the platform does on its own:
- * agents (who answers), rules (when → then), knowledge (what the AI may say).
- * The active tab lives in ?tab= so every tab is linkable.
+ * agents (who answers), rules (when → then), knowledge (what the AI may say),
+ * resources (files rules can hand to commenters). The active tab lives in
+ * ?tab= so every tab is linkable.
  */
 
-const TABS = ["agents", "rules", "knowledge"] as const;
+const TABS = ["agents", "rules", "knowledge", "resources"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function AutomationPage() {
@@ -74,6 +76,7 @@ function AutomationInner() {
           {tab === "agents" && <AgentsTab accountId={selected.id} />}
           {tab === "rules" && <RulesTab accountId={selected.id} />}
           {tab === "knowledge" && <KnowledgeTab accountId={selected.id} />}
+          {tab === "resources" && <ResourcesTab accountId={selected.id} />}
         </>
       )}
     </div>

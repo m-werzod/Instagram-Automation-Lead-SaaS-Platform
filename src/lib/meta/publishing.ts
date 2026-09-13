@@ -246,6 +246,8 @@ export async function runPublishJob(jobId: string): Promise<void> {
   try {
     let containerId = job.containerId;
     if (!containerId) {
+      // Pure/deterministic given the job's own fields — cheap to recompute on
+      // every re-entry, so children created on an earlier pass are never lost.
       const params = buildContainerParams({
         mediaType: job.mediaType as PublishMediaType,
         items,
@@ -253,24 +255,45 @@ export async function runPublishJob(jobId: string): Promise<void> {
         shareToFeed: job.shareToFeed,
         coverUrl: job.coverUrl,
       });
-      const childIds: string[] = [];
-      for (const child of params.children) {
-        const res = await graphCall<{ id: string }>({ host: access.host, method: "POST", path: `${ig}/media`, accessToken: access.accessToken, body: child });
-        childIds.push(res.id);
+
+      // Reuse children already created on an earlier pass — creating them fresh
+      // every poll would spawn a new set each cycle and never converge for a
+      // carousel whose items take longer than one poll interval to process.
+      let childIds = job.childContainerIds;
+      if (childIds.length === 0 && params.children.length > 0) {
+        const created: string[] = [];
+        for (const child of params.children) {
+          const res = await graphCall<{ id: string }>({ host: access.host, method: "POST", path: `${ig}/media`, accessToken: access.accessToken, body: child });
+          created.push(res.id);
+        }
+        childIds = created;
+        await prisma.publishJob.update({ where: { id: job.id }, data: { childContainerIds: childIds } });
       }
+
       if (childIds.length > 0) {
-        // children must finish processing before the parent can reference them
+        // children must ALL finish processing before the parent can reference them
+        let allFinished = true;
         for (const childId of childIds) {
           const st = parseContainerStatus(
             await graphCall<Record<string, unknown>>({ host: access.host, path: childId, accessToken: access.accessToken, params: { fields: "status_code,status" } }),
           );
           if (st.code === "ERROR" || st.code === "EXPIRED") throw new AppError("META_API_ERROR", `Instagram rejected a carousel item: ${st.message ?? st.code}`);
-          if (st.code === "IN_PROGRESS") {
-            await prisma.publishJob.update({ where: { id: job.id }, data: { childContainerIds: childIds, attempts: { increment: 1 } } });
-            return requeue(job, job.attempts + 1);
+          if (st.code === "IN_PROGRESS" || st.code === "UNKNOWN") {
+            allFinished = false;
+            break; // no point polling the rest this pass
           }
         }
+        if (!allFinished) {
+          const attempts = job.attempts + 1;
+          if (attempts > MAX_POLL_ATTEMPTS) {
+            await fail(job.id, "Instagram did not finish processing a carousel item in time. Check the files (format, length, size) and retry.");
+            return;
+          }
+          await prisma.publishJob.update({ where: { id: job.id }, data: { attempts } });
+          return requeue(job, attempts);
+        }
       }
+
       const main = await graphCall<{ id: string }>({
         host: access.host,
         method: "POST",

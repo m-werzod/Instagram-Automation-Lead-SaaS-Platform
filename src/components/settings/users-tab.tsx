@@ -279,13 +279,14 @@ function CreateUserDialog({ me, onCreated }: { me: Me; onCreated: () => Promise<
           {role === "USER" && (
             <Field label={t.accounts} hint={t.accountsHint}>
               <AccountPicker value={accountIds} onChange={setAccountIds} />
+              {accountIds.length === 0 && <p className="mt-1.5 text-[11px] text-(--color-warn)">{t.selectAtLeastOne}</p>}
             </Field>
           )}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setOpen(false)}>
               {d.common.cancel}
             </Button>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || (role === "USER" && accountIds.length === 0)}>
               {busy ? d.common.saving : d.common.create}
             </Button>
           </div>
@@ -380,6 +381,7 @@ function ManageUserDialog({
           {role === "USER" && (
             <Field label={t.accounts} hint={t.accountsHint}>
               <AccountPicker value={accountIds} onChange={setAccountIds} />
+              {accountIds.length === 0 && <p className="mt-1.5 text-[11px] text-(--color-warn)">{t.selectAtLeastOne}</p>}
             </Field>
           )}
           <Field label={t.newPassword}>
@@ -406,7 +408,7 @@ function ManageUserDialog({
               <Button variant="secondary" onClick={onClose}>
                 {d.common.cancel}
               </Button>
-              <Button disabled={busy} onClick={() => void save()}>
+              <Button disabled={busy || (role === "USER" && accountIds.length === 0)} onClick={() => void save()}>
                 {busy ? d.common.saving : d.common.save}
               </Button>
             </div>

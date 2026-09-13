@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveAccountFilter, whereFromFilter, isStaff } from "@/lib/auth/access";
+import { resolveAccountFilter, whereFromFilter, isStaff, wouldLeaveUserWithoutAccounts } from "@/lib/auth/access";
 
 /**
  * Account-level authorization is decided by one pure function so the rules
@@ -53,5 +53,41 @@ describe("isStaff", () => {
     expect(isStaff(ctx("OWNER"))).toBe(true);
     expect(isStaff(ctx("ADMIN"))).toBe(true);
     expect(isStaff(ctx("USER"))).toBe(false);
+  });
+});
+
+/**
+ * A USER with zero granted Instagram accounts signs in to a completely empty
+ * platform — this pure decision is what both /api/admin/admins routes call
+ * before writing anything, so it is pinned down here rather than only ever
+ * being exercised through a live Prisma call.
+ */
+describe("wouldLeaveUserWithoutAccounts", () => {
+  it("never blocks OWNER/ADMIN — the whole question is USER-only", () => {
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "OWNER", roleIsChanging: true, providedAccountIds: [], existingGrantCount: 0 })).toBe(false);
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "ADMIN", roleIsChanging: false, existingGrantCount: 0 })).toBe(false);
+  });
+
+  it("blocks creating/editing a USER with an explicitly empty account list", () => {
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "USER", roleIsChanging: true, providedAccountIds: [], existingGrantCount: 0 })).toBe(true);
+  });
+
+  it("de-dupes the provided list before judging it empty", () => {
+    expect(
+      wouldLeaveUserWithoutAccounts({ finalRole: "USER", roleIsChanging: true, providedAccountIds: ["a", "a"], existingGrantCount: 0 }),
+    ).toBe(false);
+  });
+
+  it("allows a non-empty account list", () => {
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "USER", roleIsChanging: true, providedAccountIds: ["a"], existingGrantCount: 0 })).toBe(false);
+  });
+
+  it("when accountIds isn't touched, only checks existing grants if the role is newly becoming USER", () => {
+    // unrelated edit (e.g. renaming) on an admin who is already USER — not this request's problem
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "USER", roleIsChanging: false, existingGrantCount: 0 })).toBe(false);
+    // role is being changed to USER right now, and they already hold a grant — fine
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "USER", roleIsChanging: true, existingGrantCount: 1 })).toBe(false);
+    // role is being changed to USER right now, with no grants at all — refuse
+    expect(wouldLeaveUserWithoutAccounts({ finalRole: "USER", roleIsChanging: true, existingGrantCount: 0 })).toBe(true);
   });
 });

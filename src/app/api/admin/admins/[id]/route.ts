@@ -1,12 +1,16 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { route, ok, parseBody, assertSameOrigin, clientIp, type RouteCtx, pathParam } from "@/lib/api";
+import { route, ok, parseBody, assertSameOrigin, clientIp, enforceRateLimit, type RouteCtx, pathParam } from "@/lib/api";
 import { requireStaff } from "@/lib/auth/guard";
 import { hashPassword, checkPasswordPolicy, checkLoginFormat, normalizeLogin } from "@/lib/auth/password";
 import { forbidden, notFound, validationError } from "@/lib/errors";
 import { audit, AuditActions } from "@/lib/audit";
 import { revokeAllSessionsForAdmin } from "@/lib/auth/session";
+import { wouldLeaveUserWithoutAccounts } from "@/lib/auth/access";
+import { LIMITS } from "@/lib/rate-limit";
+import { isUniqueConstraintError } from "@/lib/prisma-errors";
 
 /**
  * One user: detail (what they hold, what they did), update (role, active,
@@ -85,6 +89,7 @@ const updateSchema = z.object({
 export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireStaff();
+  enforceRateLimit(`admin-write:${auth.admin.id}`, LIMITS.ADMIN_WRITE.limit, LIMITS.ADMIN_WRITE.windowMs);
   const id = await pathParam(ctx, "id");
   const body = await parseBody(req, updateSchema);
 
@@ -121,7 +126,14 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
     if (clash && clash.id !== id) throw validationError("A user with this login already exists");
     data.login = login;
   }
-  if (body.email !== undefined) data.email = body.email ? body.email.trim().toLowerCase() : null;
+  if (body.email !== undefined) {
+    const email = body.email ? body.email.trim().toLowerCase() : null;
+    if (email) {
+      const clash = await prisma.admin.findUnique({ where: { email } });
+      if (clash && clash.id !== id) throw validationError("A user with this email already exists");
+    }
+    data.email = email;
+  }
   if (body.name !== undefined) data.name = body.name;
   if (body.role !== undefined) data.role = body.role;
   if (body.isActive !== undefined) data.isActive = body.isActive;
@@ -132,7 +144,25 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   }
 
   const finalRole = body.role ?? target.role;
+
+  // A USER with zero granted accounts signs in to a completely empty platform —
+  // refuse rather than silently produce one.
+  if (
+    wouldLeaveUserWithoutAccounts({
+      finalRole,
+      roleIsChanging: body.role !== undefined,
+      providedAccountIds: body.accountIds,
+      existingGrantCount:
+        body.accountIds === undefined && body.role !== undefined
+          ? await prisma.accountAccess.count({ where: { adminId: id } })
+          : 0,
+    })
+  ) {
+    throw validationError("A USER must have at least one Instagram account assigned");
+  }
+
   let grantedAccounts: number | undefined;
+  const accountOps: Prisma.PrismaPromise<unknown>[] = [];
   if (body.accountIds !== undefined || (body.role !== undefined && body.role !== "USER")) {
     // Staff are unrestricted, so a promotion clears the (now meaningless) grants.
     const accountIds = finalRole === "USER" ? [...new Set(body.accountIds ?? [])] : [];
@@ -140,7 +170,7 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
       const found = await prisma.instagramAccount.count({ where: { id: { in: accountIds } } });
       if (found !== accountIds.length) throw validationError("One of the selected Instagram accounts does not exist");
     }
-    await prisma.$transaction([
+    accountOps.push(
       prisma.accountAccess.deleteMany({
         where: { adminId: id, ...(accountIds.length ? { accountId: { notIn: accountIds } } : {}) },
       }),
@@ -151,15 +181,36 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
           update: {},
         }),
       ),
-    ]);
+    );
     grantedAccounts = accountIds.length;
   }
 
-  const updated = await prisma.admin.update({
-    where: { id },
-    data,
-    select: { id: true, login: true, email: true, name: true, role: true, isActive: true, lastLoginAt: true },
-  });
+  // One transaction for the account-access change AND the admin row itself, so a
+  // failure on either side (e.g. a last-second unique-constraint race) can never
+  // leave one half committed while the other silently didn't happen.
+  let updated;
+  try {
+    const results = await prisma.$transaction([
+      ...accountOps,
+      prisma.admin.update({
+        where: { id },
+        data,
+        select: { id: true, login: true, email: true, name: true, role: true, isActive: true, lastLoginAt: true },
+      }),
+    ]);
+    updated = results[results.length - 1] as {
+      id: string;
+      login: string;
+      email: string | null;
+      name: string;
+      role: "OWNER" | "ADMIN" | "USER";
+      isActive: boolean;
+      lastLoginAt: Date | null;
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) throw validationError("A user with this login or email already exists");
+    throw err;
+  }
 
   // Password change, suspension or a role change kills existing sessions.
   if (data.passwordHash || body.isActive === false || (body.role !== undefined && body.role !== target.role)) {

@@ -59,6 +59,30 @@ function noAccess() {
   return forbidden("You do not have access to this Instagram account");
 }
 
+export interface UserAccountGuardInput {
+  /** the role this admin will have once the current request is applied */
+  finalRole: Role;
+  /** true when this request is setting/changing the `role` field at all */
+  roleIsChanging: boolean;
+  /** accountIds explicitly provided in this request, or undefined if the request doesn't touch them */
+  providedAccountIds?: string[];
+  /** rows already granted to this admin — only consulted when the role is newly becoming USER with no accountIds in this request */
+  existingGrantCount: number;
+}
+
+/**
+ * Pure decision (unit-tested): a USER with zero granted Instagram accounts signs
+ * in to a completely empty platform, so admin create/update routes refuse to
+ * produce one. Only asks "would THIS request cause that" — an already-USER
+ * admin who already has zero grants is not retroactively blocked by an
+ * unrelated edit (e.g. changing their display name).
+ */
+export function wouldLeaveUserWithoutAccounts(input: UserAccountGuardInput): boolean {
+  if (input.finalRole !== "USER") return false;
+  if (input.providedAccountIds !== undefined) return new Set(input.providedAccountIds).size === 0;
+  return input.roleIsChanging && input.existingGrantCount === 0;
+}
+
 export async function grantedAccountIds(adminId: string): Promise<string[]> {
   const rows = await prisma.accountAccess.findMany({ where: { adminId }, select: { accountId: true } });
   return rows.map((r) => r.accountId);

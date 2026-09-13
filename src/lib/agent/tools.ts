@@ -347,7 +347,18 @@ export const DEFAULT_ALLOWED_TOOLS = [
   "do_not_reply",
 ];
 
-export function resolveAgentTools(agent: AIAgent): AgentTool[] {
+/**
+ * Tools safe to offer on a comment reply (public, no Conversation). Every
+ * WRITE/HIGH_RISK tool's `execute()` treats a null `ctx.conversation` as the
+ * test console (`simulated()` above) and only DESCRIBES the action instead of
+ * doing it — reusing runAgentTurn for a REAL comment reply must never land in
+ * that describe-only mode, so comment turns only ever offer READ-tier tools.
+ */
+export const COMMENT_SAFE_TOOL_IDS = AGENT_TOOLS.filter((t) => t.risk === "READ").map((t) => t.id);
+
+/** `allowedIds`, when given, additionally restricts the set below whatever the agent itself allows. */
+export function resolveAgentTools(agent: AIAgent, allowedIds?: string[]): AgentTool[] {
   const allowed = new Set(agent.allowedTools);
-  return AGENT_TOOLS.filter((t) => allowed.has(t.id));
+  const restriction = allowedIds ? new Set(allowedIds) : null;
+  return AGENT_TOOLS.filter((t) => allowed.has(t.id) && (!restriction || restriction.has(t.id)));
 }

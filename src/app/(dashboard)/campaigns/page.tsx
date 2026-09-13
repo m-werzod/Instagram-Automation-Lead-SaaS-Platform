@@ -38,6 +38,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input } from "@/components/ui/input";
 import { centsToMoney, formatDate, timeAgo, truncate } from "@/lib/utils";
 import { CampaignWizard, type ContentOption, type WizardInitial, type WizardOptions } from "@/components/campaigns/campaign-wizard";
+import { AdBillingBanner, type AdBillingStatus } from "@/components/campaigns/ad-billing-status";
 import { computeCampaignQuote, type Pricing } from "@/lib/billing/pricing";
 
 /**
@@ -139,6 +140,7 @@ function CampaignsInner() {
   const [pricing, setPricing] = React.useState<Pricing | null>(null);
   const [contentOptions, setContentOptions] = React.useState<ContentOption[]>([]);
   const [currency, setCurrency] = React.useState("USD");
+  const [billingStatus, setBillingStatus] = React.useState<AdBillingStatus | null>(null);
   const [wizardOpen, setWizardOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<WizardInitial | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -188,6 +190,15 @@ function CampaignsInner() {
       })
       .catch(() => undefined);
   }, [selected?.id, selected?.adAccountId, selected]);
+
+  // Whether Meta will actually let this ad account spend — read-only, never a card entry.
+  React.useEffect(() => {
+    if (!selected) return;
+    setBillingStatus(null);
+    api<AdBillingStatus>(`/api/instagram/accounts/${selected.id}/ad-billing-status`, { silent: true })
+      .then(setBillingStatus)
+      .catch(() => undefined);
+  }, [selected?.id, selected]);
 
   async function run(c: CampaignRow, label: string, fn: () => Promise<unknown>, successMessage?: string) {
     setBusy(`${c.id}:${label}`);
@@ -252,6 +263,8 @@ function CampaignsInner() {
         </div>
       )}
 
+      {selected.adAccountId && <AdBillingBanner status={billingStatus} />}
+
       <Card className="overflow-hidden">
         <CardBody className="flex flex-wrap items-center justify-between gap-3 py-3">
           <FlowStep n={1} color="var(--color-fg-muted)" icon={<PencilLine size={15} />} label={d.campaigns.statuses.DRAFT} />
@@ -315,6 +328,7 @@ function CampaignsInner() {
           contentOptions={contentOptions}
           prefill={editing ? null : prefill}
           initial={editing}
+          billingStatus={billingStatus}
           onSaved={load}
         />
       )}

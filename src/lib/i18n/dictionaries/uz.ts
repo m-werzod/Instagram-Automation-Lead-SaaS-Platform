@@ -962,6 +962,15 @@ export const uz = {
         name: "Kampaniyaga nom bering",
       },
     },
+    billingStatus: {
+      ready: "Meta bu reklama hisobidan yechib ola oladi",
+      billedByMeta: "Meta tomonidan yechiladi, bu platforma tomonidan emas",
+      notReady: (status: string) => `Meta reklama hisobi holati: ${status}`,
+      explain: "Kampaniyalar haqiqatan sarflay olishi uchun to‘g‘ridan-to‘g‘ri Metada to‘lov usulini qo‘shing. Reklama hisobi:",
+      unknown: "Meta bu reklama hisobi uchun to‘lov holatini bermadi",
+      checking: "Metadan tekshirilmoqda…",
+      openMetaBilling: "Meta to‘lovlarini ochish",
+    },
     card: {
       inMeta: "Metada",
       live: "Metadan jonli",

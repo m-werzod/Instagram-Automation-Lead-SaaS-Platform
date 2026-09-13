@@ -224,3 +224,25 @@ endpoints back them, so the capability table above stays honest as code, not jus
   Engagement, `reach` for Awareness) rather than guessed.
 - **Ad preview**: `GET /{metaCreativeId}/previews?ad_format=…` returns Meta's own rendered iframe HTML —
   used as-is, never re-implemented visually.
+
+## 14. Paying for Meta ad spend (decided 2026-09-13 — Path 1)
+
+There is no Marketing API endpoint that lets a third-party app submit a card and have Meta charge it as
+ad spend, and none is planned by Meta — ad accounts are billed only through a payment method Meta itself
+holds. Two paths exist for a SaaS in this position:
+
+- **Path 1 (implemented)**: each Instagram account's own ad account keeps its own Meta payment method,
+  added by its owner directly at Meta's billing hub. This platform only *reads* that account's status —
+  `GET /{ad-account-id}?fields=account_status,disable_reason,funding_source_details` — and links straight
+  to `https://business.facebook.com/billing_hub/payment_settings` when it isn't ready. No card is ever
+  collected, forwarded, or charged by this codebase for Meta spend. See `fetchAdAccountBillingStatus` in
+  `src/lib/meta/marketing.ts` and the `AdBillingBanner`/`AdBillingInline` components.
+- **Path 2 (not implemented)**: the platform runs its own umbrella ad account, funds it with its own
+  card, and resells spend to users as prepaid credit via Stripe. Real financial exposure (Meta's delivery
+  can outpace a pause by a short margin) and a materially larger build (wallet ledger, spend
+  reconciliation, hard caps) — deliberately not built unless the business model specifically calls for it.
+
+`account_status` codes returned by Meta (verified 2026-09-13): `1` Active, `2` Disabled, `3` Unsettled,
+`7` Pending risk review, `8` Pending settlement, `9` In grace period, `100` Pending closure, `101` Closed.
+`201`/`202` are query *filter* values only (`ANY_ACTIVE`/`ANY_CLOSED`) — Meta never returns them on a real
+account, so they are not in the label map.

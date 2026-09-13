@@ -974,6 +974,15 @@ export const ru = {
         name: "Дайте кампании название",
       },
     },
+    billingStatus: {
+      ready: "Meta может списывать с этого рекламного аккаунта",
+      billedByMeta: "Списывает Meta, а не эта платформа",
+      notReady: (status: string) => `Статус рекламного аккаунта Meta: ${status}`,
+      explain: "Добавьте способ оплаты напрямую в Meta, чтобы кампании могли реально расходовать бюджет. Рекламный аккаунт:",
+      unknown: "Meta не сообщила статус оплаты для этого рекламного аккаунта",
+      checking: "Проверка в Meta…",
+      openMetaBilling: "Открыть биллинг Meta",
+    },
     card: {
       inMeta: "В Meta",
       live: "Данные Meta",

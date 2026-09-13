@@ -963,6 +963,15 @@ export const en = {
         name: "Give the campaign a name",
       },
     },
+    billingStatus: {
+      ready: "Meta can charge this ad account",
+      billedByMeta: "Billed by Meta, not by this platform",
+      notReady: (status: string) => `Meta ad account status: ${status}`,
+      explain: "Add a payment method directly with Meta so campaigns can actually spend. Ad account:",
+      unknown: "Meta did not report a billing status for this ad account",
+      checking: "Checking with Meta…",
+      openMetaBilling: "Open Meta Billing",
+    },
     card: {
       inMeta: "In Meta",
       live: "Live from Meta",

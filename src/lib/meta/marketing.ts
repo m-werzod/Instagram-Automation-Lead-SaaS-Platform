@@ -691,3 +691,78 @@ export async function listAdAccounts(account: InstagramAccount) {
   });
   return res.data ?? [];
 }
+
+// ---- ad-account billing status ("pay Meta directly", kept entirely on Meta's own rails) ----
+
+/**
+ * Meta's own account_status enum (Marketing API `AdAccount.account_status`,
+ * verified 2026-09-13). 201/202 are query FILTER values only — Meta never
+ * returns them on a real account, so they are deliberately not mapped here.
+ */
+export const AD_ACCOUNT_STATUS_LABELS: Record<number, string> = {
+  1: "Active",
+  2: "Disabled",
+  3: "Unsettled — a bill is unpaid",
+  7: "Pending risk review",
+  8: "Pending settlement",
+  9: "In grace period — payment is overdue",
+  100: "Pending closure",
+  101: "Closed",
+};
+
+export interface AdAccountBillingStatus {
+  adAccountId: string;
+  /** Meta's raw account_status code; null when Meta returned nothing usable. */
+  statusCode: number | null;
+  statusLabel: string;
+  /** true only when Meta confirms both a healthy status AND a funding source on file. */
+  readyToSpend: boolean;
+  /** Display string for the card/method on file (e.g. "Visa ****1234"), when Meta returns one. */
+  fundingSourceDisplay: string | null;
+  disableReason: string | null;
+}
+
+/** Reads Meta's own words on whether this ad account is a real place to spend money — never guessed locally. */
+export function parseAdAccountBillingStatus(adAccountId: string, json: Record<string, unknown>): AdAccountBillingStatus {
+  const rawStatus = json.account_status;
+  const statusCode = typeof rawStatus === "number" ? rawStatus : Number.isFinite(Number(rawStatus)) ? Number(rawStatus) : null;
+  const funding = json.funding_source_details as { display_string?: string } | undefined;
+  const fundingSourceDisplay = typeof funding?.display_string === "string" && funding.display_string.trim() ? funding.display_string.trim() : null;
+  const disableReasonCode = json.disable_reason;
+  return {
+    adAccountId,
+    statusCode,
+    statusLabel: statusCode !== null ? (AD_ACCOUNT_STATUS_LABELS[statusCode] ?? `Meta status ${statusCode}`) : "Unknown — Meta did not report a status",
+    readyToSpend: statusCode === 1 && fundingSourceDisplay !== null,
+    fundingSourceDisplay,
+    disableReason: disableReasonCode !== undefined && disableReasonCode !== null && disableReasonCode !== 0 ? String(disableReasonCode) : null,
+  };
+}
+
+/**
+ * The ONLY payment-method check this platform performs for Meta ad spend: a
+ * read of the ad account's own status. Never a card entry, never a charge —
+ * Meta requires that to happen on Meta's own hosted billing page, verified at
+ * https://www.facebook.com/business/help/132073386867900. If Meta returns
+ * nothing usable (older API tiers sometimes omit funding_source_details),
+ * this reports "unknown" rather than asserting a false positive or negative.
+ */
+export async function fetchAdAccountBillingStatus(account: InstagramAccount): Promise<AdAccountBillingStatus | null> {
+  if (!account.adAccountId) return null;
+  const access = await resolveAdsAccess(account);
+  try {
+    const json = await graphCall<Record<string, unknown>>({
+      host: "graph.facebook.com",
+      path: account.adAccountId,
+      accessToken: access.accessToken,
+      params: { fields: "account_status,disable_reason,funding_source_details" },
+    });
+    return parseAdAccountBillingStatus(account.adAccountId, json);
+  } catch (err) {
+    log.warn("ad account billing status unavailable", { accountId: account.id, ...errorFields(err) });
+    return null;
+  }
+}
+
+/** Meta's own billing page. There is no query parameter Meta guarantees will preselect one ad account across every Business Manager version, so the UI shows the account name/id next to this link instead of pretending one exists. */
+export const META_BILLING_HUB_URL = "https://business.facebook.com/billing_hub/payment_settings";

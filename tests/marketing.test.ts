@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCallToAction,
   buildTargeting,
+  parseAdAccountBillingStatus,
   parseCampaignInsights,
   parseReachEstimate,
   statusFromMeta,
@@ -141,5 +142,42 @@ describe("campaign input validation", () => {
     expect(campaignFieldsProblem({ lifetimeBudgetCents: 5000 })).toMatch(/end date/);
     expect(campaignFieldsProblem({ dailyBudgetCents: 500, startTime: "2026-09-20T00:00:00Z", endTime: "2026-09-10T00:00:00Z" })).toMatch(/after/);
     expect(campaignFieldsProblem({ dailyBudgetCents: 500 })).toBeNull();
+  });
+});
+
+describe("ad account billing status (Path 1 — Meta bills the ad account directly)", () => {
+  it("is ready to spend only with a healthy status AND a funding source on file", () => {
+    const ok = parseAdAccountBillingStatus("act_1", { account_status: 1, funding_source_details: { display_string: "Visa ****1234" } });
+    expect(ok).toEqual({
+      adAccountId: "act_1",
+      statusCode: 1,
+      statusLabel: "Active",
+      readyToSpend: true,
+      fundingSourceDisplay: "Visa ****1234",
+      disableReason: null,
+    });
+  });
+  it("is NOT ready when active but no funding source is on file yet", () => {
+    const r = parseAdAccountBillingStatus("act_1", { account_status: 1 });
+    expect(r.readyToSpend).toBe(false);
+    expect(r.fundingSourceDisplay).toBeNull();
+    expect(r.statusLabel).toBe("Active");
+  });
+  it("labels the documented Meta status codes and never fabricates readiness", () => {
+    expect(parseAdAccountBillingStatus("a", { account_status: 3 }).statusLabel).toMatch(/Unsettled/);
+    expect(parseAdAccountBillingStatus("a", { account_status: 9 }).statusLabel).toMatch(/grace period/);
+    expect(parseAdAccountBillingStatus("a", { account_status: 2, funding_source_details: { display_string: "Visa" } }).readyToSpend).toBe(false);
+  });
+  it("falls back honestly when Meta returns an undocumented or missing status", () => {
+    const unknownCode = parseAdAccountBillingStatus("a", { account_status: 555 });
+    expect(unknownCode.statusLabel).toBe("Meta status 555");
+    const missing = parseAdAccountBillingStatus("a", {});
+    expect(missing.statusCode).toBeNull();
+    expect(missing.statusLabel).toMatch(/did not report/);
+    expect(missing.readyToSpend).toBe(false);
+  });
+  it("ignores a zero disable_reason (Meta's 'no reason' sentinel)", () => {
+    expect(parseAdAccountBillingStatus("a", { account_status: 1, disable_reason: 0 }).disableReason).toBeNull();
+    expect(parseAdAccountBillingStatus("a", { account_status: 2, disable_reason: 1 }).disableReason).toBe("1");
   });
 });

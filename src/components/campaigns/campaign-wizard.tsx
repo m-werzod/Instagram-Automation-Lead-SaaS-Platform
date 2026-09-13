@@ -11,6 +11,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Segmented, Select, Textarea } from "@/components/ui/input";
 import { cn, centsToMoney } from "@/lib/utils";
 import { AdPhonePreview } from "./ad-preview";
+import { AdBillingInline, type AdBillingStatus } from "./ad-billing-status";
 import { computeCampaignQuote, type Pricing } from "@/lib/billing/pricing";
 
 /**
@@ -196,6 +197,7 @@ export function CampaignWizard({
   contentOptions,
   prefill,
   initial,
+  billingStatus,
   onSaved,
 }: {
   open: boolean;
@@ -209,6 +211,7 @@ export function CampaignWizard({
   contentOptions: ContentOption[];
   prefill?: { contentId?: string; ctaType?: string | null; destinationUrl?: string } | null;
   initial?: WizardInitial | null;
+  billingStatus?: AdBillingStatus | null;
   onSaved: () => Promise<void>;
 }) {
   const { d } = useI18n();
@@ -505,6 +508,7 @@ export function CampaignWizard({
                 adsReady={adsReady}
                 onEstimate={getEstimate}
                 pricing={pricing}
+                billingStatus={billingStatus ?? null}
               />
             )}
 
@@ -771,6 +775,7 @@ function ReviewStep({
   adsReady,
   onEstimate,
   pricing,
+  billingStatus,
 }: {
   draft: WizardDraft;
   objectiveLabel: string;
@@ -781,6 +786,7 @@ function ReviewStep({
   adsReady: boolean;
   onEstimate: () => void;
   pricing: Pricing | null;
+  billingStatus: AdBillingStatus | null;
 }) {
   const { d } = useI18n();
   const t = d.campaigns.wizard;
@@ -872,6 +878,9 @@ function ReviewStep({
         <div className="rounded-xl border border-(--color-mod-ads)/40 bg-(--color-warn-soft) p-3 text-xs">
           <div className="font-semibold text-(--color-warn)">{t.metaSpend}</div>
           <p className="mt-1 leading-4 text-(--color-fg-muted)">{t.metaSpendText}</p>
+          <div className="mt-2">
+            <AdBillingInline status={billingStatus} />
+          </div>
         </div>
       </div>
     </div>

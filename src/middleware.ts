@@ -25,16 +25,22 @@ const PUBLIC_PREFIXES = [
   "/api/setup-status", // readiness probe — must work before the app is configured
   "/api/leads/public", // landing page submissions (rate-limited in route)
   "/m/", // platform-hosted media that Meta downloads while publishing (public by design)
+  "/r/", // platform-hosted comment-resource files — Meta attachment fetches and a human's link-fallback click both arrive with no session
   "/_next",
   "/favicon.ico",
 ];
 
 const SESSION_COOKIE = "ig_admin_session";
 
+/** Pure (unit-tested): does this pathname skip the session-cookie gate? */
+export function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
+}
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) {
+  if (isPublicPath(pathname)) {
     return NextResponse.next();
   }
 

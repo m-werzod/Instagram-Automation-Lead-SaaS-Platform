@@ -15,7 +15,7 @@ export const GET = route(async (req: NextRequest) => {
   const accountId = req.nextUrl.searchParams.get("accountId") ?? undefined;
   const agents = await prisma.aIAgent.findMany({
     where: await accountScope(auth, accountId),
-    include: { account: { select: { username: true, isDemo: true } }, _count: { select: { conversations: true } } },
+    include: { account: { select: { username: true, isDemo: true } }, _count: { select: { conversations: true, documents: true } } },
     orderBy: { createdAt: "asc" },
   });
   return ok({

@@ -739,6 +739,30 @@ export const ru = {
     title: "ИИ и автоматика",
     subtitle: "Помощники, работающие на вас",
     tabs: { agents: "ИИ-помощник", rules: "Правила", knowledge: "База знаний", resources: "Ресурсы" },
+    overview: {
+      commentTitle: "ИИ для комментариев",
+      commentDesc: "Автоматически отвечает на комментарии к вашим постам и Reels.",
+      dmTitle: "ИИ-администратор в Direct",
+      dmDesc: "Автоматически отвечает на входящие сообщения Instagram.",
+      campaignTitle: "ИИ-кампании",
+      campaignDesc: "Автоматически отправляет DM, когда комментарий совпадает со словом-триггером правила.",
+      active: "Активен",
+      off: "Выключен",
+      notConfigured: "Пока не настроен",
+      knowledgeSources: (n: number) => {
+        const mod10 = n % 10, mod100 = n % 100;
+        const word = mod10 === 1 && mod100 !== 11 ? "источник" : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? "источника" : "источников";
+        return `${n} ${word} знаний`;
+      },
+      campaigns: (n: number) => {
+        const mod10 = n % 10, mod100 = n % 100;
+        if (mod10 === 1 && mod100 !== 11) return `${n} кампания`;
+        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} кампании`;
+        return `${n} кампаний`;
+      },
+      activeCampaigns: (n: number) => `${n} активны`,
+      configure: "Настроить",
+    },
     agents: {
       empty: "ИИ-помощника пока нет. Создайте его — он будет автоматически отвечать на сообщения Instagram.",
       create: "Создать помощника",

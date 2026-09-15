@@ -641,6 +641,12 @@ export const en = {
       jpegOnly: "Photos: JPEG only (Instagram rejects PNG/WEBP). Up to 4 MB here; larger files via a public URL.",
       videoHint: "Videos: MP4/MOV on a public URL (uploads here are limited to 4 MB).",
       platformScheduling: "Scheduling is done by this platform — Instagram has no scheduling API. The post is sent at the chosen time.",
+      leadButton: {
+        none: "No Lead Button yet — create one so anyone who taps it ends up in your CRM.",
+        create: "Create Lead Button",
+        edit: "Edit Lead Button",
+        questions: (n: number) => `${n} question${n === 1 ? "" : "s"}`,
+      },
     },
   },
 

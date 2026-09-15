@@ -640,6 +640,12 @@ export const uz = {
       jpegOnly: "Foto: faqat JPEG (Instagram PNG/WEBP ni rad etadi). Bu yerda 4 MB gacha; kattaroq fayllar ochiq URL orqali.",
       videoHint: "Video: ochiq URL dagi MP4/MOV (bu yerda yuklash 4 MB bilan cheklangan).",
       platformScheduling: "Rejalashtirishni shu platforma bajaradi — Instagramda rejalashtirish API si yo‘q. Post tanlangan vaqtda yuboriladi.",
+      leadButton: {
+        none: "Hali Lid tugmasi yo‘q — uni yarating, tugmani bosgan har bir kishi CRM’ingizga tushsin.",
+        create: "Lid tugmasini yaratish",
+        edit: "Lid tugmasini tahrirlash",
+        questions: (n: number) => `${n} ta savol`,
+      },
     },
   },
 

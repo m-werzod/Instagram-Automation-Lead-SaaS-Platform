@@ -1,14 +1,17 @@
 "use client";
 
 import * as React from "react";
+import NextLink from "next/link";
 import { toast } from "sonner";
-import { CalendarClock, Film, Image as ImageIcon, Images, Link2, Plus, Send, Trash2, Upload, CircleDashed, Heart, MessageCircle, Bookmark } from "lucide-react";
+import { CalendarClock, Film, Image as ImageIcon, Images, Link2, MousePointerClick, Plus, Send, Trash2, Upload, CircleDashed, Heart, MessageCircle, Bookmark } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Segmented, Textarea } from "@/components/ui/input";
 import { ToggleRow } from "@/components/ui/switch";
+import { leadButtonStyle } from "@/lib/leadbutton-style";
+import type { ButtonSpec } from "@/lib/validation/leadbutton";
 import { cn } from "@/lib/utils";
 
 /**
@@ -45,6 +48,82 @@ function newItem(): Item {
 function toLocalInputValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+interface LeadButtonSummary {
+  enabled: boolean;
+  headline: string;
+  buttonSpec: ButtonSpec;
+  questionCount: number;
+}
+
+/**
+ * The account's one Lead Button (see /api/lead-button), surfaced here purely
+ * as a status + shortcut — the real editor (questions, design, targeting)
+ * stays on /lead-button rather than being duplicated inline. Opens in a new
+ * tab so an in-progress draft in this dialog is never lost.
+ */
+function LeadButtonPanel({ accountId }: { accountId: string }) {
+  const { d } = useI18n();
+  const t = d.content.publish.leadButton;
+  const [state, setState] = React.useState<"loading" | "none" | LeadButtonSummary>("loading");
+
+  React.useEffect(() => {
+    let live = true;
+    setState("loading");
+    api<{ leadButton: { enabled: boolean; headline: string; buttonSpec: ButtonSpec; questions: unknown[] } | null }>(
+      `/api/lead-button?accountId=${accountId}`,
+      { silent: true },
+    )
+      .then((res) => {
+        if (!live) return;
+        setState(
+          res.leadButton
+            ? { enabled: res.leadButton.enabled, headline: res.leadButton.headline, buttonSpec: res.leadButton.buttonSpec, questionCount: res.leadButton.questions.length }
+            : "none",
+        );
+      })
+      .catch(() => live && setState("none"));
+    return () => {
+      live = false;
+    };
+  }, [accountId]);
+
+  if (state === "loading") return null;
+
+  if (state === "none") {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-(--color-border-strong) px-3 py-2.5">
+        <p className="text-xs text-(--color-fg-muted)">{t.none}</p>
+        <NextLink href="/lead-button" target="_blank" className="shrink-0">
+          <Button type="button" size="sm" variant="secondary">
+            <MousePointerClick size={13} /> {t.create}
+          </Button>
+        </NextLink>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-(--color-border) px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <span style={{ ...leadButtonStyle(state.buttonSpec), width: "auto", padding: "6px 14px", fontSize: "12px", minHeight: "auto" }}>
+          {state.buttonSpec.label}
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium">{state.headline}</p>
+          <p className="text-[11px] text-(--color-fg-faint)">
+            {t.questions(state.questionCount)} · {state.enabled ? d.leadButton.enable : d.leadButton.disable}
+          </p>
+        </div>
+      </div>
+      <NextLink href="/lead-button" target="_blank" className="shrink-0">
+        <Button type="button" size="sm" variant="secondary">
+          {t.edit}
+        </Button>
+      </NextLink>
+    </div>
+  );
 }
 
 export function PublishDialog({
@@ -226,6 +305,10 @@ export function PublishDialog({
                   <Input type="datetime-local" value={scheduledLocal} min={toLocalInputValue(new Date())} onChange={(e) => setScheduledLocal(e.target.value)} />
                 )}
               </div>
+            </Field>
+
+            <Field label={d.leadButton.title}>
+              <LeadButtonPanel accountId={accountId} />
             </Field>
 
             {limitInfo?.limit && (

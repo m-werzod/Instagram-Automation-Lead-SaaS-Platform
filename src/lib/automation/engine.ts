@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getGlobalSettings } from "@/lib/settings";
 import { createLogger, errorFields } from "@/lib/logger";
 import { resourceKindFromMime, resourceUrlFor } from "@/lib/resources";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 
 const log = createLogger("automation");
 
@@ -98,6 +99,19 @@ export function allConditionsMatch(conditions: unknown, ctx: TriggerContext): bo
   });
 }
 
+/**
+ * Pure (unit-tested): has this rule already fired for this Instagram user too
+ * recently? `lastRunAt` is the most recent SUCCESSful run's timestamp for
+ * this (automationId, igsid) pair, or null if there is none. No cooldown
+ * configured, or no igsid to key on (some triggers, e.g. LEAD_SUBMITTED,
+ * carry none), always allows the rule to fire — this only ever narrows an
+ * otherwise-matching rule, never widens one.
+ */
+export function isWithinCooldown(cooldownSec: number | null | undefined, lastRunAt: Date | null, now: Date = new Date()): boolean {
+  if (!cooldownSec || !lastRunAt) return false;
+  return now.getTime() - lastRunAt.getTime() < cooldownSec * 1000;
+}
+
 /** Fire all enabled automations for a trigger. Never throws. */
 export async function runAutomations(trigger: AutomationTriggerType, ctx: TriggerContext): Promise<void> {
   let automations: Automation[] = [];
@@ -119,12 +133,38 @@ export async function runAutomations(trigger: AutomationTriggerType, ctx: Trigge
       if (!allConditionsMatch(automation.conditions, ctx)) {
         continue; // condition mismatch — not recorded as a run (too noisy)
       }
+
+      if (automation.cooldownSec && ctx.igsid) {
+        const last = await prisma.automationRun.findFirst({
+          where: { automationId: automation.id, actorIgsid: ctx.igsid, status: "SUCCESS" },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true },
+        });
+        if (isWithinCooldown(automation.cooldownSec, last?.createdAt ?? null)) {
+          // Recorded (unlike the scope/condition skips above): the rule DID
+          // match, so "why didn't this fire" is a real question an admin can
+          // ask — SKIPPED answers it instead of leaving a silent gap.
+          await prisma.automationRun.create({
+            data: {
+              automationId: automation.id,
+              status: "SKIPPED",
+              actorIgsid: ctx.igsid,
+              triggerData: ctx as unknown as Prisma.InputJsonValue,
+              error: `cooldown active (${automation.cooldownSec}s)`,
+              durationMs: Date.now() - startedAt,
+            },
+          });
+          continue;
+        }
+      }
+
       const results = await executeActions(automation, ctx);
       await prisma.$transaction([
         prisma.automationRun.create({
           data: {
             automationId: automation.id,
             status: results.every((r) => r.ok) ? "SUCCESS" : "FAILED",
+            actorIgsid: ctx.igsid,
             triggerData: ctx as unknown as Prisma.InputJsonValue,
             result: results as unknown as Prisma.InputJsonValue,
             durationMs: Date.now() - startedAt,
@@ -175,6 +215,14 @@ async function executeActions(automation: Automation, ctx: TriggerContext): Prom
     if (!OUTBOUND_ACTIONS.has(action.type) && !settings.masterAutomationEnabled && !settings.leadAutomationWhenOff) {
       results.push({ type: action.type, ok: false, error: "blocked: master OFF and lead automation not allowed" });
       continue;
+    }
+    if (OUTBOUND_ACTIONS.has(action.type)) {
+      const limit = LIMITS.AUTOMATION_ACCOUNT;
+      const gate = rateLimit(`automation:${ctx.accountId}`, limit.limit, limit.windowMs);
+      if (!gate.allowed) {
+        results.push({ type: action.type, ok: false, error: `blocked: account automation rate limit (retry in ${gate.retryAfterSec}s)` });
+        continue;
+      }
     }
 
     try {

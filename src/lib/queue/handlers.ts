@@ -260,6 +260,9 @@ async function handleComment(ev: Extract<NormalizedEvent, { type: "comment" }>):
     contentId: content?.id,
     text: ev.text ?? "",
     username: ev.fromUsername ?? undefined,
+    // Same igsid space Meta uses for messaging — lets a rule's cooldown (if
+    // configured) recognize "this is the same commenter" across comments.
+    igsid: ev.fromId ?? undefined,
   });
 
   await enqueue(

@@ -56,6 +56,14 @@ export const LIMITS = {
   AI: { limit: 20, windowMs: 60_000 },
   /** creating/editing admin or user accounts, per acting admin */
   ADMIN_WRITE: { limit: 10, windowMs: 5 * 60_000 },
+  /**
+   * Outbound automation-rule actions (DMs, comment replies, resource sends),
+   * summed across every rule on one Instagram account — a ceiling independent
+   * of any single rule's own cooldown, so a burst that matches several rules
+   * at once (or a misconfigured rule with no cooldown) still can't spam an
+   * account's whole audience or blow through Meta's own API limits.
+   */
+  AUTOMATION_ACCOUNT: { limit: 30, windowMs: 60_000 },
 } as const;
 
 /** test hook */

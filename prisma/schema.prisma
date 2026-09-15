@@ -721,6 +721,11 @@ model Automation {
   /// Scopes a COMMENT_RECEIVED rule to one post/reel; null = every post on the account.
   contentId   String?
   content     ContentItem?          @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  /// Minimum gap before this rule fires OUTBOUND actions again for the SAME
+  /// Instagram user (igsid) — prevents re-commenting the same keyword from
+  /// spamming a repeat DM/reply. null = no cooldown (fires every match, the
+  /// pre-existing behavior — backward compatible with every rule already saved).
+  cooldownSec Int?
   runCount    Int                   @default(0)
   lastRunAt   DateTime?
   isDemo      Boolean               @default(false)
@@ -738,6 +743,11 @@ model AutomationRun {
   automationId String
   automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
   status       String // SUCCESS | FAILED | SKIPPED
+  /// The Instagram user (igsid) this run fired for, when known — denormalized
+  /// out of triggerData purely so the cooldown check (runAutomations) can look
+  /// up "did this rule already fire for this person recently" with an index
+  /// instead of scanning JSON.
+  actorIgsid   String?
   triggerData  Json?
   result       Json?
   error        String?
@@ -745,6 +755,7 @@ model AutomationRun {
   createdAt    DateTime   @default(now())
 
   @@index([automationId, createdAt])
+  @@index([automationId, actorIgsid, createdAt])
 }
 
 // ---------- infrastructure ----------

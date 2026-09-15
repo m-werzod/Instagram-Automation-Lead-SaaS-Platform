@@ -846,6 +846,16 @@ export const en = {
       resource: "Resource to send",
       resourceHint: "Images/videos attach directly; other files (PDF, docs) are sent as a link",
       composingAgent: "Which assistant composes this reply",
+      cooldown: {
+        label: "Repeat protection",
+        hint: "Stop this rule from firing again for the same person until this much time has passed",
+        none: "None — fires every time it matches",
+        hour1: "Once per hour, per person",
+        hours24: "Once per day, per person",
+        days7: "Once per week, per person",
+        custom: "Custom",
+        customMinutes: "Minutes between repeats",
+      },
     },
     knowledge: {
       empty: "Upload documents (price lists, FAQs) — the AI will use them when answering.",

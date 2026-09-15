@@ -845,6 +845,16 @@ export const uz = {
       resource: "Yuboriladigan resurs",
       resourceHint: "Rasm/video to‘g‘ridan-to‘g‘ri biriktiriladi; boshqa fayllar (PDF, hujjatlar) havola sifatida yuboriladi",
       composingAgent: "Qaysi yordamchi bu javobni yozadi",
+      cooldown: {
+        label: "Takrorlanishdan himoya",
+        hint: "Shu vaqt o‘tmaguncha bir xil odam uchun bu qoida qayta ishlamasin",
+        none: "Yo‘q — mos kelganda har safar ishlaydi",
+        hour1: "Har bir kishi uchun soatiga bir marta",
+        hours24: "Har bir kishi uchun kuniga bir marta",
+        days7: "Har bir kishi uchun haftasiga bir marta",
+        custom: "Boshqa",
+        customMinutes: "Takrorlar orasidagi daqiqalar",
+      },
     },
     knowledge: {
       empty: "Hujjatlarni yuklang (narxlar, savol-javoblar) — AI javob berishda ulardan foydalanadi.",

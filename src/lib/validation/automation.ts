@@ -7,6 +7,9 @@ import { z } from "zod";
  * recognise and it quietly no-ops at run time instead of being rejected here.
  */
 
+/** null/omitted = no cooldown (fires every match). 60s–30d when set. */
+export const cooldownSecSchema = z.number().int().min(60).max(2_592_000).nullable().optional();
+
 export const conditionSchema = z.object({
   field: z.enum(["text", "source", "lead_status", "username"]),
   op: z.enum(["contains", "not_contains", "equals", "starts_with", "regex"]),

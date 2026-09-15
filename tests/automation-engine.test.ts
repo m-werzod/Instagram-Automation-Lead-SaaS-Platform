@@ -3,6 +3,7 @@ import {
   allConditionsMatch,
   conditionMatches,
   contentScopeMatches,
+  isWithinCooldown,
   OUTBOUND_ACTIONS,
   type AutomationCondition,
   type TriggerContext,
@@ -82,5 +83,37 @@ describe("contentScopeMatches", () => {
 
   it("a scoped rule never matches a comment whose post couldn't be resolved locally", () => {
     expect(contentScopeMatches("post_1", { accountId: "a1" })).toBe(false);
+  });
+});
+
+/**
+ * Per-user repeat protection (spec: "duplicate message protection") — a rule
+ * with no cooldown configured, or no prior run for this person, must always
+ * be allowed to fire; only an actual recent SUCCESS within the window blocks
+ * it. Getting either edge wrong either spams a repeat commenter or silently
+ * mutes a rule that was never actually cooling down.
+ */
+describe("isWithinCooldown", () => {
+  const now = new Date("2026-01-01T12:00:00Z");
+
+  it("no cooldown configured never blocks, regardless of last run", () => {
+    expect(isWithinCooldown(null, new Date(now.getTime() - 1_000), now)).toBe(false);
+    expect(isWithinCooldown(undefined, new Date(now.getTime() - 1_000), now)).toBe(false);
+  });
+
+  it("no prior run never blocks, even with a cooldown configured", () => {
+    expect(isWithinCooldown(3600, null, now)).toBe(false);
+  });
+
+  it("blocks when the last run is inside the window", () => {
+    expect(isWithinCooldown(3600, new Date(now.getTime() - 60_000), now)).toBe(true);
+  });
+
+  it("allows again once the window has fully elapsed", () => {
+    expect(isWithinCooldown(3600, new Date(now.getTime() - 3_600_001), now)).toBe(false);
+  });
+
+  it("the boundary itself (exactly the window) is no longer blocked", () => {
+    expect(isWithinCooldown(3600, new Date(now.getTime() - 3_600_000), now)).toBe(false);
   });
 });

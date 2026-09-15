@@ -6,7 +6,7 @@ import { requireAdmin } from "@/lib/auth/guard";
 import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
-import { conditionSchema, actionSchema } from "@/lib/validation/automation";
+import { conditionSchema, actionSchema, cooldownSecSchema } from "@/lib/validation/automation";
 import type { Prisma } from "@prisma/client";
 
 export const GET = route(async (req: NextRequest) => {
@@ -34,6 +34,7 @@ const createSchema = z.object({
   conditions: z.array(conditionSchema).max(10).default([]),
   actions: z.array(actionSchema).min(1).max(10),
   enabled: z.boolean().default(false),
+  cooldownSec: cooldownSecSchema,
 });
 
 export const POST = route(async (req: NextRequest) => {
@@ -71,6 +72,7 @@ export const POST = route(async (req: NextRequest) => {
       conditions: body.conditions as unknown as Prisma.InputJsonValue,
       actions: body.actions as unknown as Prisma.InputJsonValue,
       enabled: body.enabled,
+      cooldownSec: body.cooldownSec ?? null,
     },
   });
   await audit({

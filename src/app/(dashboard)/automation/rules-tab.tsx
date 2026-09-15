@@ -237,7 +237,7 @@ function RunsDialog({ automation, onClose }: { automation: AutomationRow; onClos
           {runs.length === 0 && <p className="text-(--color-fg-muted)">{d.common.none}</p>}
           {runs.map((r) => (
             <div key={r.id} className="flex items-center justify-between border-b border-(--color-border) py-1.5 last:border-0">
-              <Badge tone={r.status === "SUCCESS" ? "ok" : "danger"}>{r.status}</Badge>
+              <Badge tone={r.status === "SUCCESS" ? "ok" : r.status === "SKIPPED" ? "warn" : "danger"}>{r.status}</Badge>
               <span className="mx-2 flex-1 truncate text-(--color-fg-muted)">{r.error ?? ""}</span>
               <span className="shrink-0 text-(--color-fg-faint)">
                 {timeAgo(r.createdAt)} · {r.durationMs ?? 0}ms
@@ -279,6 +279,8 @@ function CreateRuleDialog({
   const [resourceAgentId, setResourceAgentId] = React.useState("");
   const [resources, setResources] = React.useState<Array<{ id: string; name: string }>>([]);
   const [agents, setAgents] = React.useState<Array<{ id: string; name: string }>>([]);
+  const [cooldown, setCooldown] = React.useState<"" | "3600" | "86400" | "604800" | "custom">("");
+  const [cooldownCustomMin, setCooldownCustomMin] = React.useState("60");
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
@@ -323,6 +325,7 @@ function CreateRuleDialog({
                   },
                 }
               : { type: actionType, params: { text: actionText } };
+    const cooldownSec = cooldown === "" ? null : cooldown === "custom" ? Math.max(60, Number(cooldownCustomMin) * 60) : Number(cooldown);
     setBusy(true);
     try {
       await api("/api/automations", {
@@ -335,6 +338,7 @@ function CreateRuleDialog({
           conditions: condValue ? [{ field: condField, op: condOp, value: condValue }] : [],
           actions: [action],
           enabled: false,
+          cooldownSec,
         },
       });
       toast.success(d.common.saved);
@@ -478,6 +482,26 @@ function CreateRuleDialog({
                   </option>
                 ))}
               </Select>
+            </Field>
+          )}
+
+          <Field label={d.automation.rules.cooldown.label} hint={d.automation.rules.cooldown.hint}>
+            <Select value={cooldown} onChange={(e) => setCooldown(e.target.value as typeof cooldown)}>
+              <option value="">{d.automation.rules.cooldown.none}</option>
+              <option value="3600">{d.automation.rules.cooldown.hour1}</option>
+              <option value="86400">{d.automation.rules.cooldown.hours24}</option>
+              <option value="604800">{d.automation.rules.cooldown.days7}</option>
+              <option value="custom">{d.automation.rules.cooldown.custom}</option>
+            </Select>
+          </Field>
+          {cooldown === "custom" && (
+            <Field label={d.automation.rules.cooldown.customMinutes}>
+              <Input
+                type="number"
+                min={1}
+                value={cooldownCustomMin}
+                onChange={(e) => setCooldownCustomMin(e.target.value)}
+              />
             </Field>
           )}
 

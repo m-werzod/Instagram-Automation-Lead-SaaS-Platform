@@ -126,6 +126,19 @@ function LeadButtonPanel({ accountId }: { accountId: string }) {
   );
 }
 
+/**
+ * A finished render handed over from the AI Video Editor. Instagram fetches
+ * media from a URL rather than accepting an upload, so what crosses over is the
+ * export's public URL — the operator still reviews and confirms here, and the
+ * normal publish pipeline does the actual work.
+ */
+export interface PublishPrefill {
+  mediaType: MediaType;
+  url: string;
+  coverUrl?: string | null;
+  caption?: string;
+}
+
 export function PublishDialog({
   open,
   onOpenChange,
@@ -133,6 +146,7 @@ export function PublishDialog({
   username,
   limitInfo,
   onCreated,
+  prefill,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -140,6 +154,7 @@ export function PublishDialog({
   username: string;
   limitInfo: LimitInfo | null;
   onCreated: () => Promise<void>;
+  prefill?: PublishPrefill | null;
 }) {
   const { d } = useI18n();
   const t = d.content.publish;
@@ -151,6 +166,21 @@ export function PublishDialog({
   const [when, setWhen] = React.useState<"now" | "schedule">("now");
   const [scheduledLocal, setScheduledLocal] = React.useState(() => toLocalInputValue(new Date(Date.now() + 3600_000)));
   const [busy, setBusy] = React.useState(false);
+
+  // Applied on open rather than on mount: the dialog is kept mounted, so a
+  // handover that arrives while it is closed must still land.
+  const prefillRef = React.useRef(prefill);
+  prefillRef.current = prefill;
+  const prefillKey = prefill ? `${prefill.mediaType}:${prefill.url}` : null;
+  React.useEffect(() => {
+    const incoming = prefillRef.current;
+    if (!open || !incoming) return;
+    setMediaType(incoming.mediaType);
+    setItems([{ key: Math.random().toString(36).slice(2), url: incoming.url, kind: "VIDEO", preview: incoming.url }]);
+    if (incoming.caption) setCaption(incoming.caption);
+    if (incoming.coverUrl) setCoverUrl(incoming.coverUrl);
+    setWhen("now");
+  }, [open, prefillKey]);
 
   function reset() {
     setMediaType("IMAGE");

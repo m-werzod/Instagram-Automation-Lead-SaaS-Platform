@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
-import { PublishDialog, type LimitInfo } from "@/components/content/publish-dialog";
+import { PublishDialog, type LimitInfo, type PublishPrefill } from "@/components/content/publish-dialog";
 import { PublishQueue } from "@/components/content/publish-queue";
 
 /**
@@ -81,10 +81,47 @@ function mediaKind(item: ContentRow): "reel" | "post" | "story" {
 
 export default function ContentPage() {
   const { d } = useI18n();
-  const { selected, loading: accountsLoading } = useAccounts();
+  const { selected, loading: accountsLoading, setSelectedId } = useAccounts();
   const [items, setItems] = React.useState<ContentRow[] | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [publishOpen, setPublishOpen] = React.useState(false);
+  const [prefill, setPrefill] = React.useState<PublishPrefill | null>(null);
+
+  /**
+   * Handover from the AI Video Editor. Its export screen stashes the finished
+   * render's public URL and navigates here; picking it up is what makes that
+   * button a real workflow rather than a page change. It is read once and
+   * cleared, so a later visit does not silently re-open someone's old export.
+   */
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("fromVideoEditor") !== "1") return;
+    try {
+      const raw = window.sessionStorage.getItem("video-editor-publish");
+      window.sessionStorage.removeItem("video-editor-publish");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        accountId?: string;
+        mediaType?: string;
+        url?: string;
+        coverUrl?: string | null;
+        caption?: string;
+      };
+      if (!parsed.url) return;
+      // Publish to the account the video belongs to, not whichever one happens
+      // to be selected — otherwise a render could go out on the wrong profile.
+      if (parsed.accountId) setSelectedId(parsed.accountId);
+      setPrefill({
+        mediaType: parsed.mediaType === "STORIES" ? "STORIES" : "REELS",
+        url: parsed.url,
+        coverUrl: parsed.coverUrl ?? null,
+        caption: parsed.caption ?? "",
+      });
+      setPublishOpen(true);
+    } catch {
+      // A private-mode browser or malformed entry just means no prefill.
+    }
+  }, [setSelectedId]);
   const [limitInfo, setLimitInfo] = React.useState<LimitInfo | null>(null);
   const [queueKey, setQueueKey] = React.useState(0);
 
@@ -226,6 +263,7 @@ export default function ContentPage() {
       <PublishQueue accountId={selected.id} refreshKey={queueKey} />
 
       <PublishDialog
+        prefill={prefill}
         open={publishOpen}
         onOpenChange={setPublishOpen}
         accountId={selected.id}

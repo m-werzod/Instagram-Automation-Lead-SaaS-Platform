@@ -26,6 +26,12 @@ const PUBLIC_PREFIXES = [
   "/api/leads/public", // landing page submissions (rate-limited in route)
   "/m/", // platform-hosted media that Meta downloads while publishing (public by design)
   "/r/", // platform-hosted comment-resource files — Meta attachment fetches and a human's link-fallback click both arrive with no session
+  // Rendered video served under a short-lived signed token, so Meta can download
+  // it during publishing. Instagram fetches media from a URL rather than
+  // accepting an upload, and that fetch carries no session. The route verifies
+  // the HMAC and expiry itself, and refuses to serve anything but an EXPORT or
+  // THUMBNAIL — a source video or an uploaded music track is never reachable.
+  "/v/",
   "/_next",
   "/favicon.ico",
 ];

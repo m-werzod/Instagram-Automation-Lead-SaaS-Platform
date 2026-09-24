@@ -5,7 +5,7 @@ import { AppError, metaPermissionMissing } from "@/lib/errors";
 import { createLogger, errorFields } from "@/lib/logger";
 import { enqueue } from "@/lib/queue";
 import { graphCall, MetaApiError } from "./client";
-import { resolveAccess } from "./tokens";
+import { resolveAccess, type ResolvedAccess } from "./tokens";
 import { detectCapabilities, type AccountWithAuth } from "./capabilities";
 
 const log = createLogger("meta.publishing");
@@ -40,6 +40,14 @@ export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 /** How many times a job re-checks a container before giving up (≈ 40 × 20 s). */
 export const MAX_POLL_ATTEMPTS = 40;
 export const POLL_DELAY_MS = 20_000;
+/**
+ * Meta error code 9 on a publish call = this account's rolling 24 h publishing
+ * quota is spent. It means "not now", not "never": the window frees itself, so
+ * the job waits instead of throwing away a scheduled publication.
+ */
+export const PUBLISH_QUOTA_ERROR_CODE = 9;
+export const QUOTA_RETRY_DELAY_MS = 30 * 60_000;
+export const RATE_LIMIT_RETRY_DELAY_MS = 120_000;
 
 // ---- pure helpers (unit-tested) ----
 
@@ -159,8 +167,51 @@ export function isJpeg(bytes: Uint8Array): boolean {
   return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
 }
 
+const VIDEO_URL_EXTENSIONS = new Set(["mp4", "mov", "m4v"]);
+const IMAGE_URL_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "heic", "heif", "gif"]);
+
+/**
+ * What a media URL says about itself, or null when it says nothing — a signed
+ * CDN link ends in an opaque id, and there is no honest guess to make from it.
+ */
+export function kindFromUrlOrNull(url: string): PublishItemKind | null {
+  const ext = /\.([a-z0-9]{1,5})$/i.exec(url.split(/[?#]/, 1)[0] ?? "")?.[1]?.toLowerCase();
+  if (!ext) return null;
+  if (VIDEO_URL_EXTENSIONS.has(ext)) return "VIDEO";
+  if (IMAGE_URL_EXTENSIONS.has(ext)) return "IMAGE";
+  return null;
+}
+
+/** Extension heuristic. A fallback only — see resolveItemKind. */
 export function kindFromUrl(url: string): PublishItemKind {
-  return /\.(mp4|mov|m4v)(\?|#|$)/i.test(url) ? "VIDEO" : "IMAGE";
+  return kindFromUrlOrNull(url) === "VIDEO" ? "VIDEO" : "IMAGE";
+}
+
+/**
+ * Kind of a pasted media URL. Only one kind is legal for a Reel or a photo post,
+ * so the chosen media type fills in for a link that names no format — that is
+ * what makes an extension-less signed CDN link publishable at all. A link that
+ * does name a contradicting format is reported as it is, so validatePublishInput
+ * refuses it here and now instead of the admin being told the post was queued
+ * and the job dying at Meta minutes later. Stories and carousels take either
+ * kind, so there a caller-supplied kind wins and the heuristic is a last resort.
+ */
+export function resolveItemKind(mediaType: PublishMediaType, url: string, explicit?: PublishItemKind | null): PublishItemKind {
+  if (mediaType === "REELS") return kindFromUrlOrNull(url) ?? "VIDEO";
+  if (mediaType === "IMAGE") return kindFromUrlOrNull(url) ?? "IMAGE";
+  return explicit ?? kindFromUrl(url);
+}
+
+/**
+ * How long to wait before trying a failed publish call again, or null when the
+ * error is final for this post. Rate limits and a spent publishing quota are
+ * both "come back later" answers; everything else fails the job visibly.
+ */
+export function retryDelayForPublishError(err: unknown): number | null {
+  if (!(err instanceof MetaApiError)) return null;
+  if (err.metaCode === PUBLISH_QUOTA_ERROR_CODE) return QUOTA_RETRY_DELAY_MS;
+  if (err.isRateLimit) return RATE_LIMIT_RETRY_DELAY_MS;
+  return null;
 }
 
 /** A friendly, admin-facing line for a failed job — technical detail stays in logs. */
@@ -189,8 +240,11 @@ export function assertCanPublish(account: AccountWithAuth): void {
   }
 }
 
-export async function fetchPublishingLimit(account: InstagramAccount): Promise<{ used: number; quota: number } | null> {
-  const access = await resolveAccess(account);
+export async function fetchPublishingLimit(
+  account: InstagramAccount,
+  known?: ResolvedAccess,
+): Promise<{ used: number; quota: number } | null> {
+  const access = known ?? (await resolveAccess(account));
   try {
     const json = await graphCall<Record<string, unknown>>({
       host: access.host,
@@ -211,11 +265,44 @@ export function publishRunKey(jobId: string, suffix: string): string {
   return `publish.run:${jobId}:${suffix}`;
 }
 
+/** Key of the queue row that carries a job to its scheduled time. */
+export function scheduleKey(job: Pick<PublishJob, "id" | "scheduledAt">): string {
+  return publishRunKey(job.id, String(job.scheduledAt.getTime()));
+}
+
+/**
+ * Key for the "go back to sleep" row. Every key this file re-queues under must
+ * differ from scheduleKey: the row that woke early still owns that one, so a
+ * re-queue under it is swallowed as a duplicate and the post never goes out.
+ * The minute bucket still collapses two workers waking the same job at once.
+ */
+export function wakeKey(job: Pick<PublishJob, "id" | "scheduledAt">): string {
+  return publishRunKey(job.id, `wake:${job.scheduledAt.getTime()}:${Math.floor(Date.now() / 60_000)}`);
+}
+
+/**
+ * Slack added to an early wake-up, and the reason wakeKey's minute bucket holds.
+ *
+ * A pass only wakes early when the database clock is ahead of ours, and a drain
+ * is a tight claim loop: parked at its own scheduledAt, the new row is already
+ * claimable by the database and comes straight back round inside the same
+ * minute — under the same key, which enqueue drops as a duplicate, leaving
+ * nothing queued and the post abandoned in SCHEDULED. Waiting past the bucket
+ * makes the next sleep a different row. Two minutes covers a skew of up to one;
+ * publishing a minute or so late beats not publishing at all.
+ */
+export const EARLY_WAKE_MARGIN_MS = 2 * 60_000;
+
+export function wakeRunAt(scheduledAt: Date, now: number = Date.now()): Date {
+  const earliest = now + EARLY_WAKE_MARGIN_MS;
+  return scheduledAt.getTime() > earliest ? scheduledAt : new Date(earliest);
+}
+
 export async function schedulePublishJob(job: Pick<PublishJob, "id" | "scheduledAt">): Promise<void> {
   await enqueue(
     "publish.run",
     { publishJobId: job.id },
-    { runAt: job.scheduledAt, idempotencyKey: publishRunKey(job.id, String(job.scheduledAt.getTime())), maxAttempts: 3, priority: 5 },
+    { runAt: job.scheduledAt, idempotencyKey: scheduleKey(job), maxAttempts: 3, priority: 5 },
   );
 }
 
@@ -229,23 +316,58 @@ export async function runPublishJob(jobId: string): Promise<void> {
   if (!job) return;
   if (job.status === "CANCELLED" || job.status === "PUBLISHED" || job.status === "FAILED") return;
   if (job.status === "SCHEDULED" && job.scheduledAt.getTime() > Date.now() + 1000) {
-    // woke up early (e.g. cron drain) — go back to sleep until the scheduled time
-    await schedulePublishJob(job);
+    // Woke up early (a cron drain claims every runnable row). The queue row
+    // executing right now already holds schedulePublishJob's idempotency key, so
+    // re-using it would be swallowed as a duplicate and the post would never go
+    // out — the wake-up time in the key makes this an actual new sleep, and
+    // wakeRunAt keeps the new row out of the minute that key buckets on.
+    await enqueue(
+      "publish.run",
+      { publishJobId: job.id },
+      { runAt: wakeRunAt(job.scheduledAt), idempotencyKey: wakeKey(job), maxAttempts: 3, priority: 5 },
+    );
     return;
   }
 
   const account = job.account;
   const items = job.items as unknown as PublishItem[];
-  const access = await resolveAccess(account);
   const ig = account.igUserId;
 
   if (job.status !== "PROCESSING") {
-    await prisma.publishJob.update({ where: { id: job.id }, data: { status: "PROCESSING", startedAt: new Date(), lastError: null } });
+    // Guarded like the terminal writes below. Unconditional, this claim wrote
+    // PROCESSING over a cancel that landed after the read above — losing it
+    // entirely, so the later guards saw a live job and the post still went out.
+    const claimed = await prisma.publishJob.updateMany({
+      where: { id: job.id, status: { not: "CANCELLED" } },
+      data: { status: "PROCESSING", startedAt: new Date(), lastError: null },
+    });
+    if (claimed.count === 0) {
+      log.info("publish cancelled before the pass started", { jobId: job.id });
+      return;
+    }
   }
 
   try {
+    // Inside the try deliberately: an expired or revoked token throws here, and
+    // a throw from outside it left the job stuck in SCHEDULED with no lastError.
+    const access = await resolveAccess(account);
+
     let containerId = job.containerId;
     if (!containerId) {
+      // The quota is also checked when the post is created, but a scheduled post
+      // can sit for days — by the time it runs the 24 h window may be full. Only
+      // on the pass that actually creates containers, not on every poll after it.
+      const limit = job.childContainerIds.length === 0 ? await fetchPublishingLimit(account, access) : null;
+      if (limit && limit.used >= limit.quota) {
+        await retryLater(
+          job,
+          QUOTA_RETRY_DELAY_MS,
+          "quota",
+          `Instagram's publishing limit is full (${limit.used}/${limit.quota} API posts in the last 24 hours). Waiting for it to free up.`,
+        );
+        return;
+      }
+
       // Pure/deterministic given the job's own fields — cheap to recompute on
       // every re-entry, so children created on an earlier pass are never lost.
       const params = buildContainerParams({
@@ -325,6 +447,13 @@ export async function runPublishJob(jobId: string): Promise<void> {
 
     let mediaId: string | null = null;
     if (status.code === "FINISHED") {
+      // media_publish cannot be undone, so the cancel flag is re-read as late as
+      // possible — an admin can cancel while this very pass is in flight.
+      const current = await prisma.publishJob.findUnique({ where: { id: job.id }, select: { status: true } });
+      if (current?.status === "CANCELLED") {
+        log.info("publish cancelled before it went out", { jobId: job.id });
+        return;
+      }
       const published = await graphCall<{ id: string }>({
         host: access.host,
         method: "POST",
@@ -374,17 +503,41 @@ export async function runPublishJob(jobId: string): Promise<void> {
       }
     }
 
-    await prisma.publishJob.update({
-      where: { id: job.id },
+    // Conditional write: a cancel that landed while this pass ran must not be
+    // overwritten by a PUBLISHED status it never chose.
+    const written = await prisma.publishJob.updateMany({
+      where: { id: job.id, status: { not: "CANCELLED" } },
       data: { status: "PUBLISHED", publishedAt: new Date(), publishedMediaId: mediaId, permalink, lastError: null },
     });
+    if (written.count === 0) {
+      // Cancelled in the moments after media_publish went through. The post IS
+      // live on Instagram and nothing here can take it down, so the row says so
+      // instead of pretending the cancel worked.
+      await prisma.publishJob.update({
+        where: { id: job.id },
+        data: {
+          publishedMediaId: mediaId,
+          permalink,
+          lastError:
+            "Cancelled too late — Instagram had already published this post. Delete it in the Instagram app if it should not be live.",
+        },
+      });
+      log.warn("publish cancelled after Instagram accepted it", { jobId: job.id, mediaId });
+      return;
+    }
     log.info("published to Instagram", { jobId: job.id, mediaId, mediaType: job.mediaType });
   } catch (err) {
-    if (err instanceof MetaApiError && err.isRateLimit) {
-      // Meta asked us to slow down — that is not a failure of the post.
-      log.warn("publishing rate-limited, will retry", { jobId: job.id });
-      await prisma.publishJob.update({ where: { id: job.id }, data: { attempts: { increment: 1 } } });
-      await enqueue("publish.run", { publishJobId: job.id }, { runAt: new Date(Date.now() + 120_000), idempotencyKey: publishRunKey(job.id, `rl:${job.attempts + 1}`) });
+    const delayMs = retryDelayForPublishError(err);
+    if (delayMs !== null) {
+      const quotaSpent = err instanceof MetaApiError && err.metaCode === PUBLISH_QUOTA_ERROR_CODE;
+      await retryLater(
+        job,
+        delayMs,
+        quotaSpent ? "quota" : "rl",
+        quotaSpent
+          ? `Instagram's 24-hour publishing limit is full — waiting for room. ${describePublishError(err)}`
+          : `Meta asked us to slow down — retrying. ${describePublishError(err)}`,
+      );
       return;
     }
     log.error("publish job failed", { jobId: job.id, ...errorFields(err) });
@@ -400,6 +553,34 @@ async function requeue(job: PublishJob, attempt: number): Promise<void> {
   );
 }
 
+/**
+ * Meta said "not now" — a rate limit, or a spent 24 h publishing quota. Park the
+ * post and come back for it; failing a publication over a condition that clears
+ * by itself loses the post. The note is what the admin sees while it waits.
+ */
+async function retryLater(job: PublishJob, delayMs: number, tag: string, note: string): Promise<void> {
+  const attempts = job.attempts + 1;
+  if (attempts > MAX_POLL_ATTEMPTS) {
+    await fail(job.id, `${note} Gave up after ${MAX_POLL_ATTEMPTS} attempts.`);
+    return;
+  }
+  const parked = await prisma.publishJob.updateMany({
+    where: { id: job.id, status: { not: "CANCELLED" } },
+    data: { attempts, lastError: note.slice(0, 2000) },
+  });
+  if (parked.count === 0) return;
+  await enqueue(
+    "publish.run",
+    { publishJobId: job.id },
+    { runAt: new Date(Date.now() + delayMs), idempotencyKey: publishRunKey(job.id, `${tag}:${attempts}`), maxAttempts: 3, priority: 5 },
+  );
+  log.warn("publish deferred, will retry", { jobId: job.id, tag, attempts, delayMs });
+}
+
 async function fail(jobId: string, message: string): Promise<void> {
-  await prisma.publishJob.update({ where: { id: jobId }, data: { status: "FAILED", lastError: message.slice(0, 2000) } });
+  // Guarded like the PUBLISHED write: a job cancelled mid-pass stays CANCELLED.
+  await prisma.publishJob.updateMany({
+    where: { id: jobId, status: { not: "CANCELLED" } },
+    data: { status: "FAILED", lastError: message.slice(0, 2000) },
+  });
 }

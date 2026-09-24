@@ -1,5 +1,6 @@
 import { createHmac } from "crypto";
 import { coreEnv, instagramAppCredentials, metaEnv } from "@/lib/env";
+import { safeEqual } from "@/lib/crypto";
 import { AppError } from "@/lib/errors";
 import { MetaApiError, type MetaErrorBody } from "./client";
 
@@ -106,7 +107,7 @@ const STATE_MAX_AGE_MS = 15 * 60 * 1000;
 
 export function verifyState(state: string): OAuthStatePayload {
   const [body, sig] = state.split(".");
-  if (!body || !sig || sign(body) !== sig) {
+  if (!body || !sig || !safeEqual(sign(body), sig)) {
     throw new AppError("META_AUTH_FAILED", "OAuth state validation failed", {
       reason: "The state parameter was missing, altered, or not issued by this server.",
       fix: "Start the connection again from Settings → Integrations → Instagram.",

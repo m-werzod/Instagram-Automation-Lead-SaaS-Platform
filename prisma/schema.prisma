@@ -226,25 +226,28 @@ model InstagramAccount {
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
-  tokens         InstagramToken[]
-  permissions    InstagramPermission[]
-  agents         AIAgent[]
-  content        ContentItem[]
-  conversations  Conversation[]
-  documents      KnowledgeDocument[]
-  chunks         KnowledgeChunk[]
-  leadFlows      LeadFlow[]
-  flowSessions   LeadFlowSession[]
-  leads          Lead[]
-  ctaConfigs     CtaConfig[]
-  campaigns      Campaign[]
-  automations    Automation[]
-  aiUsage        AIUsage[]
-  connectInvites ConnectInvite[]
-  accessGrants   AccountAccess[]
+  tokens           InstagramToken[]
+  permissions      InstagramPermission[]
+  agents           AIAgent[]
+  content          ContentItem[]
+  conversations    Conversation[]
+  documents        KnowledgeDocument[]
+  chunks           KnowledgeChunk[]
+  leadFlows        LeadFlow[]
+  flowSessions     LeadFlowSession[]
+  leads            Lead[]
+  ctaConfigs       CtaConfig[]
+  campaigns        Campaign[]
+  automations      Automation[]
+  aiUsage          AIUsage[]
+  connectInvites   ConnectInvite[]
+  accessGrants     AccountAccess[]
   mediaAssets      MediaAsset[]
   publishJobs      PublishJob[]
   commentResources CommentResource[]
+  videoProjects    VideoProject[]
+  videoAssets      VideoAsset[]
+  videoJobs        VideoJob[]
 }
 
 model InstagramToken {
@@ -600,6 +603,18 @@ model Lead {
   /// Never invented outside a real model call; null until the AI (or nobody) has assessed it.
   aiQualification   Json?
   lastInteractionAt DateTime? // most recent message/answer/status change touching this lead
+  /// Free labels an admin puts on a lead. Plain array (not a join table): tags
+  /// here are per-account strings with no attributes of their own, and every
+  /// query filters within one account.
+  tags              String[]
+  /// Next action date. The CRM surfaces overdue follow-ups; nothing sends
+  /// anything automatically off this field.
+  followUpAt        DateTime?
+  /// Expected deal value in minor units of `valueCurrency`, entered by staff.
+  valueCents        Int?
+  valueCurrency     String?
+  /// Why a lead was marked WON or LOST — free text chosen by staff.
+  outcomeReason     String?
   isDemo            Boolean          @default(false)
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
@@ -610,6 +625,7 @@ model Lead {
   @@index([accountId, createdAt])
   @@index([ctaConfigId])
   @@index([assignedAdminId])
+  @@index([accountId, followUpAt])
 }
 
 model LeadEvent {
@@ -687,6 +703,12 @@ model Campaign {
   metaAdId            String?
   metaFormId          String? // lead ads instant form
   lastError           String?
+  /// Meta's own ad review verdict, as reported by the Graph API on sync:
+  /// effective_status (e.g. PENDING_REVIEW, DISAPPROVED, ACTIVE) plus any
+  /// issues_info Meta returns. Never inferred locally — null until Meta says.
+  reviewStatus        String?
+  reviewIssues        Json?
+  reviewSyncedAt      DateTime?
   estimate            Json? // Meta reachestimate snapshot {available, usersLowerBound, usersUpperBound, fetchedAt} — never computed locally
   insightsSnapshot    Json? // last Meta insights {spend, impressions, reach, clicks, results, ...}
   insightsSyncedAt    DateTime?
@@ -780,18 +802,44 @@ model Job {
   type           String
   payload        Json
   status         JobStatus @default(PENDING)
+  /// Execution lane. "default" jobs are short and may run inside the 60s
+  /// serverless cron drain; "video" jobs are minutes-long FFmpeg work that only
+  /// a resident worker with ffmpeg may claim. A drain never claims a lane it
+  /// cannot finish, so a render can never be killed mid-flight by a platform timeout.
+  lane           String    @default("default")
   priority       Int       @default(0)
   attempts       Int       @default(0)
   maxAttempts    Int       @default(5)
   runAt          DateTime  @default(now())
   lockedAt       DateTime?
   lockedBy       String?
+  /// Lock lease. Renewed by the running worker (heartbeat); recovery only
+  /// reclaims a job once this has passed, so a legitimately long job is never
+  /// stolen and run twice.
+  leaseExpiresAt DateTime?
   lastError      String?
   idempotencyKey String?   @unique
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   @@index([status, runAt, priority])
+  @@index([status, lane, runAt, priority])
+  @@index([status, leaseExpiresAt])
+}
+
+/// Liveness of every process that drains the queue, so the platform can tell
+/// "queue idle" from "nothing is draining" — and can say honestly whether a
+/// video-capable worker (ffmpeg present) is online before accepting renders.
+model WorkerHeartbeat {
+  id         String   @id // workerId
+  lanes      String[]
+  ffmpeg     Boolean  @default(false)
+  kind       String   @default("worker") // worker | cron | inline
+  lastSeenAt DateTime @default(now())
+  jobsDone   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([lastSeenAt])
 }
 
 model AIUsage {
@@ -1088,4 +1136,230 @@ model PricingConfig {
   planIntervalDays   Int      @default(30)
   taxPercent         Float    @default(0)
   updatedAt          DateTime @updatedAt
+}
+
+// ============================================================
+// AI Video Editor
+// ============================================================
+//
+// Media bytes NEVER live in this database. Postgres holds only metadata and a
+// storage key; the bytes sit behind a storage driver (local disk for a resident
+// worker, Vercel Blob for serverless), because Postgres bytea plus the 4.5 MB
+// serverless body limit cannot carry video. See src/lib/storage/.
+//
+// All heavy work runs as a Job in the "video" lane, which only a resident
+// worker with FFmpeg claims — the 60s serverless drain is structurally unable
+// to pick up a render it would be killed halfway through.
+
+enum VideoProjectStatus {
+  DRAFT
+  READY // has at least one completed export
+  ARCHIVED
+}
+
+enum VideoAssetRole {
+  SOURCE // the video being edited
+  AUDIO // uploaded music / voice-over / sound effect
+  SAMPLE // reference video whose style is being analysed
+  EXPORT // finished render
+  PREVIEW // low-resolution proxy for iteration
+  THUMBNAIL // extracted frame (also usable as a Reel cover)
+}
+
+enum VideoAssetStatus {
+  UPLOADING
+  READY
+  FAILED
+  DELETED
+}
+
+enum VideoJobKind {
+  PROBE // ffprobe metadata
+  PREVIEW // fast low-res render
+  EXPORT // full-quality render
+  TRANSCRIBE // speech-to-text for subtitles
+  SAMPLE_ANALYZE // style analysis of a reference video
+  THUMBNAIL // extract a cover frame
+  WAVEFORM // audio peaks for the timeline UI
+}
+
+enum VideoJobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+enum SubtitleSource {
+  AUTO // speech-to-text
+  MANUAL // typed or edited by a human
+  IMPORTED // uploaded SRT/VTT
+}
+
+/// One editing project: a source video plus the edit parameters applied to it.
+model VideoProject {
+  id            String             @id @default(cuid())
+  accountId     String
+  account       InstagramAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title         String
+  status        VideoProjectStatus @default(DRAFT)
+  sourceAssetId String?            @unique
+  sourceAsset   VideoAsset?        @relation("ProjectSource", fields: [sourceAssetId], references: [id], onDelete: SetNull)
+  /// Validated EditParams (see src/lib/video/params.ts). The single source of
+  /// truth for what a render will do; the chat assistant only ever proposes a
+  /// patch to this, it never executes anything itself.
+  params        Json?
+  /// Append-only undo stack of previous `params` values, newest last.
+  history       Json?
+  lastExportId  String?
+  createdById   String?
+  isDemo        Boolean            @default(false)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  assets   VideoAsset[]       @relation("ProjectAssets")
+  jobs     VideoJob[]
+  subtitle SubtitleTrack[]
+  samples  SampleAnalysis[]
+  messages VideoChatMessage[]
+
+  @@index([accountId, updatedAt])
+  @@index([accountId, status])
+}
+
+/// A media file held by the storage driver. `storageKey` + `driver` locate the
+/// bytes; this row never contains them.
+model VideoAsset {
+  id           String           @id @default(cuid())
+  accountId    String
+  account      InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  projectId    String?
+  project      VideoProject?    @relation("ProjectAssets", fields: [projectId], references: [id], onDelete: Cascade)
+  role         VideoAssetRole
+  status       VideoAssetStatus @default(UPLOADING)
+  filename     String
+  mimeType     String
+  sizeBytes    Int
+  driver       String // local | vercel-blob
+  storageKey   String
+  /// Public URL when the driver has one (Vercel Blob). Local storage serves
+  /// through a signed, expiring route instead.
+  publicUrl    String?
+  durationSec  Float?
+  width        Int?
+  height       Int?
+  fps          Float?
+  hasAudio     Boolean          @default(false)
+  /// Raw ffprobe output, kept for diagnosis and for honest capability checks.
+  probe        Json?
+  error        String?          @db.Text
+  uploadedById String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  sourceOf VideoProject?    @relation("ProjectSource")
+  jobs     VideoJob[]       @relation("JobOutput")
+  samples  SampleAnalysis[]
+
+  @@index([accountId, createdAt])
+  @@index([projectId, role])
+  @@index([status])
+}
+
+/// A unit of FFmpeg/AI work. The user-visible record; execution rides the
+/// existing Job queue in the "video" lane (queueJobId links the two).
+model VideoJob {
+  id            String           @id @default(cuid())
+  accountId     String
+  account       InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  projectId     String
+  project       VideoProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind          VideoJobKind
+  status        VideoJobStatus   @default(QUEUED)
+  /// Validated parameters for this specific run (a frozen copy, so editing the
+  /// project mid-render cannot change what is being rendered).
+  params        Json
+  progressPct   Int              @default(0)
+  outputAssetId String?
+  outputAsset   VideoAsset?      @relation("JobOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
+  /// Tail of FFmpeg stderr — what actually explains a failure.
+  logTail       String?          @db.Text
+  error         String?          @db.Text
+  queueJobId    String?
+  cancelledAt   DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdById   String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([accountId, status])
+  @@index([status, createdAt])
+}
+
+/// Subtitles for a project: timed cues plus their visual style.
+model SubtitleTrack {
+  id        String         @id @default(cuid())
+  projectId String
+  project   VideoProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  language  String // uz | ru | en | other BCP-47
+  source    SubtitleSource @default(AUTO)
+  /// [{start, end, text, words?: [{start, end, text}]}] — word timings only
+  /// when the transcription provider actually returned them; word-level
+  /// highlight presets stay unavailable otherwise rather than faking timings.
+  cues      Json
+  /// Validated SubtitleStyle (font, size, weight, colours, background opacity,
+  /// position, outline, shadow, alignment, preset name).
+  style     Json
+  isDefault Boolean        @default(false)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([projectId])
+}
+
+/// Style analysis of a reference ("sample") video, and the editing plan derived
+/// from it. Every plan item carries a feasibility verdict, so the UI can say
+/// plainly what will be reproduced, what is approximated, and what cannot be
+/// reconstructed.
+model SampleAnalysis {
+  id            String         @id @default(cuid())
+  projectId     String
+  project       VideoProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sampleAssetId String
+  sampleAsset   VideoAsset     @relation(fields: [sampleAssetId], references: [id], onDelete: Cascade)
+  status        VideoJobStatus @default(QUEUED)
+  /// Measured facts: duration, aspect, scene-cut timestamps, cut cadence,
+  /// loudness, detected letterboxing, speech/music windows.
+  measured      Json?
+  /// Model-written observations (subtitle presence/position, pacing, colour
+  /// treatment). Clearly separated from `measured` because it is an opinion.
+  observed      Json?
+  /// [{op, params, feasibility: reproducible|approximate|unsupported, note}]
+  plan          Json?
+  error         String?        @db.Text
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([projectId, createdAt])
+}
+
+/// A turn in the editor's chat assistant. Assistant turns may carry a proposed
+/// EditParams patch, which is applied only on explicit user confirmation.
+model VideoChatMessage {
+  id        String       @id @default(cuid())
+  projectId String
+  project   VideoProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  role      String // user | assistant
+  text      String       @db.Text
+  /// Proposed operations: {patch, summary, unsupported[]}. Null for plain talk.
+  proposal  Json?
+  /// PROPOSED | APPLIED | REJECTED | NONE
+  state     String       @default("NONE")
+  language  String? // detected language of the user's turn (uz | ru | en)
+  createdAt DateTime     @default(now())
+
+  @@index([projectId, createdAt])
 }

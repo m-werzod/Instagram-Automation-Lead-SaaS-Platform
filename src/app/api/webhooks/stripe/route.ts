@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { paymentConfig } from "@/lib/billing/config";
 import { verifyStripeSignature } from "@/lib/billing/stripe";
-import { recordAndProcessEvent, type ProviderEvent } from "@/lib/billing/service";
-import { createLogger } from "@/lib/logger";
+import { recordAndProcessEvent, replayFailedBillingEvents, type ProviderEvent } from "@/lib/billing/service";
+import { createLogger, errorFields } from "@/lib/logger";
 
 const log = createLogger("webhook.stripe");
 
@@ -40,6 +40,15 @@ export async function POST(req: NextRequest) {
 
   const outcome = await recordAndProcessEvent(event);
   // A failed handler is our problem, not Stripe's — still 200 so Stripe does not
-  // retry into the same bug; the event row keeps the error for inspection.
+  // retry into the same bug (and eventually disable the endpoint). The ACK is
+  // only honest because the stored event is replayed on our own side: after()
+  // runs once the response is already out, so this costs Stripe nothing.
+  after(async () => {
+    try {
+      await replayFailedBillingEvents();
+    } catch (err) {
+      log.error("billing event replay pass failed", errorFields(err));
+    }
+  });
   return NextResponse.json({ received: true, outcome });
 }

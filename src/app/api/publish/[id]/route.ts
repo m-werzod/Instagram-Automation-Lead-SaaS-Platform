@@ -33,6 +33,11 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   if (action === "retry") {
     if (job.status !== "FAILED" && job.status !== "CANCELLED") throw validationError(`Only failed or cancelled publications can be retried (this one is ${job.status})`);
+    // A cancel that lands just after media_publish leaves a CANCELLED row that is
+    // nonetheless live on Instagram; retrying it would post a second copy.
+    if (job.publishedMediaId) {
+      throw validationError("This publication already reached Instagram — retrying it would post a duplicate. Delete the post in the Instagram app instead.");
+    }
     const updated = await prisma.publishJob.update({
       where: { id },
       data: { status: "SCHEDULED", scheduledAt: new Date(), attempts: 0, containerId: null, childContainerIds: [], lastError: null, startedAt: null },
@@ -45,7 +50,20 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
 
   if (job.status === "PUBLISHED") throw validationError("This publication is already on Instagram — delete it in the Instagram app if needed");
   if (job.status === "CANCELLED") return ok({ job });
-  const updated = await prisma.publishJob.update({ where: { id }, data: { status: "CANCELLED" } });
+  // The other half of the worker's cancel guard: a pass can reach media_publish
+  // between the read above and this write, and writing CANCELLED over it would
+  // show a cancelled publication that is in fact live on Instagram.
+  const cancelled = await prisma.publishJob.updateMany({
+    where: { id, status: { notIn: ["PUBLISHED", "CANCELLED"] } },
+    data: { status: "CANCELLED" },
+  });
+  const updated = await prisma.publishJob.findUniqueOrThrow({ where: { id } });
+  if (cancelled.count === 0) {
+    if (updated.status === "PUBLISHED") {
+      throw validationError("Instagram published this post while the cancel was in flight — delete it in the Instagram app instead");
+    }
+    return ok({ job: updated });
+  }
   await audit({ adminId: auth.admin.id, action: "CANCELLED_PUBLISH_JOB", resourceType: "publish_job", resourceId: id, ip: clientIp(req) });
   return ok({ job: updated });
 });

@@ -1,5 +1,6 @@
 import { route, ok } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
+import { isStaff } from "@/lib/auth/access";
 import { coreEnv } from "@/lib/env";
 import { IG_OPTIONAL_SCOPES, igLoginScopes } from "@/lib/meta/oauth";
 
@@ -18,7 +19,7 @@ import { IG_OPTIONAL_SCOPES, igLoginScopes } from "@/lib/meta/oauth";
  *     authorization lands on another deployment that has no session
  */
 export const GET = route(async () => {
-  await requireAdmin();
+  const auth = await requireAdmin();
 
   const required = ["META_APP_ID", "META_APP_SECRET", "META_REDIRECT_URI", "META_WEBHOOK_VERIFY_TOKEN"] as const;
   const missing = required.filter((key) => !process.env[key]?.trim());
@@ -52,7 +53,11 @@ export const GET = route(async () => {
     redirectUriIsHttps,
     redirectUriMatchesAppUrl,
     webhookUrl: `${appUrl}/api/webhooks/instagram`,
-    verifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN?.trim() || null,
+    // The verify token is a shared secret: anyone holding it can complete Meta's
+    // subscription handshake against this deployment. Only OWNER/ADMIN — who do
+    // the App Dashboard setup — get the value; a USER sees the rest of the page
+    // with the field simply absent.
+    verifyToken: isStaff(auth) ? process.env.META_WEBHOOK_VERIFY_TOKEN?.trim() || null : null,
     appUrl,
     // Exactly what the authorization will ask Instagram for. Every one of these
     // must be enabled on the app or Instagram rejects the WHOLE dialog with

@@ -9,6 +9,7 @@ type Fields = Record<string, unknown>;
 
 const LEVEL_ORDER: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
+/** Compared lower-cased, so header-style casing ("Authorization") is caught too. */
 const REDACT_KEYS = new Set([
   "password",
   "passwordHash",
@@ -22,16 +23,46 @@ const REDACT_KEYS = new Set([
   "authorization",
   "cookie",
   "encrypted",
-]);
+].map((k) => k.toLowerCase()));
 
-function redact(value: unknown, depth = 0): unknown {
-  if (depth > 4 || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
-  const out: Fields = {};
-  for (const [k, v] of Object.entries(value as Fields)) {
-    out[k] = REDACT_KEYS.has(k) ? "[REDACTED]" : redact(v, depth + 1);
+function isSecretKey(key: string): boolean {
+  return REDACT_KEYS.has(key.toLowerCase());
+}
+
+/**
+ * Bounds exist to keep a pathological object from hanging the logger — never to
+ * decide where redaction stops. Anything past a bound is dropped rather than
+ * passed through, because "too deep to inspect" and "safe to print" are not the
+ * same thing: an earlier version returned the raw sub-tree below depth 4 and
+ * happily logged a nested token in the clear.
+ */
+const MAX_DEPTH = 12;
+const MAX_NODES = 5_000;
+
+function redactNode(value: unknown, depth: number, seen: WeakSet<object>, budget: { nodes: number }): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= MAX_DEPTH) return "[TRUNCATED: too deep]";
+  if (budget.nodes++ >= MAX_NODES) return "[TRUNCATED: too large]";
+  if (value instanceof Date) return value;
+  if (seen.has(value)) return "[CIRCULAR]";
+
+  // `seen` tracks the current path, not everything visited, so the same object
+  // referenced twice side by side still prints both times.
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((v) => redactNode(v, depth + 1, seen, budget));
+    const out: Fields = {};
+    for (const [k, v] of Object.entries(value as Fields)) {
+      out[k] = isSecretKey(k) ? "[REDACTED]" : redactNode(v, depth + 1, seen, budget);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  return out;
+}
+
+export function redact(value: unknown): unknown {
+  return redactNode(value, 0, new WeakSet<object>(), { nodes: 0 });
 }
 
 function minLevel(): number {

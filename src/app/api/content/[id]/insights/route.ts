@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { route, ok, assertSameOrigin, type RouteCtx, pathParam } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { assertAccountAccess } from "@/lib/auth/access";
-import { notFound } from "@/lib/errors";
+import { AppError, notFound } from "@/lib/errors";
 import { fetchMediaInsights } from "@/lib/meta/media";
 import type { Prisma } from "@prisma/client";
 
@@ -16,12 +16,20 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   await assertAccountAccess(auth, content.accountId);
   if (content.account.isDemo) return ok({ insights: content.insights, demo: true });
 
-  const insights = await fetchMediaInsights(content.account, content.mediaId, content.mediaProductType);
-  if (insights) {
-    await prisma.contentItem.update({
-      where: { id },
-      data: { insights: insights as Prisma.InputJsonValue },
+  const result = await fetchMediaInsights(content.account, content.mediaId, content.mediaProductType);
+  if (!result.ok) {
+    // An unavailable metric set used to return ok({ insights: null }), which the
+    // UI reported as a successful refresh. Say why instead.
+    if (result.error instanceof AppError) throw result.error;
+    throw new AppError("META_UNSUPPORTED", "Instagram has no insights for this post", {
+      reason: result.reason,
+      fix: "Insights need a Business or Creator account, and a story only reports for 24 hours after it is posted.",
     });
   }
-  return ok({ insights });
+
+  await prisma.contentItem.update({
+    where: { id },
+    data: { insights: result.metrics as Prisma.InputJsonValue },
+  });
+  return ok({ insights: result.metrics });
 });

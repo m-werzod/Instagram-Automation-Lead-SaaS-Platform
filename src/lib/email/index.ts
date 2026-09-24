@@ -11,7 +11,8 @@ const log = createLogger("email");
  * EmailService (spec §22–23). All sends flow through the queue with retry +
  * exponential backoff; every attempt is recorded in email_events. Leads are
  * ALWAYS persisted before any email attempt — delivery failure never loses a
- * lead.
+ * lead. Email is optional: with no SMTP configured the notification is still
+ * recorded, but no job is queued for it (see EMAIL_NOT_CONFIGURED_PREFIX).
  */
 
 export interface LeadNotificationPayload {
@@ -27,6 +28,34 @@ export interface LeadNotificationPayload {
   submittedAt: string;
 }
 
+/**
+ * Marker for "there is no SMTP configuration", as opposed to "SMTP is
+ * configured and the send failed". EmailStatus has no SKIPPED member and the
+ * schema is fixed, so the distinction lives in lastError — /api/health reads
+ * the same prefix to keep a deliberately-unconfigured install green.
+ */
+export const EMAIL_NOT_CONFIGURED_PREFIX = "SMTP is not configured";
+const NOT_CONFIGURED_ERROR = `${EMAIL_NOT_CONFIGURED_PREFIX} — notification recorded but not sent (set EMAIL_HOST/EMAIL_USER/EMAIL_PASSWORD in .env)`;
+
+/**
+ * Record an email that cannot be attempted, without queueing a job for it.
+ * Enqueuing would burn four attempts and dead-letter every single lead
+ * notification, which reads as a broken platform when the truth is that an
+ * optional feature was never switched on. The row itself is the honest record:
+ * nothing is lost, and it says exactly why it was not sent.
+ */
+async function recordUnsendable(eventId: string, leadId: string | null): Promise<void> {
+  await prisma.emailEvent
+    .update({ where: { id: eventId }, data: { status: "FAILED", lastError: NOT_CONFIGURED_ERROR } })
+    .catch(() => undefined);
+  if (leadId) {
+    await prisma.leadEvent
+      .create({ data: { leadId, type: "EMAIL_FAILED", data: { reason: NOT_CONFIGURED_ERROR } } })
+      .catch(() => undefined);
+  }
+  log.warn("email not configured — nothing sent", { emailEventId: eventId, leadId });
+}
+
 /** Queue a lead notification (returns the email event id). */
 export async function queueLeadNotification(payload: LeadNotificationPayload): Promise<string> {
   const to = emailEnvSafe()?.LEAD_NOTIFICATION_EMAIL ?? process.env.LEAD_NOTIFICATION_EMAIL ?? "";
@@ -40,6 +69,10 @@ export async function queueLeadNotification(payload: LeadNotificationPayload): P
       status: "PENDING",
     },
   });
+  if (!isEmailConfigured()) {
+    await recordUnsendable(event.id, payload.leadId);
+    return event.id;
+  }
   await enqueue("email.send", { emailEventId: event.id }, { maxAttempts: 4 });
   return event.id;
 }
@@ -103,11 +136,11 @@ export async function deliverEmailEvent(emailEventId: string): Promise<void> {
   if (!event || event.status === "SENT") return;
 
   if (!isEmailConfigured()) {
-    await prisma.emailEvent.update({
-      where: { id: event.id },
-      data: { status: "FAILED", attempts: { increment: 1 }, lastError: "SMTP is not configured (see .env.example EMAIL_* vars)" },
-    });
-    throw new Error("SMTP not configured — set EMAIL_HOST/EMAIL_USER/EMAIL_PASSWORD in .env");
+    // Deliberately does NOT throw: a missing configuration is not a transient
+    // failure, so retrying it four times and dead-lettering the job only hides
+    // real queue problems behind noise. The row records why nothing was sent.
+    await recordUnsendable(event.id, event.leadId);
+    return;
   }
 
   const env = emailEnv();
@@ -169,6 +202,10 @@ export async function queueAdminAlert(subject: string, text: string): Promise<vo
   const event = await prisma.emailEvent.create({
     data: { to, subject, template: "admin_alert", payload: { text }, status: "PENDING" },
   });
+  if (!isEmailConfigured()) {
+    await recordUnsendable(event.id, null);
+    return;
+  }
   await enqueue("email.send", { emailEventId: event.id }, { maxAttempts: 3 });
 }
 

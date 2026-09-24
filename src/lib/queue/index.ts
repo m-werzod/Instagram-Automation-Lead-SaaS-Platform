@@ -28,7 +28,61 @@ export type JobType =
   | "publish.run"
   | "campaigns.sync"
   | "billing.schedules"
-  | "billing.retry";
+  | "billing.retry"
+  | "video.process";
+
+/**
+ * Execution lanes. A drain only claims lanes it can finish inside its own time
+ * budget, so work is never killed half-done by a platform timeout:
+ *   default — short jobs (seconds). Every drain claims these, including the
+ *             60s serverless cron route.
+ *   video   — FFmpeg renders and transcriptions (minutes). Only a resident
+ *             worker process with ffmpeg available claims these.
+ */
+export type JobLane = "default" | "video";
+
+export const JOB_LANES: readonly JobLane[] = ["default", "video"] as const;
+
+/** Which lane each job type runs in. Unlisted types are "default". */
+const LANE_BY_TYPE: Partial<Record<JobType, JobLane>> = {
+  "video.process": "video",
+};
+
+export function laneForType(type: JobType | string): JobLane {
+  return LANE_BY_TYPE[type as JobType] ?? "default";
+}
+
+/**
+ * How long a claim stays valid before recovery may reclaim the job. The running
+ * worker renews this (heartbeatJob) every HEARTBEAT_INTERVAL_MS, so the lease
+ * only lapses when the process actually died — a job that legitimately takes
+ * 20 minutes is never stolen and executed twice.
+ */
+const LEASE_MS_BY_LANE: Record<JobLane, number> = {
+  default: 5 * 60_000,
+  video: 10 * 60_000,
+};
+
+/**
+ * Hard ceiling on one handler invocation. Without it a single hung socket
+ * stalls a worker forever (no outbound fetch in this codebase sets its own
+ * deadline). Video renders get their own, much larger budget.
+ */
+const TIMEOUT_MS_BY_LANE: Record<JobLane, number> = {
+  default: 2 * 60_000,
+  video: 60 * 60_000,
+};
+
+export function jobTimeoutMs(lane: JobLane): number {
+  if (lane === "video") {
+    const n = Number(process.env.VIDEO_JOB_TIMEOUT_MS);
+    if (Number.isFinite(n) && n >= 60_000) return Math.min(n, 6 * 3600_000);
+  }
+  return TIMEOUT_MS_BY_LANE[lane];
+}
+
+/** Renew the lock this often while a handler runs. */
+export const HEARTBEAT_INTERVAL_MS = 60_000;
 
 export interface EnqueueOptions {
   runAt?: Date;
@@ -36,6 +90,8 @@ export interface EnqueueOptions {
   maxAttempts?: number;
   /** Unique key — a second enqueue with the same key is a no-op. */
   idempotencyKey?: string;
+  /** Override the lane derived from the job type (rarely needed). */
+  lane?: JobLane;
 }
 
 export async function enqueue(type: JobType, payload: Record<string, unknown>, opts: EnqueueOptions = {}): Promise<Job | null> {
@@ -44,6 +100,7 @@ export async function enqueue(type: JobType, payload: Record<string, unknown>, o
       data: {
         type,
         payload: payload as Prisma.InputJsonValue,
+        lane: opts.lane ?? laneForType(type),
         runAt: opts.runAt ?? new Date(),
         priority: opts.priority ?? 0,
         maxAttempts: opts.maxAttempts ?? 5,
@@ -67,15 +124,26 @@ export function backoffMs(attempt: number): number {
   return capped + Math.floor(Math.random() * 5_000);
 }
 
-/** Claim the next runnable job atomically. */
-export async function claimNextJob(workerId: string): Promise<Job | null> {
+/**
+ * Claim the next runnable job atomically, restricted to lanes this process can
+ * actually finish. `attempts < maxAttempts` is filtered here too: a job that
+ * exhausted its retries is never handed out again (previously a stale-recovered
+ * job could loop forever, because only failJob ever checked the cap).
+ */
+export async function claimNextJob(workerId: string, lanes: readonly JobLane[] = ["default"]): Promise<Job | null> {
+  const allowed = lanes.length > 0 ? [...lanes] : ["default"];
+  const leaseMs = Math.max(...allowed.map((l) => LEASE_MS_BY_LANE[l as JobLane] ?? LEASE_MS_BY_LANE.default));
   const rows = await prisma.$queryRaw<Job[]>`
     UPDATE "Job"
     SET status = 'RUNNING', "lockedAt" = NOW(), "lockedBy" = ${workerId},
+        "leaseExpiresAt" = NOW() + make_interval(secs => ${leaseMs / 1000}),
         attempts = attempts + 1, "updatedAt" = NOW()
     WHERE id = (
       SELECT id FROM "Job"
-      WHERE status IN ('PENDING', 'FAILED') AND "runAt" <= NOW()
+      WHERE status IN ('PENDING', 'FAILED')
+        AND "runAt" <= NOW()
+        AND lane = ANY(${allowed}::text[])
+        AND attempts < "maxAttempts"
       ORDER BY priority DESC, "runAt" ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -84,10 +152,24 @@ export async function claimNextJob(workerId: string): Promise<Job | null> {
   return rows[0] ?? null;
 }
 
+/**
+ * Extend the lease of a job this worker still holds. Returns false when the
+ * lock was lost (another worker recovered it), so the caller can abandon the
+ * run instead of writing its result over someone else's.
+ */
+export async function heartbeatJob(jobId: string, workerId: string, lane: JobLane = "default"): Promise<boolean> {
+  const leaseMs = LEASE_MS_BY_LANE[lane] ?? LEASE_MS_BY_LANE.default;
+  const res = await prisma.job.updateMany({
+    where: { id: jobId, lockedBy: workerId, status: "RUNNING" },
+    data: { leaseExpiresAt: new Date(Date.now() + leaseMs) },
+  });
+  return res.count > 0;
+}
+
 export async function completeJob(jobId: string): Promise<void> {
   await prisma.job.update({
     where: { id: jobId },
-    data: { status: "COMPLETED", lockedAt: null, lockedBy: null, lastError: null },
+    data: { status: "COMPLETED", lockedAt: null, lockedBy: null, leaseExpiresAt: null, lastError: null },
   });
 }
 
@@ -101,20 +183,116 @@ export async function failJob(job: Job, err: unknown): Promise<void> {
       lastError: message.slice(0, 2000),
       lockedAt: null,
       lockedBy: null,
+      leaseExpiresAt: null,
       runAt: dead ? job.runAt : new Date(Date.now() + backoffMs(job.attempts)),
     },
   });
   (dead ? log.error : log.warn)("job failed", { jobId: job.id, type: job.type, attempt: job.attempts, dead, error: message });
 }
 
-/** Recover jobs whose worker died mid-run (lock older than 5 minutes). */
+/**
+ * Recover jobs whose worker died mid-run — the lease lapsed without a heartbeat.
+ *
+ * Two rules that used to be missing, and together made a killed job retry
+ * forever at full speed: a recovered job that has exhausted its attempts is
+ * DEAD (not FAILED), and a recovered job gets the same exponential backoff a
+ * normally-failed job gets instead of being instantly claimable again. That
+ * matters most in the video lane, where a render that reliably runs the host
+ * out of memory would otherwise re-run in a tight loop forever.
+ */
 export async function recoverStaleJobs(): Promise<number> {
-  const res = await prisma.job.updateMany({
-    where: { status: "RUNNING", lockedAt: { lt: new Date(Date.now() - 5 * 60_000) } },
-    data: { status: "FAILED", lockedAt: null, lockedBy: null, lastError: "worker lock expired" },
+  const now = new Date();
+  const stale = await prisma.job.findMany({
+    where: {
+      status: "RUNNING",
+      OR: [
+        { leaseExpiresAt: { lt: now } },
+        // legacy rows claimed before leases existed
+        { leaseExpiresAt: null, lockedAt: { lt: new Date(now.getTime() - 5 * 60_000) } },
+      ],
+    },
+    select: { id: true, type: true, attempts: true, maxAttempts: true },
+    take: 200,
   });
-  if (res.count > 0) log.warn("recovered stale jobs", { count: res.count });
-  return res.count;
+  if (stale.length === 0) return 0;
+
+  let revived = 0;
+  let dead = 0;
+  for (const job of stale) {
+    const exhausted = job.attempts >= job.maxAttempts;
+    await prisma.job.update({
+      where: { id: job.id },
+      data: {
+        status: exhausted ? "DEAD" : "FAILED",
+        lockedAt: null,
+        lockedBy: null,
+        leaseExpiresAt: null,
+        lastError: exhausted
+          ? "worker lock expired and retries are exhausted — job dead-lettered"
+          : "worker lock expired (the process died or was killed mid-run)",
+        ...(exhausted ? {} : { runAt: new Date(Date.now() + backoffMs(job.attempts)) }),
+      },
+    });
+    if (exhausted) dead++;
+    else revived++;
+  }
+  log.warn("recovered stale jobs", { revived, dead, types: [...new Set(stale.map((j) => j.type))] });
+  return stale.length;
+}
+
+// ---- worker liveness ----
+
+/**
+ * Record that a drain is alive and which lanes it serves, so the platform can
+ * tell "queue idle" from "nothing is draining the queue", and can say honestly
+ * whether a video-capable worker exists before it accepts a render.
+ */
+export async function recordWorkerHeartbeat(input: {
+  workerId: string;
+  lanes: readonly JobLane[];
+  ffmpeg?: boolean;
+  kind?: "worker" | "cron" | "inline";
+  jobsDone?: number;
+}): Promise<void> {
+  try {
+    await prisma.workerHeartbeat.upsert({
+      where: { id: input.workerId },
+      create: {
+        id: input.workerId,
+        lanes: [...input.lanes],
+        ffmpeg: input.ffmpeg ?? false,
+        kind: input.kind ?? "worker",
+        jobsDone: input.jobsDone ?? 0,
+        lastSeenAt: new Date(),
+      },
+      update: {
+        lanes: [...input.lanes],
+        ffmpeg: input.ffmpeg ?? false,
+        kind: input.kind ?? "worker",
+        lastSeenAt: new Date(),
+        ...(input.jobsDone !== undefined ? { jobsDone: { increment: input.jobsDone } } : {}),
+      },
+    });
+  } catch (err) {
+    // liveness bookkeeping must never break job processing
+    log.warn("worker heartbeat failed", errorFields(err));
+  }
+}
+
+/** Workers seen within `withinMs` (default 5 min), newest first. */
+export async function liveWorkers(withinMs = 5 * 60_000) {
+  return prisma.workerHeartbeat.findMany({
+    where: { lastSeenAt: { gte: new Date(Date.now() - withinMs) } },
+    orderBy: { lastSeenAt: "desc" },
+  });
+}
+
+/** Is a process that can actually run FFmpeg work online right now? */
+export async function isVideoWorkerOnline(withinMs = 5 * 60_000): Promise<boolean> {
+  const n = await prisma.workerHeartbeat.count({
+    where: { lastSeenAt: { gte: new Date(Date.now() - withinMs) }, ffmpeg: true, lanes: { has: "video" } },
+  });
+  return n > 0;
 }
 
 // ---- handler registry ----
@@ -131,27 +309,74 @@ export function getHandler(type: string): JobHandler | undefined {
   return handlers.get(type);
 }
 
-export async function processJob(job: Job): Promise<void> {
+export class JobTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`Handler exceeded its ${Math.round(ms / 1000)}s budget and was abandoned`);
+    this.name = "JobTimeoutError";
+  }
+}
+
+/**
+ * Run one job with two protections the queue previously lacked:
+ *
+ *  - a hard timeout, so one hung socket cannot stall a worker forever; and
+ *  - a lease heartbeat while the handler runs, so a legitimately long job
+ *    (a video render) is not declared stale and executed a second time.
+ *
+ * The timeout abandons the await; it cannot kill work already in flight inside
+ * the handler, so handlers that spawn processes take an AbortSignal of their own
+ * (see runVideoJob). The job is then failed normally and retried with backoff.
+ */
+export async function processJob(job: Job, workerId?: string): Promise<void> {
   const handler = handlers.get(job.type);
   if (!handler) {
     await failJob(job, new Error(`No handler registered for job type ${job.type}`));
     return;
   }
+
+  const lane = (job.lane as JobLane) ?? laneForType(job.type);
+  const budgetMs = jobTimeoutMs(lane);
+  const owner = workerId ?? job.lockedBy ?? null;
+
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  if (owner) {
+    heartbeat = setInterval(() => {
+      void heartbeatJob(job.id, owner, lane).catch(() => {});
+    }, HEARTBEAT_INTERVAL_MS);
+    // never hold the process open just for a heartbeat
+    heartbeat.unref?.();
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    await handler((job.payload ?? {}) as Record<string, unknown>, job);
+    await Promise.race([
+      handler((job.payload ?? {}) as Record<string, unknown>, job),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new JobTimeoutError(budgetMs)), budgetMs);
+        timer.unref?.();
+      }),
+    ]);
     await completeJob(job.id);
   } catch (err) {
     await failJob(job, err);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (heartbeat) clearInterval(heartbeat);
   }
 }
 
-/** Drain runnable jobs until the queue is empty (worker loop body / inline mode). */
-export async function drainOnce(workerId: string, max = 25): Promise<number> {
+/**
+ * Drain runnable jobs until the queue is empty (worker loop body / inline mode).
+ * `lanes` defaults to the short lane only: a caller must opt in to the video
+ * lane by proving it can run FFmpeg, so a serverless drain never claims a
+ * render it would be killed halfway through.
+ */
+export async function drainOnce(workerId: string, max = 25, lanes: readonly JobLane[] = ["default"]): Promise<number> {
   let processed = 0;
   for (let i = 0; i < max; i++) {
-    const job = await claimNextJob(workerId);
+    const job = await claimNextJob(workerId, lanes);
     if (!job) break;
-    await processJob(job);
+    await processJob(job, workerId);
     processed++;
   }
   return processed;

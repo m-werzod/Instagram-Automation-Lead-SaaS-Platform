@@ -35,6 +35,11 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
   if (!existing) throw notFound("CTA config");
   await assertAccountAccess(auth, existing.accountId);
 
+  if (body.leadFlowId) {
+    const flow = await prisma.leadFlow.findFirst({ where: { id: body.leadFlowId, accountId: existing.accountId } });
+    if (!flow) throw notFound("Selected lead flow (must belong to the same account)");
+  }
+
   const cta = await prisma.ctaConfig.update({
     where: { id },
     data: {

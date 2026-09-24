@@ -40,6 +40,21 @@ export function resourceUrlFor(id: string, mimeType: string): string {
   return `${coreEnv().APP_URL}/r/${id}.${resourceExtensionFor(mimeType)}`;
 }
 
+/**
+ * Content-Disposition value for a stored file name.
+ *
+ * HTTP header values are Latin-1: a Cyrillic or Uzbek file name put in raw threw
+ * inside the response constructor, so /r/{id} answered 500 — which broke the
+ * public link AND Meta's fetch of the attachment. RFC 5987 carries the real name
+ * in `filename*`, with a plain-ASCII `filename` for clients that ignore it.
+ */
+export function contentDispositionFor(rawName: string, disposition: "inline" | "attachment" = "inline"): string {
+  const name = rawName.trim() || "file";
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_") || "file";
+  const encoded = encodeURIComponent(name).replace(/['()*!]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 /** Broader than MediaAsset's publish-only allowlist on purpose — these files
  * never enter Instagram's publish pipeline, so PDFs/docs are fine. */
 export const ALLOWED_RESOURCE_MIME = new Set([

@@ -9,6 +9,8 @@ import {
   igExchangeLongLived,
   igRefreshLongLived,
   igLoginScopes,
+  FB_LOGIN_SCOPES,
+  IG_OPTIONAL_SCOPES,
 } from "./oauth";
 import { getActiveToken, markTokenExpired, resolveAccess, storeToken } from "./tokens";
 import { AppError, notFound } from "@/lib/errors";
@@ -79,7 +81,7 @@ export async function finalizeInstagramLogin(code: string): Promise<ConnectResul
   });
 
   await storeToken({ accountId: account.id, kind: "user", token: long.accessToken, scopes, expiresAt });
-  await syncPermissions(account.id, scopes);
+  await syncPermissions(account.id, scopes, [...igLoginScopes(), ...IG_OPTIONAL_SCOPES]);
 
   // Webhook subscription is non-fatal: the account is connected either way, and
   // the admin can retry it from the account card without re-authorizing.
@@ -279,7 +281,7 @@ export async function finalizeFacebookLogin(code: string, targetAccountId?: stri
         expiresAt: null,
       });
     }
-    await syncPermissions(target.id, grantedScopes);
+    await syncPermissions(target.id, grantedScopes, FB_LOGIN_SCOPES);
     accounts.push(await prisma.instagramAccount.findUniqueOrThrow({ where: { id: target.id } }));
   }
 
@@ -287,14 +289,38 @@ export async function finalizeFacebookLogin(code: string, targetAccountId?: stri
   return { accounts, warnings };
 }
 
-async function syncPermissions(accountId: string, scopes: string[]) {
-  for (const permission of scopes) {
+/**
+ * Record what Meta actually grants right now.
+ *
+ * Meta reports a revocation by simply not listing the permission any more, so
+ * anything inside `governs` that is absent from `granted` is flipped to
+ * granted:false — otherwise the capability matrix keeps advertising a feature
+ * the user took away, and the failure only shows up as a Graph error mid-send.
+ * Rows are kept rather than deleted so the history of what was once granted
+ * survives a re-authorization.
+ *
+ * `governs` is per-flow because one account can hold BOTH connections: the
+ * Facebook (ads) authorization never reports instagram_* scopes, and treating
+ * its response as authoritative over everything would revoke the messaging
+ * permissions of the Instagram Login connection.
+ */
+async function syncPermissions(accountId: string, granted: string[], governs: readonly string[]) {
+  const checkedAt = new Date();
+  for (const permission of granted) {
     await prisma.instagramPermission.upsert({
       where: { accountId_permission: { accountId, permission } },
       create: { accountId, permission, granted: true },
-      update: { granted: true, checkedAt: new Date() },
+      update: { granted: true, checkedAt },
     });
   }
+
+  const revoked = governs.filter((p) => !granted.includes(p));
+  if (revoked.length === 0) return;
+  const { count } = await prisma.instagramPermission.updateMany({
+    where: { accountId, permission: { in: revoked }, granted: true },
+    data: { granted: false, checkedAt },
+  });
+  if (count > 0) log.warn("permissions no longer granted at Meta", { accountId, revoked });
 }
 
 /** Live probe used by the "Test Connection" button and health checks. */
@@ -377,13 +403,22 @@ export async function disconnectAccount(accountId: string) {
   ]);
 }
 
+/** Lead time on tokens Meta will not refresh, for both the sweep and re-auth warnings. */
+const REAUTH_WARNING_MS = 10 * 24 * 3600 * 1000;
+
 /**
  * Refresh tokens approaching expiry (worker cron).
  *  - Mode A: refreshable in place when ≥24h old and <10 days remaining.
  *  - Mode B: user tokens cannot be silently refreshed — mark for re-auth.
+ *  - Facebook ads/page tokens: same, and reported separately because losing
+ *    them costs advertising only, not messaging.
  */
-export async function refreshExpiringTokens(): Promise<{ refreshed: number; needsReauth: number }> {
-  const soon = new Date(Date.now() + 10 * 24 * 3600 * 1000);
+export async function refreshExpiringTokens(): Promise<{
+  refreshed: number;
+  needsReauth: number;
+  adsNeedsReconnect: number;
+}> {
+  const soon = new Date(Date.now() + REAUTH_WARNING_MS);
   const candidates = await prisma.instagramToken.findMany({
     where: { status: "ACTIVE", kind: "user", expiresAt: { not: null, lt: soon } },
     include: { account: true },
@@ -421,5 +456,53 @@ export async function refreshExpiringTokens(): Promise<{ refreshed: number; need
       log.warn("FB user token near expiry — admin must reconnect", { accountId: row.accountId });
     }
   }
-  return { refreshed, needsReauth };
+  return { refreshed, needsReauth, adsNeedsReconnect: await flagExpiringFacebookTokens() };
+}
+
+/**
+ * Advertising rides on the Facebook token stored as kind "ads" (and the Page
+ * token beside it), which Meta gives no way to refresh — ig_refresh_token is
+ * Instagram-only, and a long-lived Facebook user token simply dies ~60 days
+ * after the admin authorized it. So this does not pretend to renew anything: a
+ * token that is already past its expiry is marked EXPIRED, which turns the ads
+ * capability off with a reconnect reason instead of letting a campaign fail
+ * mid-publish; one still inside the warning window is left working and only
+ * warned about, with lastCheckedAt stamped so the token list shows when the
+ * sweep last looked at it. The deadline the account card shows is derived from
+ * expiresAt, not from anything written here.
+ *
+ * The Instagram Login token is untouched — reconnecting Facebook must never be
+ * required to keep answering DMs.
+ */
+async function flagExpiringFacebookTokens(): Promise<number> {
+  const rows = await prisma.instagramToken.findMany({
+    where: {
+      status: "ACTIVE",
+      kind: { in: ["ads", "page"] },
+      expiresAt: { not: null, lt: new Date(Date.now() + REAUTH_WARNING_MS) },
+    },
+    select: { id: true, accountId: true, kind: true, expiresAt: true },
+  });
+
+  const now = Date.now();
+  for (const row of rows) {
+    const expiresAt = row.expiresAt;
+    if (!expiresAt) continue;
+    if (expiresAt.getTime() <= now) {
+      await markTokenExpired(row.id);
+      log.warn("facebook token expired — advertising needs a reconnect", {
+        accountId: row.accountId,
+        kind: row.kind,
+      });
+    } else {
+      await prisma.instagramToken.update({ where: { id: row.id }, data: { lastCheckedAt: new Date() } });
+      log.warn("facebook token near expiry and cannot be refreshed — admin must reconnect Facebook", {
+        accountId: row.accountId,
+        kind: row.kind,
+        expiresAt: expiresAt.toISOString(),
+        daysLeft: Math.floor((expiresAt.getTime() - now) / (24 * 3600 * 1000)),
+      });
+    }
+  }
+  return rows.length;
 }

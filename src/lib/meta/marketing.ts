@@ -5,7 +5,7 @@ import { createLogger, errorFields } from "@/lib/logger";
 import { coreEnv } from "@/lib/env";
 import { graphCall, MetaApiError } from "./client";
 import { resolveAdsAccess } from "./tokens";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
 const log = createLogger("meta.marketing");
 
@@ -255,9 +255,30 @@ export interface MetaCampaignIds {
   metaAdId: string;
 }
 
+export type CampaignChainStep = "campaign" | "adset" | "creative" | "ad" | "done";
+
+/**
+ * Which step of the Meta chain still has to be created — the FIRST missing id
+ * wins. Pure so the resume rule is pinned by a test: every object Meta returned
+ * before a failure is a real row in Ads Manager, and a retry that started from
+ * scratch would leave it there forever with nothing referencing it.
+ */
+export function nextCreationStep(campaign: Pick<Campaign, "metaCampaignId" | "metaAdSetId" | "metaCreativeId" | "metaAdId">): CampaignChainStep {
+  if (!campaign.metaCampaignId) return "campaign";
+  if (!campaign.metaAdSetId) return "adset";
+  if (!campaign.metaCreativeId) return "creative";
+  if (!campaign.metaAdId) return "ad";
+  return "done";
+}
+
 /**
  * Create the full campaign→adset→creative→ad chain in Meta, ALL PAUSED.
  * Local Campaign row must already exist (status DRAFT/READY).
+ *
+ * Each id is written to that row the moment Meta returns it, and a call that
+ * finds ids already there resumes from the first missing step. Meta has no
+ * transaction across these four calls, so this is the only way a retry after a
+ * mid-chain failure stops stacking up orphaned campaigns and ad sets.
  */
 export async function createCampaignInMeta(account: InstagramAccount, campaign: Campaign): Promise<MetaCampaignIds> {
   assertAdsCapable(account);
@@ -282,78 +303,103 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
     throw new AppError("VALIDATION", "A lifetime budget needs an end date");
   }
 
+  const resumedFrom = nextCreationStep(campaign);
+  if (resumedFrom !== "campaign") log.info("resuming Meta campaign chain", { campaignId: campaign.id, from: resumedFrom });
+  const remember = (data: Prisma.CampaignUpdateInput) => prisma.campaign.update({ where: { id: campaign.id }, data });
+
   // 1. Campaign (PAUSED)
-  const camp = await graphCall<{ id: string }>({
-    host: "graph.facebook.com",
-    method: "POST",
-    path: `${adAccount}/campaigns`,
-    accessToken: access.accessToken,
-    body: {
-      name: campaign.name,
-      objective: campaign.objective,
-      status: "PAUSED",
-      special_ad_categories: [],
-    },
-  });
+  let metaCampaignId = campaign.metaCampaignId;
+  if (!metaCampaignId) {
+    const camp = await graphCall<{ id: string }>({
+      host: "graph.facebook.com",
+      method: "POST",
+      path: `${adAccount}/campaigns`,
+      accessToken: access.accessToken,
+      body: {
+        name: campaign.name,
+        objective: campaign.objective,
+        status: "PAUSED",
+        special_ad_categories: [],
+      },
+    });
+    metaCampaignId = camp.id;
+    await remember({ metaCampaignId });
+  }
 
   // 2. Ad set (PAUSED)
-  const adsetBody: Record<string, unknown> = {
-    name: `${campaign.name} — ad set`,
-    campaign_id: camp.id,
-    status: "PAUSED",
-    billing_event: config.billingEvent,
-    optimization_goal: config.optimizationGoal,
-    targeting: buildTargeting(targeting),
-  };
-  if (campaign.dailyBudgetCents) adsetBody.daily_budget = campaign.dailyBudgetCents;
-  if (campaign.lifetimeBudgetCents) {
-    adsetBody.lifetime_budget = campaign.lifetimeBudgetCents;
-    adsetBody.end_time = campaign.endTime!.toISOString();
-  } else if (campaign.endTime) {
-    adsetBody.end_time = campaign.endTime.toISOString();
-  }
-  if (campaign.startTime) adsetBody.start_time = campaign.startTime.toISOString();
-  if (config.destinationType) adsetBody.destination_type = config.destinationType;
-  if (config.needsPage) adsetBody.promoted_object = { page_id: account.fbPageId };
+  let metaAdSetId = campaign.metaAdSetId;
+  if (!metaAdSetId) {
+    const adsetBody: Record<string, unknown> = {
+      name: `${campaign.name} — ad set`,
+      campaign_id: metaCampaignId,
+      status: "PAUSED",
+      billing_event: config.billingEvent,
+      optimization_goal: config.optimizationGoal,
+      targeting: buildTargeting(targeting),
+    };
+    if (campaign.dailyBudgetCents) adsetBody.daily_budget = campaign.dailyBudgetCents;
+    if (campaign.lifetimeBudgetCents) {
+      adsetBody.lifetime_budget = campaign.lifetimeBudgetCents;
+      adsetBody.end_time = campaign.endTime!.toISOString();
+    } else if (campaign.endTime) {
+      adsetBody.end_time = campaign.endTime.toISOString();
+    }
+    if (campaign.startTime) adsetBody.start_time = campaign.startTime.toISOString();
+    if (config.destinationType) adsetBody.destination_type = config.destinationType;
+    if (config.needsPage) adsetBody.promoted_object = { page_id: account.fbPageId };
 
-  const adset = await graphCall<{ id: string }>({
-    host: "graph.facebook.com",
-    method: "POST",
-    path: `${adAccount}/adsets`,
-    accessToken: access.accessToken,
-    body: adsetBody,
-  });
+    const adset = await graphCall<{ id: string }>({
+      host: "graph.facebook.com",
+      method: "POST",
+      path: `${adAccount}/adsets`,
+      accessToken: access.accessToken,
+      body: adsetBody,
+    });
+    metaAdSetId = adset.id;
+    await remember({ metaAdSetId });
+  }
 
   // 3. Creative
-  const creativeBody = await buildCreative(account, campaign);
-  const creative = await graphCall<{ id: string }>({
-    host: "graph.facebook.com",
-    method: "POST",
-    path: `${adAccount}/adcreatives`,
-    accessToken: access.accessToken,
-    body: creativeBody,
-  });
+  let metaCreativeId = campaign.metaCreativeId;
+  if (!metaCreativeId) {
+    const creativeBody = await buildCreative(account, campaign);
+    const creative = await graphCall<{ id: string }>({
+      host: "graph.facebook.com",
+      method: "POST",
+      path: `${adAccount}/adcreatives`,
+      accessToken: access.accessToken,
+      body: creativeBody,
+    });
+    metaCreativeId = creative.id;
+    await remember({ metaCreativeId });
+  }
 
   // 4. Ad (PAUSED)
-  const ad = await graphCall<{ id: string }>({
-    host: "graph.facebook.com",
-    method: "POST",
-    path: `${adAccount}/ads`,
-    accessToken: access.accessToken,
-    body: {
-      name: `${campaign.name} — ad`,
-      adset_id: adset.id,
-      creative: { creative_id: creative.id },
-      status: "PAUSED",
-    },
-  });
+  let metaAdId = campaign.metaAdId;
+  if (!metaAdId) {
+    const ad = await graphCall<{ id: string }>({
+      host: "graph.facebook.com",
+      method: "POST",
+      path: `${adAccount}/ads`,
+      accessToken: access.accessToken,
+      body: {
+        name: `${campaign.name} — ad`,
+        adset_id: metaAdSetId,
+        creative: { creative_id: metaCreativeId },
+        status: "PAUSED",
+      },
+    });
+    metaAdId = ad.id;
+    await remember({ metaAdId });
+  }
 
   log.info("campaign chain created in Meta (PAUSED)", {
     campaignId: campaign.id,
-    metaCampaignId: camp.id,
+    metaCampaignId,
+    resumedFrom,
   });
 
-  return { metaCampaignId: camp.id, metaAdSetId: adset.id, metaCreativeId: creative.id, metaAdId: ad.id };
+  return { metaCampaignId, metaAdSetId, metaCreativeId, metaAdId };
 }
 
 /**
@@ -534,6 +580,90 @@ export async function stopCampaignInMeta(account: InstagramAccount, campaign: Ca
   });
 }
 
+/**
+ * Why this campaign cannot be paused, or null when it can. Pausing acts on
+ * something that is live in Meta; a local draft has nothing to pause, and
+ * marking it PAUSED anyway strands it — the create-in-Meta route only accepts
+ * DRAFT/READY/ERROR, and editing is only allowed in those states too, so the
+ * campaign could then neither be built nor changed.
+ */
+export function campaignPauseProblem(status: Campaign["status"]): string | null {
+  switch (status) {
+    case "ACTIVE":
+    case "PAUSED":
+    case "CREATED":
+      return null;
+    case "DRAFT":
+    case "READY":
+      return "This campaign has not been created in Meta yet — there is nothing running to pause.";
+    case "ERROR":
+      return "This campaign never made it into Meta — there is nothing running to pause.";
+    case "ARCHIVED":
+      return "This campaign is archived — it is already stopped for good.";
+  }
+}
+
+/**
+ * Why this campaign cannot be archived locally, or null when it can. Archiving
+ * only hides it HERE; Meta keeps delivering, and keeps spending the ad account's
+ * money, until Meta itself is told to stop. `live` is Meta's own answer, or null
+ * when there is nothing in Meta to ask about (a local draft, a demo account).
+ */
+export function campaignArchiveProblem(localStatus: Campaign["status"], live: CampaignLiveStatus | null): string | null {
+  // A reply carrying neither field is not an answer: reading it as "not running"
+  // would hide a campaign nobody confirmed had stopped, so fall back to what is
+  // known locally exactly as if Meta had not been asked.
+  const verdict = live && (live.effectiveStatus || live.status) ? live : null;
+  const stillRunning = verdict ? verdict.effectiveStatus === "ACTIVE" || verdict.status === "ACTIVE" : localStatus === "ACTIVE";
+  if (!stillRunning) return null;
+  return "This campaign is still ACTIVE in Meta — archiving it here would only hide it while Meta keeps delivering and charging the ad account. Stop it (or pause it) first, then archive.";
+}
+
+/**
+ * Which object of the Meta chain owns each editable field. Meta copies these
+ * values when the object is created and never re-reads the local row.
+ */
+const FIELD_OWNER: Record<string, "campaign" | "adset" | "creative"> = {
+  objective: "campaign",
+  dailyBudgetCents: "adset",
+  lifetimeBudgetCents: "adset",
+  startTime: "adset",
+  endTime: "adset",
+  targeting: "adset",
+  contentId: "creative",
+  creativeSpec: "creative",
+  ctaType: "creative",
+  ctaConfigId: "creative",
+  destinationType: "creative",
+  destinationUrl: "creative",
+  metaFormId: "creative",
+};
+
+const OWNER_WORDS: Record<"campaign" | "adset" | "creative", { object: string; fields: string }> = {
+  campaign: { object: "campaign", fields: "objective" },
+  adset: { object: "ad set", fields: "budget, schedule and targeting" },
+  creative: { object: "ad creative", fields: "creative, destination and button" },
+};
+
+/**
+ * Why these changed fields can no longer be saved, or null. A chain that failed
+ * halfway leaves real objects in Meta and the retry RESUMES from the first
+ * missing one (see nextCreationStep), so a field an existing object already
+ * owns would never reach Meta — saving it would show a budget here that Meta is
+ * not spending.
+ */
+export function campaignEditProblem(
+  campaign: Pick<Campaign, "metaCampaignId" | "metaAdSetId" | "metaCreativeId">,
+  changedFields: string[],
+): string | null {
+  const created = { campaign: campaign.metaCampaignId, adset: campaign.metaAdSetId, creative: campaign.metaCreativeId };
+  const owners = [...new Set(changedFields.map((f) => FIELD_OWNER[f]).filter((o) => o && created[o]))] as Array<"campaign" | "adset" | "creative">;
+  if (owners.length === 0) return null;
+  const objects = owners.map((o) => OWNER_WORDS[o].object).join(" and ");
+  const fields = owners.map((o) => OWNER_WORDS[o].fields).join(", ");
+  return `This campaign's ${objects} already ${owners.length > 1 ? "exist" : "exists"} in Meta, and Meta keeps the ${fields} it was created with — so that can no longer be changed here. Use "Create in Meta" to finish this campaign, change it in Meta Ads Manager, or stop it and build a new one.`;
+}
+
 // ---- status + insights (real numbers from Meta) ----
 
 export interface CampaignLiveStatus {
@@ -552,6 +682,53 @@ export async function fetchCampaignStatus(account: InstagramAccount, campaign: C
     params: { fields: "status,effective_status" },
   });
   return { status: info.status ?? null, effectiveStatus: info.effective_status ?? null };
+}
+
+// ---- ad review (Meta's verdict, never guessed here) ----
+
+export interface CampaignReviewIssue {
+  level: string | null;
+  code: number | null;
+  summary: string | null;
+  message: string | null;
+}
+
+export interface CampaignReview {
+  /** Meta's own effective_status for the AD: PENDING_REVIEW | DISAPPROVED | WITH_ISSUES | ACTIVE | … */
+  status: string | null;
+  issues: CampaignReviewIssue[] | null;
+}
+
+/**
+ * Meta reviews the AD, not the campaign, so the verdict is read from the ad's
+ * effective_status plus whatever issues_info it carries. Nothing is derived
+ * locally: an ad Meta has said nothing about stays null rather than being
+ * called "approved".
+ */
+export function parseAdReview(json: Record<string, unknown>): CampaignReview {
+  const status = typeof json.effective_status === "string" && json.effective_status ? json.effective_status : null;
+  const rows = (Array.isArray(json.issues_info) ? json.issues_info : []) as Array<Record<string, unknown>>;
+  const issues = rows.map((r) => ({
+    level: typeof r.level === "string" ? r.level : null,
+    code: Number.isFinite(Number(r.error_code)) ? Number(r.error_code) : null,
+    summary: typeof r.error_summary === "string" ? r.error_summary : null,
+    message: typeof r.error_message === "string" ? r.error_message : null,
+  }));
+  return { status, issues: issues.length > 0 ? issues : null };
+}
+
+/** Null when there is no ad in Meta yet — there is then no review to report. */
+export async function fetchAdReview(account: InstagramAccount, campaign: Campaign): Promise<CampaignReview | null> {
+  assertAdsCapable(account);
+  if (!campaign.metaAdId) return null;
+  const access = await resolveAdsAccess(account);
+  const json = await graphCall<Record<string, unknown>>({
+    host: "graph.facebook.com",
+    path: campaign.metaAdId,
+    accessToken: access.accessToken,
+    params: { fields: "effective_status,issues_info" },
+  });
+  return parseAdReview(json);
 }
 
 export interface CampaignInsights {
@@ -633,14 +810,26 @@ export function statusFromMeta(effectiveStatus: string | null): Campaign["status
   }
 }
 
-/** Pull status + spend/results from Meta and store the snapshot on the campaign. */
-export async function syncCampaignFromMeta(account: InstagramAccount, campaign: Campaign): Promise<{ status: CampaignLiveStatus; insights: CampaignInsights | null }> {
+/** Pull status + spend/results + Meta's ad review verdict, and store the snapshot on the campaign. */
+export async function syncCampaignFromMeta(
+  account: InstagramAccount,
+  campaign: Campaign,
+): Promise<{ status: CampaignLiveStatus; insights: CampaignInsights | null; review: CampaignReview | null }> {
   const status = await fetchCampaignStatus(account, campaign);
   let insights: CampaignInsights | null = null;
   try {
     insights = await fetchCampaignInsights(account, campaign);
   } catch (err) {
     log.warn("insights unavailable", { campaignId: campaign.id, ...errorFields(err) });
+  }
+  // A review Meta would not talk about is left exactly as it was — the stored
+  // verdict is only ever Meta's own words, never a local guess or a stale one
+  // overwritten with "unknown".
+  let review: CampaignReview | null = null;
+  try {
+    review = await fetchAdReview(account, campaign);
+  } catch (err) {
+    log.warn("ad review unavailable", { campaignId: campaign.id, ...errorFields(err) });
   }
   const implied = statusFromMeta(status.effectiveStatus);
   // Only reconcile states Meta can change on its own (a schedule ending, an
@@ -654,11 +843,18 @@ export async function syncCampaignFromMeta(account: InstagramAccount, campaign: 
     data: {
       ...(insights ? { insightsSnapshot: insights as unknown as Prisma.InputJsonValue } : {}),
       insightsSyncedAt: new Date(),
+      ...(review
+        ? {
+            reviewStatus: review.status,
+            reviewIssues: (review.issues as unknown as Prisma.InputJsonValue) ?? Prisma.DbNull,
+            reviewSyncedAt: new Date(),
+          }
+        : {}),
       ...(nextStatus ? { status: nextStatus } : {}),
       ...(nextStatus === "ARCHIVED" && !campaign.stoppedAt ? { stoppedAt: new Date() } : {}),
     },
   });
-  return { status, insights };
+  return { status, insights, review };
 }
 
 /** Meta-rendered preview of the created ad (HTML iframe) — the real thing, available once the creative exists. */

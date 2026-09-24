@@ -112,6 +112,16 @@ export function isWithinCooldown(cooldownSec: number | null | undefined, lastRun
   return now.getTime() - lastRunAt.getTime() < cooldownSec * 1000;
 }
 
+/**
+ * Pure (unit-tested): may this rule start that lead flow? A START_LEAD_FLOW
+ * flowId is admin-supplied JSON inside the rule, so it is checked against the
+ * rule's own account at RUN time — another account's flow must never answer
+ * this account's customers, whatever the rule was saved with.
+ */
+export function flowIsUsableByAccount(flow: { accountId: string } | null, accountId: string): boolean {
+  return Boolean(flow && flow.accountId === accountId);
+}
+
 /** Fire all enabled automations for a trigger. Never throws. */
 export async function runAutomations(trigger: AutomationTriggerType, ctx: TriggerContext): Promise<void> {
   let automations: Automation[] = [];
@@ -168,7 +178,10 @@ export async function runAutomations(trigger: AutomationTriggerType, ctx: Trigge
             triggerData: ctx as unknown as Prisma.InputJsonValue,
             result: results as unknown as Prisma.InputJsonValue,
             durationMs: Date.now() - startedAt,
-            error: results.find((r) => !r.ok)?.error,
+            // A run can succeed and still have something the admin must know —
+            // a caption Instagram would not carry. This single line is all the
+            // run history shows, so a note takes it when there is no error.
+            error: results.find((r) => !r.ok)?.error ?? results.find((r) => r.detail)?.detail,
           },
         }),
         prisma.automation.update({
@@ -276,6 +289,13 @@ async function executeAction(action: AutomationAction, ctx: TriggerContext): Pro
     }
     case "START_LEAD_FLOW": {
       if (!ctx.conversationId) return { type: action.type, ok: false, error: "no conversation in context" };
+      const flow = await prisma.leadFlow.findUnique({
+        where: { id: action.params.flowId },
+        select: { accountId: true },
+      });
+      if (!flowIsUsableByAccount(flow, ctx.accountId)) {
+        return { type: action.type, ok: false, error: "flow does not belong to this account" };
+      }
       const { startFlowSession } = await import("@/lib/leadflow/engine");
       const conversation = await prisma.conversation.findUnique({
         where: { id: ctx.conversationId },
@@ -364,7 +384,14 @@ async function executeAction(action: AutomationAction, ctx: TriggerContext): Pro
       }
 
       const { sendPrivateReplyResourceToComment } = await import("@/lib/meta/messaging");
-      await sendPrivateReplyResourceToComment(account, ctx.commentId, text, resourceLocation);
+      const sent = await sendPrivateReplyResourceToComment(account, ctx.commentId, text, resourceLocation);
+      // Instagram allows ONE private reply per comment, so a caption that
+      // cannot ride along with the resource cannot be delivered at all.
+      // Recorded on the run (visible in the rule's history) instead of being
+      // dropped without a trace — the send layer says which limit hit it.
+      if (sent.omittedText) {
+        return { type: action.type, ok: true, detail: `caption not sent: ${sent.omittedReason}` };
+      }
       return { type: action.type, ok: true };
     }
     default:

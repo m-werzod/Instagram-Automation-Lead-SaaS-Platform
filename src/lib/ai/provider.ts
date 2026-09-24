@@ -31,6 +31,13 @@ export interface ChatRequest {
   tools?: ToolDef[];
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Wall-clock moment (epoch ms) this call must be finished by, retry included.
+   * The caller owns the budget — an agent turn has to leave room for the send
+   * before the platform kills the invocation — so the provider passes it down
+   * instead of starting a fresh full-length attempt of its own.
+   */
+  deadlineMs?: number;
 }
 
 export interface ChatResponse {
@@ -49,7 +56,8 @@ export interface AIProvider {
 }
 
 export interface EmbeddingProvider {
-  embed(texts: string[]): Promise<number[][]>;
+  /** `deadlineMs` bounds the call the same way ChatRequest.deadlineMs bounds a chat. */
+  embed(texts: string[], opts?: { deadlineMs?: number }): Promise<number[][]>;
   readonly dimension: number;
   readonly model: string;
 }
@@ -66,7 +74,10 @@ export class AIProviderError extends Error {
     this.name = "AIProviderError";
     this.provider = provider;
     this.status = status;
-    this.retryable = opts.retryable ?? (status === 429 || status === 408 || (status !== undefined && status >= 500));
+    // No status = the request never reached the provider (socket, DNS, TLS,
+    // abort). That is transient by nature, so it stays retryable — anything
+    // else would hand the customer a canned fallback over a dropped packet.
+    this.retryable = opts.retryable ?? (status === undefined || status === 429 || status === 408 || status >= 500);
     this.retryAfterSec = opts.retryAfterSec;
   }
 
@@ -87,17 +98,48 @@ function transient(status: number | undefined): boolean {
   return status === undefined || status >= 500;
 }
 
+/** Below this there is no point starting another attempt — it could only be killed half-way. */
+const MIN_ATTEMPT_MS = 2_000;
+
+function remainingMs(deadlineMs: number | undefined): number {
+  return deadlineMs === undefined ? Number.POSITIVE_INFINITY : deadlineMs - Date.now();
+}
+
 /**
  * One HTTP call to an AI provider with a hard timeout and a single retry for
  * transient failures. Every provider goes through here so timeouts, retries
  * and error shaping live in one place.
+ *
+ * `deadlineMs` caps the WHOLE call: each attempt is shortened to what is left
+ * and the retry is skipped when the backoff plus a usable attempt no longer
+ * fit. Without it, one retry could double a 60s timeout and outlive the
+ * serverless invocation that is waiting for the answer.
  */
-export async function aiFetch(provider: string, url: string, init: RequestInit, opts: { timeoutMs?: number; retries?: number } = {}): Promise<Record<string, unknown>> {
-  const timeoutMs = opts.timeoutMs ?? aiTimeoutMs();
+export async function aiFetch(
+  provider: string,
+  url: string,
+  init: RequestInit,
+  opts: { timeoutMs?: number; retries?: number; deadlineMs?: number } = {},
+): Promise<Record<string, unknown>> {
+  const hardTimeoutMs = opts.timeoutMs ?? aiTimeoutMs();
   const retries = opts.retries ?? 1;
+  const deadlineMs = opts.deadlineMs;
+  /** Retry only while the backoff AND a usable attempt still fit in the budget. */
+  const mayRetry = (attempt: number, backoff: number) =>
+    attempt <= retries && remainingMs(deadlineMs) > backoff + MIN_ATTEMPT_MS;
+
   let attempt = 0;
   while (true) {
     attempt++;
+    const left = remainingMs(deadlineMs);
+    if (left < MIN_ATTEMPT_MS) {
+      throw new AIProviderError(provider, "the time budget for this turn ran out before the provider answered", undefined, {
+        retryable: true,
+      });
+    }
+    const timeoutMs = Math.min(hardTimeoutMs, left);
+    const backoffMs = 1500 * attempt;
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
@@ -106,8 +148,8 @@ export async function aiFetch(provider: string, url: string, init: RequestInit, 
     } catch (err) {
       clearTimeout(timer);
       const aborted = err instanceof Error && err.name === "AbortError";
-      if (attempt <= retries) {
-        await sleep(1500 * attempt);
+      if (mayRetry(attempt, backoffMs)) {
+        await sleep(backoffMs);
         continue;
       }
       if (aborted) throw new AIProviderError(provider, `timed out after ${Math.round(timeoutMs / 1000)}s`, 408);
@@ -121,8 +163,8 @@ export async function aiFetch(provider: string, url: string, init: RequestInit, 
       json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     } catch {
       if (!res.ok) {
-        if (attempt <= retries && transient(res.status)) {
-          await sleep(1500 * attempt);
+        if (transient(res.status) && mayRetry(attempt, backoffMs)) {
+          await sleep(backoffMs);
           continue;
         }
         throw new AIProviderError(provider, `HTTP ${res.status}: ${text.slice(0, 300)}`, res.status);
@@ -130,8 +172,8 @@ export async function aiFetch(provider: string, url: string, init: RequestInit, 
       throw new AIProviderError(provider, `non-JSON response: ${text.slice(0, 300)}`, undefined, { retryable: false });
     }
     if (!res.ok) {
-      if (attempt <= retries && transient(res.status)) {
-        await sleep(1500 * attempt);
+      if (transient(res.status) && mayRetry(attempt, backoffMs)) {
+        await sleep(backoffMs);
         continue;
       }
       const msg =

@@ -100,47 +100,80 @@ export async function sendPrivateReplyToComment(
   });
 }
 
-/**
- * Pure (unit-tested): the message body/bodies a resource + caption produce.
- * Meta's Send API documents image/video/audio attachment TYPES only — there
- * is no generic "file" attachment (unlike Messenger) — so an IMAGE/VIDEO
- * resource attaches natively and anything else (PDF, docs) sends as a link
- * inside the text instead. Never faked as a real attachment when it isn't one.
- *
- * A message is one or the other, not both (Meta's messaging payload takes a
- * single `message.attachment` OR `message.text`), so a caption alongside a
- * native attachment goes out as a short second message rather than assuming
- * an unconfirmed combined shape.
- */
-export function buildResourceMessages(
-  text: string,
-  resource: { kind: ResourceKind; url: string } | null,
-): Array<Record<string, unknown>> {
-  if (!resource || resource.kind === "FILE") {
-    const combined = resource ? `${text}\n\n${resource.url}`.trim() : text;
-    return [{ text: clampTextBytes(combined) }];
-  }
-  const attachmentType = resource.kind === "IMAGE" ? "image" : "video";
-  const messages: Array<Record<string, unknown>> = [
-    { attachment: { type: attachmentType, payload: { url: resource.url, is_reusable: false } } },
-  ];
-  if (text.trim()) messages.push({ text: clampTextBytes(text) });
-  return messages;
+export interface PrivateReplyPayload {
+  /** The single Send API `message` object this private reply may carry. */
+  message: Record<string, unknown>;
+  /** Caption that could NOT travel with it — reported, never silently dropped. */
+  omittedText: string | null;
+  /** Why it could not, in words an admin can act on. null when nothing was omitted. */
+  omittedReason: string | null;
 }
 
-/** Private reply carrying a resource (comment-resource automations) — see buildResourceMessages(). */
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Pure (unit-tested): the ONE message a resource + caption may become.
+ *
+ * Meta allows a single private reply per comment (docs/META_API.md §3) and the
+ * Send API's message object takes `attachment` OR `text`, never both — so a
+ * caption sent as a second call is not "the caption arriving late", it is a
+ * guaranteed rejection. The caption is therefore folded in wherever the text
+ * IS the message, and reported as omitted when a native attachment takes the
+ * one reply slot.
+ *
+ * Meta's Send API documents image/video/audio attachment TYPES only — there is
+ * no generic "file" attachment (unlike Messenger) — so an IMAGE/VIDEO resource
+ * attaches natively and anything else (PDF, docs) sends as a link inside the
+ * text, which is also how its caption survives. Never faked as a real
+ * attachment when it isn't one.
+ */
+export function buildPrivateReplyMessage(
+  text: string,
+  resource: { kind: ResourceKind; url: string } | null,
+): PrivateReplyPayload {
+  if (!resource) {
+    return { message: { text: clampTextBytes(text) }, omittedText: null, omittedReason: null };
+  }
+  if (resource.kind === "FILE") {
+    // The link IS the delivery here, and it sits at the END of the joined text —
+    // exactly where the 1000-byte clamp cuts. A caption well inside its 900-CHAR
+    // limit is already over the BYTE budget in Uzbek/Russian, which posted a
+    // truncated sentence and a dead "https…" stub. So the link is reserved
+    // first and only the caption gives ground.
+    const tail = `\n\n${resource.url}`;
+    const budget = MAX_TEXT_BYTES - utf8Bytes(tail);
+    const clamped = budget > 0 ? clampTextBytes(text.trim(), budget) : "";
+    // A long externalUrl (admin-pasted, tracking params and all) can leave room
+    // for the ellipsis and nothing else — that is an omitted caption, not a sent one.
+    const caption = clamped === "…" ? "" : clamped;
+    return {
+      message: { text: `${caption}${tail}`.trim() },
+      omittedText: caption ? null : text.trim() || null,
+      omittedReason: caption || !text.trim() ? null : "the file link alone fills Instagram's 1000-byte message limit",
+    };
+  }
+  const attachmentType = resource.kind === "IMAGE" ? "image" : "video";
+  return {
+    message: { attachment: { type: attachmentType, payload: { url: resource.url, is_reusable: false } } },
+    omittedText: text.trim() || null,
+    omittedReason: text.trim()
+      ? "Instagram allows one private reply per comment, and an attachment message cannot carry text"
+      : null,
+  };
+}
+
+/** Private reply carrying a resource (comment-resource automations) — see buildPrivateReplyMessage(). */
 export async function sendPrivateReplyResourceToComment(
   account: InstagramAccount,
   commentId: string,
   text: string,
   resource: { kind: ResourceKind; url: string } | null,
-): Promise<SendResult[]> {
-  const recipient = { comment_id: commentId };
-  const results: SendResult[] = [];
-  for (const message of buildResourceMessages(text, resource)) {
-    results.push(await sendRaw(account, { recipient, message }));
-  }
-  return results;
+): Promise<{ result: SendResult; omittedText: string | null; omittedReason: string | null }> {
+  const payload = buildPrivateReplyMessage(text, resource);
+  const result = await sendRaw(account, { recipient: { comment_id: commentId }, message: payload.message });
+  return { result, omittedText: payload.omittedText, omittedReason: payload.omittedReason };
 }
 
 async function sendRaw(account: InstagramAccount, body: Record<string, unknown>): Promise<SendResult> {
@@ -168,6 +201,9 @@ async function sendRaw(account: InstagramAccount, body: Record<string, unknown>)
 
 /** Reply publicly to a comment. */
 export async function replyToComment(account: InstagramAccount, commentId: string, text: string) {
+  // Same rule as sendRaw: a demo account never reaches Meta, and a public
+  // comment reply is the most visible send of all.
+  if (account.isDemo) return { id: `demo-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
   const access = await resolveAccess(account);
   return graphCall<{ id: string }>({
     host: access.host,

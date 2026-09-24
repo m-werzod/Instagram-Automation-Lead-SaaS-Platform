@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { formEncode, verifyStripeSignature, summarizeIntent, cardFromPaymentMethod } from "@/lib/billing/stripe";
+import { formEncode, verifyStripeSignature, summarizeIntent, summarizeRefund, cardFromPaymentMethod } from "@/lib/billing/stripe";
 import {
+  campaignFeeCurrencyProblem,
+  campaignQuoteOrProblem,
+  canReplayCharge,
+  chargeIdempotencyKey,
   computeCampaignQuote,
   computePlanQuote,
   DEFAULT_PRICING,
+  inFlightPaymentAction,
   invoiceNumber,
   nextBillingDate,
   nextRetryAt,
@@ -47,6 +52,89 @@ describe("computeCampaignQuote", () => {
   });
 });
 
+/**
+ * A percentage fee is a percentage OF the ad budget but is charged in the
+ * platform's own currency, so the two have to BE the same currency. There is no
+ * exchange rate in this platform and inventing one would over- or undercharge
+ * by whatever the real rate is that day — so the fee is refused, loudly.
+ */
+describe("campaign fee across currencies", () => {
+  const pricing = { ...DEFAULT_PRICING, currency: "USD", campaignFeePercent: 10, campaignFeeCents: 1000 };
+
+  it("refuses to price a percentage of a budget held in another currency", () => {
+    expect(() => computeCampaignQuote({ dailyBudgetCents: 500, currency: "UZS" }, pricing)).toThrow(/cannot be calculated/);
+    try {
+      computeCampaignQuote({ lifetimeBudgetCents: 20000, currency: "UZS" }, pricing);
+      expect.unreachable("should have refused the mixed-currency fee");
+    } catch (err) {
+      const e = err as { reason?: string; fix?: string; details?: { campaignCurrency?: string; pricingCurrency?: string } };
+      expect(e.reason).toMatch(/UZS/);
+      expect(e.reason).toMatch(/USD/);
+      // never an invented rate, and never a silent 0
+      expect(e.fix).toMatch(/flat campaign fee|Billing/);
+      expect(e.details).toMatchObject({ campaignCurrency: "UZS", pricingCurrency: "USD" });
+    }
+  });
+
+  it("prices normally when the two agree, whatever the case", () => {
+    expect(computeCampaignQuote({ dailyBudgetCents: 500, currency: "usd" }, pricing).totalCents).toBe(1350);
+    expect(campaignFeeCurrencyProblem("USD", pricing)).toBeNull();
+    expect(campaignFeeCurrencyProblem(null, pricing)).toBeNull();
+    expect(campaignFeeCurrencyProblem("EUR", pricing)).toMatch(/EUR/);
+  });
+
+  it("only refuses when a percentage would actually be charged", () => {
+    // no percentage configured → the flat fee is already in the pricing currency
+    expect(computeCampaignQuote({ dailyBudgetCents: 500, currency: "UZS" }, { ...pricing, campaignFeePercent: 0 }).totalCents).toBe(1000);
+    // no budget to take a percentage of
+    expect(computeCampaignQuote({ dailyBudgetCents: 0, currency: "UZS" }, pricing).totalCents).toBe(1000);
+  });
+
+  /**
+   * A screen that prices many campaigns at once must not go down with the whole
+   * page over one unpriceable row — and must not show the flat half of a fee the
+   * server would refuse either. That is what the non-throwing form is for.
+   */
+  it("hands a screen the refusal instead of throwing it", () => {
+    expect(campaignQuoteOrProblem({ dailyBudgetCents: 500, currency: "UZS" }, pricing)).toMatchObject({ quote: null });
+    expect(campaignQuoteOrProblem({ dailyBudgetCents: 500, currency: "UZS" }, pricing).problem).toMatch(/UZS/);
+    const priceable = campaignQuoteOrProblem({ dailyBudgetCents: 500, currency: "USD" }, pricing);
+    expect(priceable.problem).toBeNull();
+    expect(priceable.quote?.totalCents).toBe(1350);
+  });
+});
+
+/**
+ * An off-session charge whose answer never arrived may or may not have taken the
+ * money. Re-sending THAT attempt under its own key is a replay Stripe answers
+ * from its own record; anything else — a new key, a second Checkout, a re-send
+ * after Stripe has forgotten the key — is a second charge.
+ */
+describe("a charge whose outcome was never seen", () => {
+  const untraced = { providerPaymentIntentId: null, providerCheckoutSessionId: null };
+
+  it("replays only an attempt the provider never acknowledged, and only off-session", () => {
+    expect(inFlightPaymentAction(untraced, true)).toBe("replay");
+    // no off-session card → re-sending is impossible; read instead of opening a
+    // second Checkout for money that may already be gone
+    expect(inFlightPaymentAction(untraced, false)).toBe("read");
+  });
+
+  it("reads anything the provider did hand back a reference for", () => {
+    expect(inFlightPaymentAction({ ...untraced, providerPaymentIntentId: "pi_1" }, true)).toBe("read");
+    // a Checkout-born row was charged under a Checkout key entirely: an
+    // off-session "replay" of it would be a brand-new, un-deduplicated charge
+    expect(inFlightPaymentAction({ ...untraced, providerCheckoutSessionId: "cs_1" }, true)).toBe("read");
+  });
+
+  it("stops replaying once Stripe has forgotten the key (24h), rather than charging twice", () => {
+    const sent = new Date("2026-09-20T00:00:00Z");
+    expect(canReplayCharge(sent, new Date("2026-09-20T00:11:00Z"))).toBe(true);
+    expect(canReplayCharge(sent, new Date("2026-09-20T23:59:00Z"))).toBe(true);
+    expect(canReplayCharge(sent, new Date("2026-09-21T00:01:00Z"))).toBe(false);
+  });
+});
+
 describe("billing dates and retries", () => {
   it("advances by the interval and skips periods already in the past (no drift)", () => {
     const prev = new Date("2026-08-01T00:00:00Z");
@@ -71,6 +159,16 @@ describe("billing dates and retries", () => {
   });
   it("numbers invoices per year with a padded sequence", () => {
     expect(invoiceNumber(2026, 7)).toBe("INV-2026-00007");
+  });
+  /**
+   * The key carries no clock and no randomness: retrying an attempt whose answer
+   * was lost must reuse the same key so Stripe replays the original charge
+   * instead of taking the money again.
+   */
+  it("derives one charge key per attempt, deterministically", () => {
+    expect(chargeIdempotencyKey("schedule:s1:1757000000000", 2)).toBe("schedule:s1:1757000000000:2");
+    expect(chargeIdempotencyKey("p", 2)).toBe(chargeIdempotencyKey("p", 2));
+    expect(chargeIdempotencyKey("p", 2)).not.toBe(chargeIdempotencyKey("p", 3));
   });
 });
 
@@ -131,6 +229,15 @@ describe("reading Stripe objects", () => {
       amount: 1512,
       currency: "USD",
     });
+  });
+  it("tells a partial refund from a full one by the amounts Stripe reports", () => {
+    expect(summarizeRefund({ amount: 1512, amount_refunded: 1512, refunded: true })).toEqual({ chargeCents: 1512, refundedCents: 1512, full: true });
+    expect(summarizeRefund({ amount: 1512, amount_refunded: 500, refunded: false })).toEqual({ chargeCents: 1512, refundedCents: 500, full: false });
+    // Stripe's own `refunded` flag wins even when the amounts are missing…
+    expect(summarizeRefund({ refunded: true }).full).toBe(true);
+    // …and an unreadable payload stays partial rather than writing off the payment
+    expect(summarizeRefund({}).full).toBe(false);
+    expect(summarizeRefund({ amount: "1512", amount_refunded: "1512" }).full).toBe(true);
   });
   it("keeps only display metadata of a card — never the number", () => {
     const c = cardFromPaymentMethod({ id: "pm_1", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030, fingerprint: "x" } });

@@ -181,6 +181,32 @@ export function summarizeIntent(pi: Record<string, unknown>): StripeIntentSummar
   };
 }
 
+export interface StripeRefundSummary {
+  /** the charge's own total, as Stripe reports it */
+  chargeCents: number;
+  refundedCents: number;
+  /** true ONLY when Stripe says the whole charge went back */
+  full: boolean;
+}
+
+/**
+ * A charge.refunded event fires for partial refunds too, and Stripe reports the
+ * amounts rather than a "partial" flag — so the split has to be read from
+ * `refunded` / `amount_refunded` / `amount`. Anything else (an older payload
+ * that omits the amounts) is reported as partial: keeping a payment marked paid
+ * when only part of it came back is the honest reading, and a later full refund
+ * fires its own event.
+ */
+export function summarizeRefund(charge: Record<string, unknown>): StripeRefundSummary {
+  const num = (v: unknown): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const chargeCents = num(charge.amount);
+  const refundedCents = num(charge.amount_refunded);
+  return { chargeCents, refundedCents, full: charge.refunded === true || (chargeCents > 0 && refundedCents >= chargeCents) };
+}
+
 export function cardFromPaymentMethod(pm: Record<string, unknown>): StripeCard {
   const card = (pm.card ?? {}) as { brand?: string; last4?: string; exp_month?: number; exp_year?: number };
   return {

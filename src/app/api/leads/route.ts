@@ -7,8 +7,24 @@ import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound } from "@/lib/errors";
 import { enqueue, drainNow } from "@/lib/queue";
+import { normalizeLeadTags, parseLeadPage } from "@/lib/leads";
+import type { Prisma } from "@prisma/client";
 
 const STATUSES = ["NEW", "CONTACTED", "QUALIFIED", "IN_PROGRESS", "WON", "LOST"] as const;
+
+/** `followUp` board filters: overdue = due now or earlier, scheduled = has a date, none = has none. */
+function followUpWhere(mode: string | null): Prisma.LeadWhereInput {
+  switch (mode) {
+    case "overdue":
+      return { followUpAt: { lte: new Date() } };
+    case "scheduled":
+      return { followUpAt: { not: null } };
+    case "none":
+      return { followUpAt: null };
+    default:
+      return {};
+  }
+}
 
 export const GET = route(async (req: NextRequest) => {
   const auth = await requireAdmin();
@@ -16,31 +32,46 @@ export const GET = route(async (req: NextRequest) => {
   const accountId = sp.get("accountId") ?? undefined;
   const status = sp.get("status") ?? undefined;
   const q = sp.get("q") ?? undefined;
+  const tags = normalizeLeadTags((sp.get("tags") ?? "").split(","));
+  const { limit, offset } = parseLeadPage(sp.get("limit"), sp.get("offset"));
 
-  const leads = await prisma.lead.findMany({
-    where: {
-      ...(await accountScope(auth, accountId)),
-      ...(status && STATUSES.includes(status as (typeof STATUSES)[number]) ? { status: status as (typeof STATUSES)[number] } : {}),
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q, mode: "insensitive" } },
-              { phone: { contains: q } },
-              { email: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
-    include: {
-      account: { select: { username: true } },
-      campaign: { select: { id: true, name: true } },
-      flow: { select: { id: true, name: true } },
-      assignedAdmin: { select: { id: true, name: true, login: true } },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 500,
-  });
-  return ok({ leads });
+  const where: Prisma.LeadWhereInput = {
+    ...(await accountScope(auth, accountId)),
+    ...(status && STATUSES.includes(status as (typeof STATUSES)[number]) ? { status: status as (typeof STATUSES)[number] } : {}),
+    ...(tags.length ? { tags: { hasSome: tags } } : {}),
+    ...followUpWhere(sp.get("followUp")),
+    ...(q
+      ? {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { phone: { contains: q } },
+            { email: { contains: q, mode: "insensitive" } },
+            { outcomeReason: { contains: q, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+  };
+
+  // `total` is what makes the truncation visible: the board can say "showing
+  // 500 of 1 240" instead of quietly losing the older half.
+  const [total, leads] = await Promise.all([
+    prisma.lead.count({ where }),
+    prisma.lead.findMany({
+      where,
+      include: {
+        account: { select: { username: true } },
+        campaign: { select: { id: true, name: true } },
+        flow: { select: { id: true, name: true } },
+        assignedAdmin: { select: { id: true, name: true, login: true } },
+      },
+      // id breaks ties so a lead can never be skipped or repeated between pages
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: offset,
+      take: limit,
+    }),
+  ]);
+
+  return ok({ leads, total, limit, offset, hasMore: offset + leads.length < total });
 });
 
 const createSchema = z.object({

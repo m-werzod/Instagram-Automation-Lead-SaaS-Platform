@@ -1,13 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   allConditionsMatch,
   conditionMatches,
   contentScopeMatches,
+  flowIsUsableByAccount,
   isWithinCooldown,
   OUTBOUND_ACTIONS,
+  runAutomations,
   type AutomationCondition,
   type TriggerContext,
 } from "@/lib/automation/engine";
+
+// The engine's decisions are pure (tested below); its WIRING is not, so the
+// collaborators it reaches for are mocked — a unit test never touches a DB, a
+// queue or Meta. The send layer's own payload rules live in messaging-rules.test.ts.
+const db = vi.hoisted(() => ({
+  automation: { findMany: vi.fn(), update: vi.fn() },
+  automationRun: { create: vi.fn(), findFirst: vi.fn() },
+  instagramAccount: { findUnique: vi.fn() },
+  commentResource: { findUnique: vi.fn() },
+  leadFlow: { findUnique: vi.fn() },
+  conversation: { findUnique: vi.fn() },
+  message: { create: vi.fn() },
+  $transaction: vi.fn(),
+}));
+const settings = vi.hoisted(() => ({ masterAutomationEnabled: true, leadAutomationWhenOff: true }));
+const messaging = vi.hoisted(() => ({ sendPrivateReplyResourceToComment: vi.fn(), sendInstagramText: vi.fn() }));
+const leadflow = vi.hoisted(() => ({ startFlowSession: vi.fn() }));
+
+vi.mock("@/lib/prisma", () => ({ prisma: db }));
+vi.mock("@/lib/settings", () => ({ getGlobalSettings: async () => settings }));
+vi.mock("@/lib/meta/messaging", () => messaging);
+vi.mock("@/lib/leadflow/engine", () => leadflow);
 
 const ctx: TriggerContext = {
   accountId: "a1",
@@ -115,5 +139,139 @@ describe("isWithinCooldown", () => {
 
   it("the boundary itself (exactly the window) is no longer blocked", () => {
     expect(isWithinCooldown(3600, new Date(now.getTime() - 3_600_000), now)).toBe(false);
+  });
+});
+
+/**
+ * A START_LEAD_FLOW flowId is admin-supplied JSON on the rule, so ownership is
+ * a RUN-time question: a flow belonging to another account must never answer
+ * this account's customers (it would ask that account's questions and file the
+ * lead under it), and a flowId that no longer resolves must not fall through.
+ */
+describe("flowIsUsableByAccount", () => {
+  it("accepts a flow owned by the rule's own account", () => {
+    expect(flowIsUsableByAccount({ accountId: "a1" }, "a1")).toBe(true);
+  });
+
+  it("rejects another account's flow", () => {
+    expect(flowIsUsableByAccount({ accountId: "a2" }, "a1")).toBe(false);
+  });
+
+  it("rejects a flow that no longer exists", () => {
+    expect(flowIsUsableByAccount(null, "a1")).toBe(false);
+  });
+});
+
+/**
+ * The wiring around those decisions, which the pure tests above cannot reach:
+ * the ownership check must run BEFORE the flow engine is touched, and a run
+ * that succeeded but could not deliver everything must still say so on the one
+ * line the rule's history shows (AutomationRun.error) — the admin has no other
+ * view of it.
+ */
+describe("runAutomations", () => {
+  function rule(actions: unknown[], overrides: Record<string, unknown> = {}) {
+    return { id: "rule_1", contentId: null, conditions: [], cooldownSec: null, actions, ...overrides };
+  }
+  /** The row the rule-history dialog renders for this run. */
+  function lastRun(): { status: string; error?: string | null } {
+    const calls = db.automationRun.create.mock.calls;
+    return calls[calls.length - 1]?.[0]?.data;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    settings.masterAutomationEnabled = true;
+    settings.leadAutomationWhenOff = true;
+    db.automation.findMany.mockResolvedValue([]);
+    db.automation.update.mockResolvedValue({});
+    db.automationRun.create.mockResolvedValue({});
+    db.automationRun.findFirst.mockResolvedValue(null);
+    db.message.create.mockResolvedValue({});
+    db.$transaction.mockImplementation(async (ops: Array<Promise<unknown>>) => Promise.all(ops));
+    db.instagramAccount.findUnique.mockResolvedValue({ id: "acc_1", isDemo: true });
+  });
+
+  const resourceRule = [{ type: "SEND_COMMENT_RESOURCE", params: { mode: "template", text: "narxlar", resourceId: "res_1" } }];
+
+  it("sends the resource once and records the caption it could not carry on a SUCCESSful run", async () => {
+    db.automation.findMany.mockResolvedValue([rule(resourceRule)]);
+    db.commentResource.findUnique.mockResolvedValue({ id: "res_1", mimeType: "image/jpeg", externalUrl: null });
+    messaging.sendPrivateReplyResourceToComment.mockResolvedValue({
+      result: { recipientId: "u1", messageId: "m1" },
+      omittedText: "narxlar",
+      omittedReason: "Instagram allows one private reply per comment, and an attachment message cannot carry text",
+    });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1", text: "narx" });
+
+    expect(messaging.sendPrivateReplyResourceToComment).toHaveBeenCalledTimes(1);
+    expect(messaging.sendPrivateReplyResourceToComment).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "acc_1" }),
+      "cmt_1",
+      "narxlar",
+      { kind: "IMAGE", url: "http://localhost:3000/r/res_1.jpg" },
+    );
+    expect(lastRun().status).toBe("SUCCESS");
+    expect(lastRun().error).toMatch(/caption not sent/);
+  });
+
+  it("leaves that line empty when everything was delivered", async () => {
+    db.automation.findMany.mockResolvedValue([rule(resourceRule)]);
+    db.commentResource.findUnique.mockResolvedValue({ id: "res_1", mimeType: "application/pdf", externalUrl: null });
+    messaging.sendPrivateReplyResourceToComment.mockResolvedValue({
+      result: { recipientId: "u1", messageId: "m1" },
+      omittedText: null,
+      omittedReason: null,
+    });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1", text: "narx" });
+
+    expect(lastRun().status).toBe("SUCCESS");
+    expect(lastRun().error).toBeUndefined();
+  });
+
+  it("refuses to start another account's lead flow, without reaching the flow engine", async () => {
+    db.automation.findMany.mockResolvedValue([rule([{ type: "START_LEAD_FLOW", params: { flowId: "flow_x" } }])]);
+    db.leadFlow.findUnique.mockResolvedValue({ accountId: "acc_other" });
+
+    await runAutomations("MESSAGE_RECEIVED", { accountId: "acc_1", conversationId: "conv_1" });
+
+    expect(leadflow.startFlowSession).not.toHaveBeenCalled();
+    expect(lastRun().status).toBe("FAILED");
+    expect(lastRun().error).toMatch(/does not belong/);
+  });
+
+  it("starts the account's own lead flow", async () => {
+    db.automation.findMany.mockResolvedValue([rule([{ type: "START_LEAD_FLOW", params: { flowId: "flow_1" } }])]);
+    db.leadFlow.findUnique.mockResolvedValue({ accountId: "acc_1" });
+    db.conversation.findUnique.mockResolvedValue({
+      id: "conv_1",
+      igsid: "u1",
+      lastUserMessageAt: new Date(),
+      account: { id: "acc_1", isDemo: true },
+    });
+    leadflow.startFlowSession.mockResolvedValue({ sessionStatus: "ACTIVE", messages: [{ text: "Ismingiz?" }] });
+    messaging.sendInstagramText.mockResolvedValue({ recipientId: "u1", messageId: "m1" });
+
+    await runAutomations("MESSAGE_RECEIVED", { accountId: "acc_1", conversationId: "conv_1" });
+
+    expect(leadflow.startFlowSession).toHaveBeenCalledWith({
+      flowId: "flow_1",
+      accountId: "acc_1",
+      conversationId: "conv_1",
+    });
+    expect(lastRun().status).toBe("SUCCESS");
+  });
+
+  it("the master switch blocks the send before the send layer is reached", async () => {
+    settings.masterAutomationEnabled = false;
+    db.automation.findMany.mockResolvedValue([rule(resourceRule)]);
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1", text: "narx" });
+
+    expect(messaging.sendPrivateReplyResourceToComment).not.toHaveBeenCalled();
+    expect(lastRun().status).toBe("FAILED");
+    expect(lastRun().error).toMatch(/master automation switch OFF/);
   });
 });

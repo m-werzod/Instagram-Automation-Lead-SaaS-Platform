@@ -91,7 +91,12 @@ const PRICES: Record<string, { inPerM: number; outPerM: number }> = {
 };
 
 export function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number | null {
-  const key = Object.keys(PRICES).find((k) => model.startsWith(k));
+  // Longest matching prefix wins — "gpt-4o" would otherwise price every
+  // "gpt-4o-mini" call at ~16x its real cost.
+  let key: string | null = null;
+  for (const candidate of Object.keys(PRICES)) {
+    if (model.startsWith(candidate) && (key === null || candidate.length > key.length)) key = candidate;
+  }
   if (!key) return null;
   const p = PRICES[key]!;
   return (inputTokens * p.inPerM + outputTokens * p.outPerM) / 1_000_000;
@@ -104,7 +109,10 @@ export type UsagePurpose =
   | "embedding"
   | "campaign_draft"
   | "test"
-  | "lead_qualification";
+  | "lead_qualification"
+  | "video_assistant"
+  | "video_sample"
+  | "video_transcribe";
 
 export interface UsageRecord {
   accountId?: string | null;

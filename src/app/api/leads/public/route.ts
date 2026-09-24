@@ -4,7 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { route, ok, parseBody, clientIp, enforceRateLimit } from "@/lib/api";
 import { notFound, validationError } from "@/lib/errors";
-import { validateAnswer } from "@/lib/leadflow/engine";
+import { ACTIVE_QUESTION_FILTER, validateAnswer } from "@/lib/leadflow/engine";
 import { enqueue, drainNow } from "@/lib/queue";
 import type { Prisma } from "@prisma/client";
 
@@ -16,8 +16,9 @@ import type { Prisma } from "@prisma/client";
 const submitSchema = z.object({
   slug: z.string().min(3).max(40),
   answers: z.record(z.string().max(2000)).refine((r) => Object.keys(r).length <= 30, "too many answers"),
-  // honeypot — bots fill it, humans never see it
-  website: z.string().max(0).optional(),
+  // Honeypot — bots fill it, humans never see it. Accepted by the schema on
+  // purpose: a 400 would tell the bot exactly which field gave it away.
+  website: z.string().max(200).optional(),
 });
 
 export const POST = route(async (req: NextRequest) => {
@@ -25,14 +26,14 @@ export const POST = route(async (req: NextRequest) => {
   enforceRateLimit(`public-lead:${ip}`, 10, 10 * 60_000);
 
   const body = await parseBody(req, submitSchema);
-  if (body.website && body.website.length > 0) return ok({ submitted: true }); // silently drop bots
+  if (body.website && body.website.trim().length > 0) return ok({ submitted: true }); // silently drop bots
 
   const cta = await prisma.ctaConfig.findUnique({ where: { landingSlug: body.slug } });
   if (!cta || !cta.enabled || !cta.leadFlowId) throw notFound("Form");
 
   const flow = await prisma.leadFlow.findUnique({
     where: { id: cta.leadFlowId },
-    include: { questions: { orderBy: { order: "asc" } } },
+    include: { questions: { where: ACTIVE_QUESTION_FILTER, orderBy: { order: "asc" } } },
   });
   if (!flow || !flow.enabled) throw notFound("Form");
 

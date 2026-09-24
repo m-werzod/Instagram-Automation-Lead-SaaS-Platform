@@ -6,12 +6,52 @@ import { createSession, sessionCookieOptions, SESSION_COOKIE } from "@/lib/auth/
 import { route, parseBody, clientIp, assertSameOrigin, enforceRateLimit } from "@/lib/api";
 import { AppError } from "@/lib/errors";
 import { audit, AuditActions } from "@/lib/audit";
-import { LIMITS } from "@/lib/rate-limit";
+import { createLogger, errorFields } from "@/lib/logger";
+import { LIMITS, LOGIN_LOCKOUT, loginLockout, type LoginFailureCounts } from "@/lib/rate-limit";
+
+const log = createLogger("auth.login");
 
 const loginSchema = z.object({
   login: z.string().min(1, "Login is required").max(64),
   password: z.string().min(1, "Password is required").max(200),
 });
+
+/**
+ * Durable half of the brute-force guard. The in-process limiter above only
+ * covers one server instance — on serverless an attacker simply lands on a
+ * different lambda — so the real ceiling is counted from the LOGIN_FAILED audit
+ * rows this route already writes. No new table: AuditLog is indexed on
+ * (action, createdAt), which is exactly the lookup below.
+ */
+async function recentLoginFailures(login: string, ip: string): Promise<LoginFailureCounts> {
+  const since = new Date(Date.now() - LOGIN_LOCKOUT.windowMs);
+  // "unknown" is every un-attributable caller at once; locking on it would be a
+  // self-inflicted outage rather than a defence, so only the login scope applies.
+  const byIp = ip !== "unknown";
+  const rows = await prisma.auditLog.findMany({
+    where: {
+      action: AuditActions.LOGIN_FAILED,
+      createdAt: { gte: since },
+      ...(byIp ? { OR: [{ ip }, { after: { path: ["login"], equals: login } }] } : { after: { path: ["login"], equals: login } }),
+    },
+    select: { ip: true, after: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+    take: 200,
+  });
+
+  const counts: LoginFailureCounts = { forLogin: 0, forIp: 0, oldestForLogin: null, oldestForIp: null };
+  for (const row of rows) {
+    if ((row.after as { login?: string } | null)?.login === login) {
+      counts.forLogin++;
+      counts.oldestForLogin ??= row.createdAt;
+    }
+    if (byIp && row.ip === ip) {
+      counts.forIp++;
+      counts.oldestForIp ??= row.createdAt;
+    }
+  }
+  return counts;
+}
 
 export const POST = route(async (req: NextRequest) => {
   assertSameOrigin(req);
@@ -20,6 +60,42 @@ export const POST = route(async (req: NextRequest) => {
   const login = normalizeLogin(body.login);
 
   enforceRateLimit(`login:${ip}:${login}`, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs);
+  // Same reasoning as the durable counter below: with no proxy header to go on,
+  // `unknown` is every caller at once, so one shared bucket would cap the whole
+  // installation at LOGIN_IP sign-ins rather than cap an attacker. The per-login
+  // bucket above still applies, and it is the one that caps guessing a password.
+  if (ip !== "unknown") {
+    enforceRateLimit(`login-ip:${ip}`, LIMITS.LOGIN_IP.limit, LIMITS.LOGIN_IP.windowMs);
+  }
+
+  // Checked before the password is verified: a locked-out attacker must not get
+  // free bcrypt work out of us, and must not learn whether the login exists.
+  const lock = await recentLoginFailures(login, ip)
+    .then((counts) => loginLockout(counts))
+    .catch((err) => {
+      // Availability wins over the extra guard: the in-process limiter is still
+      // in force above, so a failed count degrades rather than bars sign-in.
+      log.error("login lockout check failed", errorFields(err));
+      return null;
+    });
+
+  if (lock?.locked) {
+    await audit({
+      action: "LOGIN_LOCKED",
+      resourceType: "admin",
+      ip,
+      success: false,
+      error: `locked by ${lock.scope} after repeated failures`,
+      after: { scope: lock.scope },
+    });
+    throw new AppError("RATE_LIMITED", "Too many failed sign-in attempts", {
+      reason:
+        lock.scope === "login"
+          ? `This login has failed ${LOGIN_LOCKOUT.perLogin} or more times in the last ${Math.round(LOGIN_LOCKOUT.windowMs / 60_000)} minutes.`
+          : `This address has failed ${LOGIN_LOCKOUT.perIp} or more sign-ins in the last ${Math.round(LOGIN_LOCKOUT.windowMs / 60_000)} minutes.`,
+      fix: `Wait ${Math.ceil(lock.retryAfterSec / 60)} minute(s) and try again.`,
+    });
+  }
 
   const admin = await prisma.admin.findUnique({ where: { login } });
   const valid = admin && admin.isActive && (await verifyPassword(body.password, admin.passwordHash));
@@ -36,7 +112,7 @@ export const POST = route(async (req: NextRequest) => {
     });
     // identical response for unknown login / bad password / disabled account
     throw new AppError("UNAUTHORIZED", "Incorrect login or password", {
-      fix: "Check your credentials. Sign-in locks for 5 minutes after 5 failed attempts.",
+      fix: `Check your credentials. Sign-in locks after ${LOGIN_LOCKOUT.perLogin} failed attempts in ${Math.round(LOGIN_LOCKOUT.windowMs / 60_000)} minutes.`,
     });
   }
 

@@ -1,6 +1,7 @@
-import type { LeadFlowQuestion, LeadFlowSession, Prisma } from "@prisma/client";
+import type { LeadFlowQuestion, LeadFlowSession, Prisma, QuestionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createLogger } from "@/lib/logger";
+import { testAnswerPattern } from "@/lib/validation/leadbutton";
 
 const log = createLogger("leadflow");
 
@@ -15,6 +16,16 @@ export const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 /** Reserved quick-reply payload prefix for select options. */
 export const OPTION_PAYLOAD_PREFIX = "lf_opt:";
 export const CANCEL_KEYWORDS = ["cancel", "stop", "exit", "bekor"];
+
+/**
+ * Questions from this order upwards are ARCHIVED — an admin removed or rewrote
+ * them, but completed sessions still hold LeadAnswer rows that cascade from
+ * them, so the row stays with the flow instead of taking that history with it.
+ * A flow holds at most 25 live questions, so the band is never reached
+ * organically. Every read of the live question list filters it out.
+ */
+export const ARCHIVED_QUESTION_ORDER = 1000;
+export const ACTIVE_QUESTION_FILTER = { order: { lt: ARCHIVED_QUESTION_ORDER } } as const;
 
 export interface ValidationResult {
   ok: boolean;
@@ -43,12 +54,9 @@ export function validateAnswer(question: LeadFlowQuestion, rawInput: string, qui
   switch (question.type) {
     case "TEXT": {
       if (question.validationRegex) {
-        try {
-          if (!new RegExp(question.validationRegex).test(input)) {
-            return { ok: false, error: "That doesn't look right — please try again." };
-          }
-        } catch {
-          /* invalid admin regex → accept */
+        // null = the stored pattern is unusable (invalid, or unsafe to run) → accept, as before
+        if (testAnswerPattern(question.validationRegex, input) === false) {
+          return { ok: false, error: "That doesn't look right — please try again." };
         }
       }
       return { ok: true, value: input.slice(0, 1000) };
@@ -174,6 +182,151 @@ export function renderQuestion(question: LeadFlowQuestion): {
   return { text: question.prompt, quickReplies: undefined };
 }
 
+// ---- question list maintenance ----
+
+export interface FlowQuestionInput {
+  title: string;
+  prompt: string;
+  type: QuestionType;
+  required: boolean;
+  options: string[];
+  mapTo?: string | null;
+  validationRegex?: string | null;
+}
+
+type StoredQuestion = Pick<LeadFlowQuestion, "title" | "prompt" | "type" | "required" | "options" | "mapTo" | "validationRegex">;
+
+function sameQuestion(stored: StoredQuestion, input: FlowQuestionInput): boolean {
+  return (
+    stored.title === input.title &&
+    stored.prompt === input.prompt &&
+    stored.type === input.type &&
+    stored.required === input.required &&
+    stored.mapTo === (input.mapTo ?? null) &&
+    stored.validationRegex === (input.validationRegex ?? null) &&
+    stored.options.length === input.options.length &&
+    stored.options.every((o, i) => o === input.options[i])
+  );
+}
+
+function questionData(input: FlowQuestionInput) {
+  return {
+    title: input.title,
+    prompt: input.prompt,
+    type: input.type,
+    required: input.required,
+    options: input.options,
+    mapTo: input.mapTo ?? null,
+    validationRegex: input.validationRegex ?? null,
+  };
+}
+
+/**
+ * Replace a flow's live question list without destroying history.
+ *
+ * LeadAnswer cascades from LeadFlowQuestion, so deleting a question deletes
+ * every answer completed sessions gave to it. Rows that carry answers are
+ * therefore never deleted here: unchanged ones are reused in place, and the
+ * ones an admin dropped or rewrote move into the archive order band. Only
+ * answer-free rows are actually removed.
+ *
+ * Returns whether the live list really changed, so callers only cancel
+ * in-flight sessions when a save touched the questions at all.
+ */
+export async function syncFlowQuestions(
+  tx: Prisma.TransactionClient,
+  flowId: string,
+  incoming: FlowQuestionInput[],
+): Promise<{ changed: boolean; archived: number; deleted: number }> {
+  const existing = await tx.leadFlowQuestion.findMany({
+    where: { flowId, ...ACTIVE_QUESTION_FILTER },
+    orderBy: { order: "asc" },
+    include: { _count: { select: { answers: true } } },
+  });
+
+  const reuseIds: Array<string | null> = incoming.map(() => null);
+  const claimed = new Set<string>();
+
+  // identical rows first: a save that only moved a question must not orphan its answers
+  incoming.forEach((question, i) => {
+    const hit = existing.find((row) => !claimed.has(row.id) && sameQuestion(row, question));
+    if (hit) {
+      reuseIds[i] = hit.id;
+      claimed.add(hit.id);
+    }
+  });
+
+  const spare = existing.filter((row) => !claimed.has(row.id) && row._count.answers === 0);
+  let spareIdx = 0;
+  incoming.forEach((_, i) => {
+    if (reuseIds[i]) return;
+    const row = spare[spareIdx++];
+    if (!row) return;
+    reuseIds[i] = row.id;
+    claimed.add(row.id);
+  });
+
+  const leftovers = existing.filter((row) => !claimed.has(row.id));
+  const toDelete = leftovers.filter((row) => row._count.answers === 0);
+  const toArchive = leftovers.filter((row) => row._count.answers > 0);
+
+  const byId = new Map(existing.map((row) => [row.id, row]));
+  const changed =
+    leftovers.length > 0 ||
+    incoming.some((question, i) => {
+      const id = reuseIds[i];
+      if (!id) return true;
+      const row = byId.get(id)!;
+      return row.order !== i + 1 || !sameQuestion(row, question);
+    });
+
+  if (!changed) return { changed: false, archived: 0, deleted: 0 };
+
+  const finalOrder = new Map<string, number>();
+  reuseIds.forEach((id, i) => {
+    if (id) finalOrder.set(id, i + 1);
+  });
+
+  // Park rows whose order moves on a temporary negative order first: [flowId,
+  // order] is unique, so renumbering in place would collide mid-flight. A row
+  // that keeps its order holds that slot throughout, so nothing can want it.
+  const removedIds = new Set(toDelete.map((row) => row.id));
+  const parked = new Set<string>();
+  let parking = -1;
+  for (const row of existing) {
+    if (removedIds.has(row.id) || finalOrder.get(row.id) === row.order) continue;
+    await tx.leadFlowQuestion.update({ where: { id: row.id }, data: { order: parking-- } });
+    parked.add(row.id);
+  }
+  if (removedIds.size) {
+    await tx.leadFlowQuestion.deleteMany({ where: { id: { in: [...removedIds] } } });
+  }
+
+  for (const [i, question] of incoming.entries()) {
+    const id = reuseIds[i];
+    if (!id) {
+      await tx.leadFlowQuestion.create({ data: { flowId, order: i + 1, ...questionData(question) } });
+      continue;
+    }
+    if (!parked.has(id) && sameQuestion(byId.get(id)!, question)) continue;
+    await tx.leadFlowQuestion.update({ where: { id }, data: { order: i + 1, ...questionData(question) } });
+  }
+
+  if (toArchive.length) {
+    const highest = await tx.leadFlowQuestion.aggregate({
+      where: { flowId, order: { gte: ARCHIVED_QUESTION_ORDER } },
+      _max: { order: true },
+    });
+    let next = Math.max(highest._max.order ?? 0, ARCHIVED_QUESTION_ORDER - 1) + 1;
+    for (const row of toArchive) {
+      await tx.leadFlowQuestion.update({ where: { id: row.id }, data: { order: next++ } });
+    }
+    log.info("archived answered questions instead of deleting them", { flowId, count: toArchive.length });
+  }
+
+  return { changed: true, archived: toArchive.length, deleted: toDelete.length };
+}
+
 // ---- session state machine ----
 
 export interface StepOutcome {
@@ -190,7 +343,7 @@ export async function startFlowSession(opts: {
 }): Promise<StepOutcome> {
   const flow = await prisma.leadFlow.findUnique({
     where: { id: opts.flowId },
-    include: { questions: { orderBy: { order: "asc" } } },
+    include: { questions: { where: ACTIVE_QUESTION_FILTER, orderBy: { order: "asc" } } },
   });
   if (!flow || !flow.enabled || flow.questions.length === 0) {
     return { messages: [], sessionStatus: "CANCELLED" };
@@ -251,7 +404,7 @@ export async function handleFlowAnswer(
   }
 
   const questions = await prisma.leadFlowQuestion.findMany({
-    where: { flowId: session.flowId },
+    where: { flowId: session.flowId, ...ACTIVE_QUESTION_FILTER },
     orderBy: { order: "asc" },
   });
   const currentIdx = questions.findIndex((q) => q.id === session.currentQuestionId);

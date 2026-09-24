@@ -13,6 +13,27 @@ import { SetupRequired, type MissingCheck } from "@/components/setup-required";
 
 /** Sign-in — bright, friendly, fully localized (Uzbek default). */
 
+/** Where the fallback sends anyone who arrives with an unusable `next`. */
+const DEFAULT_NEXT = "/dashboard";
+
+/**
+ * Post-login redirect target, hardened against open redirects: `next` arrives
+ * in the query string and anyone can craft it. Only a plain in-app path is
+ * allowed, because browsers read `//evil.com` AND `/\evil.com` as
+ * protocol-relative URLs to another origin (a backslash is a path separator to
+ * the URL parser), and they strip tabs/newlines before parsing, so `/<tab>/x`
+ * collapses to `//x`. Kept module-local: Next.js rejects any export from a page
+ * file other than the component and the segment-config names.
+ */
+function safeNextPath(next: string | null | undefined): string {
+  const value = (next ?? "").trim();
+  if (!value.startsWith("/")) return DEFAULT_NEXT;
+  if (value.startsWith("//")) return DEFAULT_NEXT;
+  if (value.includes("\\")) return DEFAULT_NEXT;
+  if ([...value].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f)) return DEFAULT_NEXT;
+  return value;
+}
+
 interface SetupStatus {
   configured: boolean;
   missing: MissingCheck[];
@@ -73,9 +94,7 @@ function LoginForm() {
         json: { login: login.trim(), password },
         silent: true,
       });
-      const next = params.get("next");
-      const safeNext = next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
-      router.push(safeNext);
+      router.push(safeNextPath(params.get("next")));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : d.common.error);

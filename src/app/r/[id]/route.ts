@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { contentDispositionFor } from "@/lib/resources";
 
 /**
  * PUBLIC comment-resource endpoint — Meta downloads attachment resources from
@@ -19,7 +20,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       "Content-Length": String(resource.data.byteLength),
       "Cache-Control": "public, max-age=31536000, immutable",
       "X-Content-Type-Options": "nosniff",
-      "Content-Disposition": `inline; filename="${resource.name.replace(/["\r\n]/g, "_")}"`,
+      "Content-Disposition": contentDispositionFor(resource.name),
     },
   });
 }

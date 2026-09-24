@@ -4,8 +4,8 @@ import { route, ok, assertSameOrigin, clientIp, type RouteCtx, pathParam } from 
 import { requireAdmin } from "@/lib/auth/guard";
 import { assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
-import { notFound } from "@/lib/errors";
-import { pauseCampaignInMeta } from "@/lib/meta/marketing";
+import { notFound, validationError } from "@/lib/errors";
+import { campaignPauseProblem, pauseCampaignInMeta } from "@/lib/meta/marketing";
 
 export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
@@ -14,6 +14,9 @@ export const POST = route(async (req: NextRequest, ctx: RouteCtx) => {
   const campaign = await prisma.campaign.findUnique({ where: { id }, include: { account: true } });
   if (!campaign) throw notFound("Campaign");
   await assertAccountAccess(auth, campaign.accountId);
+
+  const problem = campaignPauseProblem(campaign.status);
+  if (problem) throw validationError(problem);
 
   if (campaign.metaCampaignId && !campaign.account.isDemo) {
     await pauseCampaignInMeta(campaign.account, campaign);

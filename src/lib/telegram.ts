@@ -130,6 +130,32 @@ export interface LeadMessagePayload {
   submittedAt: string;
 }
 
+/**
+ * Lead.answers is written in two shapes: the flow and landing-page pipelines
+ * store a plain array, while lead ads (leadgen.fetch) wrap it as
+ * `{ leadgenId, items: [...] }`. Notification builders receive leads from every
+ * source, so they normalize here instead of silently dropping ad answers.
+ */
+export function normalizeLeadAnswers(value: unknown): Array<{ question: string; answer: string }> {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value !== null && Array.isArray((value as { items?: unknown }).items)
+      ? (value as { items: unknown[] }).items
+      : [];
+
+  const answers: Array<{ question: string; answer: string }> = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const { question, answer } = item as { question?: unknown; answer?: unknown };
+    if (typeof question !== "string" || !question.trim()) continue;
+    answers.push({
+      question,
+      answer: typeof answer === "string" ? answer : answer === null || answer === undefined ? "" : String(answer),
+    });
+  }
+  return answers;
+}
+
 const SOURCE_LABELS: Record<string, string> = {
   instagram_dm: "Instagram DM",
   instagram_comment: "Instagram izoh",
@@ -202,7 +228,7 @@ export async function deliverLeadToTelegram(leadId: string): Promise<void> {
     source: lead.source,
     campaignName: lead.campaign?.name ?? null,
     contentCaption: lead.content?.caption?.slice(0, 120) ?? null,
-    answers: Array.isArray(lead.answers) ? (lead.answers as Array<{ question: string; answer: string }>) : [],
+    answers: normalizeLeadAnswers(lead.answers),
     submittedAt: lead.createdAt.toISOString(),
   });
 

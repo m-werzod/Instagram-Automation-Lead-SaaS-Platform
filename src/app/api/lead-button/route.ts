@@ -9,7 +9,11 @@ import { coreEnv } from "@/lib/env";
 import { randomToken } from "@/lib/crypto";
 import { SUPPORTED_CTA_TYPES } from "@/lib/meta/marketing";
 import { leadButtonSaveSchema, parseButtonSpec } from "@/lib/validation/leadbutton";
+import { ACTIVE_QUESTION_FILTER, syncFlowQuestions } from "@/lib/leadflow/engine";
+import { createLogger } from "@/lib/logger";
 import type { Prisma } from "@prisma/client";
+
+const log = createLogger("lead-button");
 
 /**
  * The Lead Button — ONE per Instagram account.
@@ -40,9 +44,15 @@ async function loadLeadButton(accountId: string) {
 
   const flow = await prisma.leadFlow.findUnique({
     where: { id: config.leadFlowId! },
-    include: { questions: { orderBy: { order: "asc" } }, _count: { select: { leads: true } } },
+    include: { questions: { where: ACTIVE_QUESTION_FILTER, orderBy: { order: "asc" } }, _count: { select: { leads: true } } },
   });
-  if (!flow) return null;
+  // The flow can be gone while the config survives (leadFlowId carries no FK).
+  // Report "not set up yet" so the builder opens clean; PUT re-points this same
+  // config — slug and captured leads included — at a fresh flow.
+  if (!flow) {
+    log.warn("lead button points at a flow that no longer exists", { ctaConfigId: config.id, leadFlowId: config.leadFlowId });
+    return null;
+  }
 
   return {
     id: config.id,
@@ -104,14 +114,19 @@ export const PUT = route(async (req: NextRequest) => {
 
   const keywords = [...new Set(body.triggerKeywords.map((k) => k.trim().toLowerCase()).filter(Boolean))];
 
+  // A dangling leadFlowId (flow deleted, config left behind) is treated as "no
+  // flow yet": the save then repairs the row instead of failing on every retry.
+  const liveFlow = existing?.leadFlowId
+    ? await prisma.leadFlow.findUnique({ where: { id: existing.leadFlowId }, select: { id: true } })
+    : null;
+  if (existing?.leadFlowId && !liveFlow) {
+    log.warn("re-pointing lead button at a new flow — the old one is gone", { ctaConfigId: existing.id, leadFlowId: existing.leadFlowId });
+  }
+
   await prisma.$transaction(async (tx) => {
-    let flowId = existing?.leadFlowId ?? null;
+    let flowId = liveFlow?.id ?? null;
 
     if (flowId) {
-      // Replacing questions invalidates in-flight sessions — cancel explicitly
-      // (same strategy as /api/lead-flows; Lead.answers snapshots keep history).
-      await tx.leadFlowSession.updateMany({ where: { flowId, status: "ACTIVE" }, data: { status: "CANCELLED" } });
-      await tx.leadFlowQuestion.deleteMany({ where: { flowId } });
       await tx.leadFlow.update({
         where: { id: flowId },
         data: {
@@ -136,19 +151,12 @@ export const PUT = route(async (req: NextRequest) => {
       flowId = flow.id;
     }
 
-    await tx.leadFlowQuestion.createMany({
-      data: body.questions.map((q, i) => ({
-        flowId: flowId!,
-        order: i + 1,
-        title: q.title,
-        prompt: q.prompt,
-        type: q.type,
-        required: q.required,
-        options: q.options,
-        mapTo: q.mapTo ?? null,
-        validationRegex: q.validationRegex ?? null,
-      })),
-    });
+    const { changed } = await syncFlowQuestions(tx, flowId, body.questions);
+    // Only a real question change invalidates in-flight sessions — re-saving the
+    // button's colours must not cancel a customer half-way through the form.
+    if (changed) {
+      await tx.leadFlowSession.updateMany({ where: { flowId, status: "ACTIVE" }, data: { status: "CANCELLED" } });
+    }
 
     const ctaData = {
       name: LEAD_BUTTON_NAME,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildContainerParams,
   describePublishError,
@@ -6,10 +6,22 @@ import {
   hostedMediaUrl,
   isJpeg,
   kindFromUrl,
+  kindFromUrlOrNull,
   parseContainerStatus,
   parsePublishingLimit,
+  publishRunKey,
+  PUBLISH_QUOTA_ERROR_CODE,
+  QUOTA_RETRY_DELAY_MS,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  resolveItemKind,
+  retryDelayForPublishError,
+  scheduleKey,
   validatePublishInput,
+  wakeKey,
+  wakeRunAt,
 } from "@/lib/meta/publishing";
+import { insightMetricsFor } from "@/lib/meta/media";
+import { contentDispositionFor } from "@/lib/resources";
 import { MetaApiError } from "@/lib/meta/client";
 
 /**
@@ -107,5 +119,175 @@ describe("hosted media", () => {
   it("infers the kind of a pasted URL from its extension", () => {
     expect(kindFromUrl("https://x/clip.MP4?token=1")).toBe("VIDEO");
     expect(kindFromUrl("https://x/photo.jpg")).toBe("IMAGE");
+  });
+});
+
+describe("resolveItemKind", () => {
+  const signed = "https://cdn.example.com/assets/9f2b?Expires=1&Signature=abc"; // no extension at all
+
+  it("fills a format-less URL in from the media type, where only one kind is legal", () => {
+    expect(resolveItemKind("REELS", signed)).toBe("VIDEO");
+    expect(resolveItemKind("IMAGE", signed)).toBe("IMAGE");
+    // the extension heuristic alone called the signed URL an image and made the Reel unpublishable
+    expect(kindFromUrl(signed)).toBe("IMAGE");
+  });
+
+  it("honours an explicit kind where both are legal, and guesses only as a last resort", () => {
+    expect(resolveItemKind("STORIES", signed, "VIDEO")).toBe("VIDEO");
+    expect(resolveItemKind("CAROUSEL", signed, "VIDEO")).toBe("VIDEO");
+    expect(resolveItemKind("STORIES", signed)).toBe("IMAGE");
+    expect(resolveItemKind("CAROUSEL", "https://x/a.mov")).toBe("VIDEO");
+  });
+
+  it("ignores a caller's kind where the media type already settles it", () => {
+    expect(resolveItemKind("REELS", signed, "IMAGE")).toBe("VIDEO");
+    expect(resolveItemKind("IMAGE", signed, "VIDEO")).toBe("IMAGE");
+  });
+
+  it("keeps a URL that names a contradicting format, so the mismatch is refused here", () => {
+    // coercing these to the chosen type queued a post that could only die at
+    // Meta — the admin got a success toast for a publication that cannot work
+    expect(resolveItemKind("IMAGE", "https://x/a.mp4", "VIDEO")).toBe("VIDEO");
+    expect(resolveItemKind("REELS", "https://x/a.jpg")).toBe("IMAGE");
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [{ url: "https://x/a.mp4", kind: resolveItemKind("IMAGE", "https://x/a.mp4") }] })).toMatch(/image/);
+    expect(validatePublishInput({ mediaType: "REELS", items: [{ url: "https://x/a.jpg", kind: resolveItemKind("REELS", "https://x/a.jpg") }] })).toMatch(/video/);
+  });
+
+  it("reads a format only from a real extension, never from the host name", () => {
+    expect(kindFromUrlOrNull(signed)).toBeNull();
+    expect(kindFromUrlOrNull("https://cdn.example.com")).toBeNull();
+    expect(kindFromUrlOrNull("https://x/a.bin")).toBeNull();
+    expect(kindFromUrlOrNull("https://x/clip.MOV?sig=1")).toBe("VIDEO");
+    expect(kindFromUrlOrNull("https://x/photo.webp#frag")).toBe("IMAGE");
+  });
+
+  it("only ever produces a kind validatePublishInput then accepts", () => {
+    // the two disagreed: the resolver's caller wrote IMAGE for a signed video
+    // link and the validator rejected the Reel the admin had explicitly chosen
+    for (const mediaType of ["IMAGE", "REELS", "STORIES"] as const) {
+      expect(validatePublishInput({ mediaType, items: [{ url: signed, kind: resolveItemKind(mediaType, signed) }] })).toBeNull();
+    }
+    const carousel = [signed, "https://x/a.mp4"].map((url) => ({ url, kind: resolveItemKind("CAROUSEL", url) }));
+    expect(validatePublishInput({ mediaType: "CAROUSEL", items: carousel })).toBeNull();
+  });
+});
+
+describe("publish queue keys", () => {
+  const job = { id: "job_1", scheduledAt: new Date("2026-10-01T09:00:00Z") };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("never re-queues under the key the running row already holds", () => {
+    // enqueue() drops a duplicate idempotencyKey, so an early wake-up that
+    // re-used scheduleKey was a silent no-op and the post never went out
+    vi.setSystemTime(new Date("2026-10-01T08:00:00Z"));
+    expect(wakeKey(job)).not.toBe(scheduleKey(job));
+  });
+
+  it("collapses two workers waking the same job in one minute, and sleeps again in the next", () => {
+    vi.setSystemTime(new Date("2026-10-01T08:00:10Z"));
+    const first = wakeKey(job);
+    vi.setSystemTime(new Date("2026-10-01T08:00:59Z"));
+    expect(wakeKey(job)).toBe(first);
+    vi.setSystemTime(new Date("2026-10-01T08:01:00Z"));
+    expect(wakeKey(job)).not.toBe(first);
+  });
+
+  it("parks the sleeping row outside the minute its own key buckets on", () => {
+    // the drain is a tight claim loop: parked at scheduledAt, a row the database
+    // already considers due (its clock is what woke this pass early) comes back
+    // in the same minute, re-enqueues under the same wakeKey, and enqueue drops
+    // it — nothing queued, post abandoned. The margin is what ends that loop.
+    vi.setSystemTime(new Date("2026-10-01T08:59:59Z"));
+    const soon = new Date("2026-10-01T09:00:00Z"); // a second away — already due by the clock that woke us
+    const sleeper = { id: "job_1", scheduledAt: soon };
+    const keyNow = wakeKey(sleeper);
+    const parked = wakeRunAt(soon);
+    expect(parked.getTime()).toBeGreaterThan(soon.getTime());
+    vi.setSystemTime(parked);
+    expect(wakeKey(sleeper)).not.toBe(keyNow);
+  });
+
+  it("leaves a genuinely distant schedule exactly where it is", () => {
+    vi.setSystemTime(new Date("2026-10-01T08:00:00Z"));
+    expect(wakeRunAt(job.scheduledAt)).toBe(job.scheduledAt);
+  });
+
+  it("keeps every re-queue key of one job distinct from the others", () => {
+    vi.setSystemTime(new Date("2026-10-01T08:00:00Z"));
+    const keys = [
+      scheduleKey(job),
+      wakeKey(job),
+      publishRunKey(job.id, "poll:1"),
+      publishRunKey(job.id, "quota:1"),
+      publishRunKey(job.id, "rl:1"),
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("retryDelayForPublishError", () => {
+  const metaError = (code: number) => new MetaApiError({ message: "nope", code }, 400);
+
+  it("waits out a spent publishing quota (code 9) instead of failing the post", () => {
+    expect(retryDelayForPublishError(metaError(PUBLISH_QUOTA_ERROR_CODE))).toBe(QUOTA_RETRY_DELAY_MS);
+  });
+
+  it("still backs off on a plain rate limit", () => {
+    expect(retryDelayForPublishError(metaError(4))).toBe(RATE_LIMIT_RETRY_DELAY_MS);
+  });
+
+  it("treats everything else as final for this post", () => {
+    expect(retryDelayForPublishError(metaError(100))).toBeNull();
+    expect(retryDelayForPublishError(new Error("boom"))).toBeNull();
+  });
+});
+
+describe("insight metrics per media type", () => {
+  it("never asks a story for metrics it does not have (Meta rejects the whole call)", () => {
+    const story = insightMetricsFor("STORY");
+    expect(story).toContain("replies");
+    for (const absent of ["likes", "comments", "saved", "shares"]) expect(story).not.toContain(absent);
+  });
+
+  it("keeps the reel and feed sets", () => {
+    expect(insightMetricsFor("REELS")).toContain("total_interactions");
+    expect(insightMetricsFor("FEED").split(",")).toEqual(["views", "reach", "likes", "comments", "shares", "saved"]);
+    expect(insightMetricsFor(null)).toBe(insightMetricsFor("FEED"));
+  });
+
+  it("matches however the product type is spelled — Meta says STORY, the publisher writes STORIES", () => {
+    expect(insightMetricsFor("STORIES")).toBe(insightMetricsFor("STORY"));
+    expect(insightMetricsFor("reels")).toBe(insightMetricsFor("REELS"));
+  });
+});
+
+describe("contentDispositionFor", () => {
+  it("keeps a non-Latin1 name readable without breaking the header", () => {
+    const header = contentDispositionFor("Прайс-лист.pdf");
+    // a raw UTF-8 header value throws inside the Response constructor → 500
+    expect(header).toMatch(/^[\x20-\x7e]*$/);
+    expect(header).toContain("filename*=UTF-8''");
+    expect(decodeURIComponent(header.split("filename*=UTF-8''")[1]!)).toBe("Прайс-лист.pdf");
+  });
+
+  it("gives a plain ASCII fallback and cannot inject a second header", () => {
+    expect(contentDispositionFor("price list.pdf")).toBe(`inline; filename="price list.pdf"; filename*=UTF-8''price%20list.pdf`);
+    const nasty = contentDispositionFor('a"\r\nX-Evil: 1.pdf');
+    expect(nasty).toMatch(/^[\x20-\x7e]*$/); // no CR/LF survives into the header
+    expect(nasty).toContain(`filename="a___X-Evil: 1.pdf"`);
+  });
+
+  it("percent-encodes what RFC 5987 does not allow in filename*", () => {
+    // encodeURIComponent leaves ' ( ) * ! alone; they are not attr-chars
+    const encoded = contentDispositionFor("o'brien (final)*.pdf").split("filename*=UTF-8''")[1]!;
+    expect(encoded).not.toMatch(/['()*]/);
+    expect(decodeURIComponent(encoded)).toBe("o'brien (final)*.pdf");
+  });
+
+  it("falls back to a name when there is none, and supports attachment", () => {
+    expect(contentDispositionFor("   ")).toBe(`inline; filename="file"; filename*=UTF-8''file`);
+    expect(contentDispositionFor("a.pdf", "attachment")).toMatch(/^attachment; /);
   });
 });

@@ -5,6 +5,9 @@ import { assertAccountAccess } from "@/lib/auth/access";
 import { notFound } from "@/lib/errors";
 import { isWithinMessagingWindow } from "@/lib/meta/messaging";
 
+/** Newest slice of the thread returned to the inbox. */
+const MESSAGE_LIMIT = 200;
+
 export const GET = route(async (_req, ctx: RouteCtx) => {
   const auth = await requireAdmin();
   const id = await pathParam(ctx, "id");
@@ -13,7 +16,10 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
     include: {
       account: { select: { id: true, username: true, isDemo: true } },
       agent: { select: { id: true, name: true, enabled: true } },
-      messages: { orderBy: { createdAt: "asc" }, take: 200 },
+      // Newest-first so a long thread keeps its LATEST messages (the ones an
+      // admin is answering); the one extra row is how "is there anything older"
+      // is answered without a second count query.
+      messages: { orderBy: { createdAt: "desc" }, take: MESSAGE_LIMIT + 1 },
       flowSessions: {
         orderBy: { startedAt: "desc" },
         take: 3,
@@ -31,9 +37,13 @@ export const GET = route(async (_req, ctx: RouteCtx) => {
       })
     : null;
 
+  const olderOmitted = conversation.messages.length > MESSAGE_LIMIT;
+  const messages = conversation.messages.slice(0, MESSAGE_LIMIT).reverse(); // oldest → newest for display
+
   return ok({
-    conversation,
+    conversation: { ...conversation, messages },
     lead,
     messagingWindowOpen: isWithinMessagingWindow(conversation.lastUserMessageAt),
+    messagePage: { limit: MESSAGE_LIMIT, returned: messages.length, olderOmitted },
   });
 });

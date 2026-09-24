@@ -30,15 +30,20 @@ export class AnthropicProvider implements AIProvider {
         : {}),
     };
 
-    const json = await aiFetch("anthropic", "https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
+    const json = await aiFetch(
+      "anthropic",
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      { deadlineMs: req.deadlineMs },
+    );
 
     const content = (json.content ?? []) as Array<{
       type: string;

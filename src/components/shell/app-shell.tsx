@@ -8,6 +8,7 @@ import {
   Instagram,
   Bot,
   Film,
+  Clapperboard,
   Megaphone,
   Users,
   MessagesSquare,
@@ -106,6 +107,13 @@ const NAV: NavItem[] = [
     what: (d) => d.nav.tagline.automation,
     icon: Bot,
     color: "var(--color-mod-ai)",
+  },
+  {
+    href: "/video-editor",
+    label: (d) => d.nav.videoEditor,
+    what: (d) => d.nav.tagline.videoEditor,
+    icon: Clapperboard,
+    color: "var(--color-mod-content)",
   },
   {
     href: "/campaigns",

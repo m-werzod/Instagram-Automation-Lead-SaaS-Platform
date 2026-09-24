@@ -38,11 +38,16 @@ export class GoogleProvider implements AIProvider {
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(req.model)}:generateContent`;
-    const json = await aiFetch("google", url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify(body),
-    });
+    const json = await aiFetch(
+      "google",
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+        body: JSON.stringify(body),
+      },
+      { deadlineMs: req.deadlineMs },
+    );
 
     const candidate = (json.candidates as Array<Record<string, unknown>> | undefined)?.[0] ?? {};
     const parts = ((candidate.content as { parts?: Array<Record<string, unknown>> } | undefined)?.parts ?? []) as Array<{
@@ -92,18 +97,23 @@ export class GoogleEmbeddings implements EmbeddingProvider {
   readonly dimension = 768;
   constructor(private readonly apiKey: string) {}
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], opts: { deadlineMs?: number } = {}): Promise<number[][]> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:batchEmbedContents`;
-    const json = await aiFetch("google", url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({
-        requests: texts.map((t) => ({
-          model: `models/${this.model}`,
-          content: { parts: [{ text: t }] },
-        })),
-      }),
-    });
+    const json = await aiFetch(
+      "google",
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+        body: JSON.stringify({
+          requests: texts.map((t) => ({
+            model: `models/${this.model}`,
+            content: { parts: [{ text: t }] },
+          })),
+        }),
+      },
+      { deadlineMs: opts.deadlineMs },
+    );
     const embeddings = (json.embeddings ?? []) as Array<{ values: number[] }>;
     return embeddings.map((e) => e.values);
   }

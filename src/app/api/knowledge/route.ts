@@ -1,12 +1,29 @@
-import { NextRequest } from "next/server";
+import { NextRequest, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { route, ok, assertSameOrigin, clientIp } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError } from "@/lib/errors";
-import { extractText, processDocument } from "@/lib/knowledge";
-import { embeddingConfig } from "@/lib/env";
+import { enqueueDocumentProcessing, extractText, markDocumentFailed, storeDocumentChunks } from "@/lib/knowledge";
+import { getEmbeddingProvider } from "@/lib/ai";
+import { drainNow } from "@/lib/queue";
+
+/**
+ * What retrieval will actually do for these documents — never a guess. A
+ * document embedded with another model cannot be ranked against the current
+ * one, so retrieval drops to keyword until it is re-processed; the admin has
+ * to be told that, not left with a "semantic" badge that is not true.
+ */
+function describeRetrieval(documents: Array<{ status: string; embeddingProvider: string | null }>): string {
+  const embedder = getEmbeddingProvider();
+  if (!embedder) return "keyword (no EMBEDDING_PROVIDER configured)";
+  const stale = documents.filter((d) => d.status === "READY" && d.embeddingProvider !== embedder.model).length;
+  if (stale > 0) {
+    return `keyword — ${stale} document(s) are not embedded with ${embedder.model}; re-process them for semantic search`;
+  }
+  return `semantic (embeddings: ${embedder.model})`;
+}
 
 export const GET = route(async (req: NextRequest) => {
   const auth = await requireAdmin();
@@ -16,10 +33,7 @@ export const GET = route(async (req: NextRequest) => {
     include: { account: { select: { username: true } }, agent: { select: { id: true, name: true } } },
     orderBy: { createdAt: "desc" },
   });
-  return ok({
-    documents,
-    retrievalMode: embeddingConfig() ? "semantic (embeddings)" : "keyword (no EMBEDDING_PROVIDER configured)",
-  });
+  return ok({ documents, retrievalMode: describeRetrieval(documents) });
 });
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -66,20 +80,18 @@ export const POST = route(async (req: NextRequest) => {
     },
   });
 
-  // Extraction + chunking + embedding runs inline (files are small) but the
-  // document row exists first so failures are visible with a status + error.
+  // Extraction + chunking stay here (local CPU, bounded by the upload cap) so
+  // the document's own text is stored and can be re-processed later. Embedding
+  // is N provider round-trips with no predictable duration — it runs as a job,
+  // which is what keeps a large document from dying half-way through a request
+  // and sitting in PROCESSING forever.
   try {
     const text = await extractText(buffer, file.type ?? "", file.name);
-    await processDocument(doc.id, text);
-  } catch {
-    // status/error already persisted by processDocument or extract failure below
-    const fresh = await prisma.knowledgeDocument.findUnique({ where: { id: doc.id } });
-    if (fresh && fresh.status === "PENDING") {
-      await prisma.knowledgeDocument.update({
-        where: { id: doc.id },
-        data: { status: "ERROR", error: "Text extraction failed for this file" },
-      });
-    }
+    await storeDocumentChunks(doc.id, text);
+    await enqueueDocumentProcessing(doc.id);
+    after(() => drainNow());
+  } catch (err) {
+    await markDocumentFailed(doc.id, err);
   }
 
   const final = await prisma.knowledgeDocument.findUniqueOrThrow({ where: { id: doc.id } });

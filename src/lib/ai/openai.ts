@@ -51,11 +51,16 @@ export class OpenAIProvider implements AIProvider {
         : {}),
     };
 
-    const json = await aiFetch("openai", `${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify(body),
-    });
+    const json = await aiFetch(
+      "openai",
+      `${this.baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify(body),
+      },
+      { deadlineMs: req.deadlineMs },
+    );
 
     const choice = (json.choices as Array<Record<string, unknown>> | undefined)?.[0] ?? {};
     const message = (choice.message ?? {}) as {
@@ -118,12 +123,17 @@ export class OpenAIEmbeddings implements EmbeddingProvider {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
-    const json = await aiFetch("openai", `${this.baseUrl}/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: this.model, input: texts }),
-    });
+  async embed(texts: string[], opts: { deadlineMs?: number } = {}): Promise<number[][]> {
+    const json = await aiFetch(
+      "openai",
+      `${this.baseUrl}/embeddings`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify({ model: this.model, input: texts }),
+      },
+      { deadlineMs: opts.deadlineMs },
+    );
     const data = (json.data ?? []) as Array<{ index: number; embedding: number[] }>;
     return data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
   }

@@ -12,6 +12,32 @@ export function verifyWebhookSignature(rawBody: string | Buffer, signatureHeader
   return safeEqual(expected, provided);
 }
 
+export type WebhookSecretSource = "instagram" | "facebook";
+
+export interface WebhookSecret {
+  source: WebhookSecretSource;
+  secret: string;
+}
+
+/**
+ * Meta signs a delivery with the secret of the APP the subscription belongs to,
+ * and Instagram Login is a separate app with a separate secret from the
+ * Facebook app that carries advertising and Page leadgen. A delivery is genuine
+ * when it matches EITHER configured secret; the order only decides which
+ * constant-time compare runs first. Returns which app signed it, so the log
+ * says where an unexpected delivery came from.
+ */
+export function matchWebhookSecret(
+  rawBody: string | Buffer,
+  signatureHeader: string | null,
+  secrets: readonly WebhookSecret[],
+): WebhookSecretSource | null {
+  for (const { source, secret } of secrets) {
+    if (verifyWebhookSignature(rawBody, signatureHeader, secret)) return source;
+  }
+  return null;
+}
+
 // ---- normalized event model ----
 
 export type NormalizedEvent =
@@ -184,4 +210,17 @@ export function dedupeKeyForEvent(ev: NormalizedEvent): string {
     case "other":
       return `oth:${sha256Hex(`${ev.entryId}:${ev.field}:${ev.timestamp}`)}`;
   }
+}
+
+/**
+ * Dedupe key for one whole delivery (Meta batches several events into a single
+ * POST). The joined per-event keys are HASHED rather than cut to a fixed width:
+ * a prefix of a long batch is shared by every other batch that happens to start
+ * with the same events, so a genuinely new delivery would be recognised as a
+ * redelivery and silently dropped. Hashing also keeps the key inside the unique
+ * index's row-size limit whatever the batch size.
+ */
+export function dedupeKeyForDelivery(events: readonly NormalizedEvent[], rawBody: string | Buffer): string {
+  if (events.length === 0) return `raw:${sha256Hex(rawBody)}`;
+  return `ev:${sha256Hex(events.map(dedupeKeyForEvent).join("|"))}`;
 }

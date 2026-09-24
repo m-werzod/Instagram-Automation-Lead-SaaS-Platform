@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { claimNextJob, processJob, recoverStaleJobs, queueDepth } from "@/lib/queue";
+import { claimNextJob, processJob, recoverStaleJobs, queueDepth, recordWorkerHeartbeat } from "@/lib/queue";
 import { ensurePeriodicJobs } from "@/lib/queue/handlers";
 import { safeEqual } from "@/lib/crypto";
 import { createLogger, errorFields } from "@/lib/logger";
@@ -66,12 +66,15 @@ export async function GET(req: NextRequest) {
   try {
     await recoverStaleJobs();
     await ensurePeriodicJobs();
+    // Serverless: this drain can only ever serve the short lane. Video renders
+    // stay queued for a resident worker instead of being killed at 60s.
+    await recordWorkerHeartbeat({ workerId, lanes: ["default"], ffmpeg: false, kind: "cron" });
 
     while (Date.now() - startedAt < HARD_BUDGET_MS) {
-      const job = await claimNextJob(workerId);
+      const job = await claimNextJob(workerId, ["default"]);
       if (!job) break; // queue drained
       try {
-        await processJob(job);
+        await processJob(job, workerId);
       } catch (err) {
         failed++;
         log.error("job crashed inside cron drain", { jobId: job.id, ...errorFields(err) });

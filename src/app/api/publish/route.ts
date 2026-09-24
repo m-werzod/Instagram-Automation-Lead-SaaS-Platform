@@ -11,7 +11,7 @@ import {
   assertCanPublish,
   fetchPublishingLimit,
   hostedMediaUrl,
-  kindFromUrl,
+  resolveItemKind,
   schedulePublishJob,
   validatePublishInput,
   type PublishItem,
@@ -70,7 +70,7 @@ export const POST = route(async (req: NextRequest) => {
       if (!asset) throw validationError("Uploaded media not found for this account");
       items.push({ url: asset.externalUrl ?? hostedMediaUrl(asset.id, asset.mimeType), kind: asset.kind === "VIDEO" ? "VIDEO" : "IMAGE" });
     } else if (item.url) {
-      items.push({ url: item.url, kind: item.kind ?? kindFromUrl(item.url) });
+      items.push({ url: item.url, kind: resolveItemKind(body.mediaType, item.url, item.kind) });
     }
   }
 

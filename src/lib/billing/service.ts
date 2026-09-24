@@ -7,11 +7,14 @@ import { queueAdminAlert } from "@/lib/email";
 import { createLogger, errorFields } from "@/lib/logger";
 import { isUniqueConstraintError } from "@/lib/prisma-errors";
 import { paymentsConfigured, requirePaymentConfig } from "./config";
-import { StripeProvider, type StripeIntentSummary } from "./stripe";
+import { StripeProvider, summarizeRefund, type StripeIntentSummary } from "./stripe";
 import {
+  canReplayCharge,
+  chargeIdempotencyKey,
   computeCampaignQuote,
   computePlanQuote,
   DEFAULT_PRICING,
+  inFlightPaymentAction,
   invoiceNumber,
   nextBillingDate,
   nextRetryAt,
@@ -245,6 +248,9 @@ export interface PayOutcome {
  * Collect a PENDING/FAILED payment. With automatic payments ON and a saved
  * card, charge off-session; otherwise open hosted Checkout. Never double-charges:
  * the provider idempotency key is derived from the payment's own key + attempt.
+ *
+ * A row that is already PROCESSING is an attempt whose outcome was never seen,
+ * not a new one — it is settled against the provider rather than charged again.
  */
 export async function collectPayment(payment: Payment, customer: PaymentCustomer, opts: { allowOffSession: boolean; returnPath?: string }): Promise<PayOutcome> {
   if (payment.status === "SUCCEEDED") return { payment, checkoutUrl: null };
@@ -258,31 +264,49 @@ export async function collectPayment(payment: Payment, customer: PaymentCustomer
     ? await prisma.paymentMethod.findFirst({ where: { id: customer.defaultPaymentMethodId, removedAt: null } })
     : null;
 
-  if (opts.allowOffSession && customer.autoPay && defaultMethod) {
-    // Compare-and-swap on the row's CURRENT status: only one of two concurrent
-    // triggers on the same payment (e.g. a manual retry vs. the hourly auto-retry
-    // job) can win this update, so they can never mint two distinct, non-deduped
-    // Stripe idempotency keys for what should be a single charge attempt.
-    const claim = await prisma.payment.updateMany({
-      where: { id: payment.id, status: payment.status },
-      data: { status: "PROCESSING", attempts: { increment: 1 } },
-    });
-    const current = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
-    if (claim.count === 0) {
-      // Someone else already claimed this attempt — hand back the current state
-      // rather than racing them to also charge it.
-      return { payment: current, checkoutUrl: null };
+  const offSessionMethod = opts.allowOffSession && customer.autoPay ? defaultMethod : null;
+
+  // An attempt is in flight (or its answer was lost): the money may already be
+  // gone, so starting a second payment for the same row is the one thing that
+  // must never happen. Only a charge the provider never acknowledged may be
+  // re-sent (as a replay under its own key); anything it did acknowledge is read.
+  const inFlight = payment.status === "PROCESSING";
+  if (inFlight && inFlightPaymentAction(payment, offSessionMethod !== null) === "read") {
+    return { payment: await syncPaymentFromProvider(payment), checkoutUrl: null };
+  }
+
+  if (offSessionMethod) {
+    let attempt = payment.attempts;
+    if (!inFlight) {
+      // Compare-and-swap on the row's CURRENT status: only one of two concurrent
+      // triggers on the same payment (e.g. a manual retry vs. the hourly auto-retry
+      // job) can win this update, so they can never mint two distinct, non-deduped
+      // Stripe idempotency keys for what should be a single charge attempt.
+      const claim = await prisma.payment.updateMany({
+        where: { id: payment.id, status: payment.status },
+        data: { status: "PROCESSING", attempts: { increment: 1 } },
+      });
+      const current = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+      if (claim.count === 0) {
+        // Someone else already claimed this attempt — hand back the current state
+        // rather than racing them to also charge it.
+        return { payment: current, checkoutUrl: null };
+      }
+      attempt = current.attempts;
     }
+    // Re-sending the SAME attempt (same key, same parameters) makes Stripe replay
+    // its original answer, so an unknown outcome resolves into the real one and
+    // the attempt counter never advances past a charge we have not accounted for.
     const summary = await provider().chargeOffSession({
       customerId: customer.providerCustomerId,
-      paymentMethodId: defaultMethod.providerMethodId,
+      paymentMethodId: offSessionMethod.providerMethodId,
       amountCents: payment.amountCents,
       currency: payment.currency,
       description: payment.description,
       metadata,
-      idempotencyKey: `${payment.idempotencyKey}:${current.attempts}`,
+      idempotencyKey: chargeIdempotencyKey(payment.idempotencyKey, attempt),
     });
-    const updated = await applyIntent(payment.id, summary, { source: "off_session" });
+    const updated = await applyIntent(payment.id, summary, { source: inFlight ? "off_session_replay" : "off_session" });
     return { payment: updated, checkoutUrl: null };
   }
 
@@ -295,7 +319,7 @@ export async function collectPayment(payment: Payment, customer: PaymentCustomer
     successUrl: `${base}/api/billing/return?session_id={CHECKOUT_SESSION_ID}&next=${encodeURIComponent(opts.returnPath ?? "/billing")}`,
     cancelUrl: `${base}${opts.returnPath ?? "/billing"}?canceled=1`,
     metadata,
-    idempotencyKey: `${payment.idempotencyKey}:${attempt}`,
+    idempotencyKey: chargeIdempotencyKey(payment.idempotencyKey, attempt),
   });
   const updated = await prisma.payment.update({
     where: { id: payment.id },
@@ -407,8 +431,27 @@ export async function cancelPayment(payment: Payment, adminId: string): Promise<
     throw new AppError("VALIDATION", `A ${payment.status.toLowerCase()} payment cannot be cancelled`);
   }
   const updated = await prisma.payment.update({ where: { id: payment.id }, data: { status: "CANCELED", canceledAt: new Date(), nextRetryAt: null } });
+  if (payment.scheduleId) await skipScheduleOccurrence(payment.scheduleId, payment.dueAt);
   await audit({ adminId, action: "PAYMENT_CANCELED", resourceType: "payment", resourceId: payment.id });
   return updated;
+}
+
+/**
+ * Cancelling ONE occurrence must not end the series. The schedule's payment for
+ * a period is minted under a key derived from nextBillingAt, so while that date
+ * still points at the cancelled occurrence every later run just finds the same
+ * dead row and does nothing — the recurring charge would stop for good. Stepping
+ * the date on hands the next period back to the scheduler.
+ */
+async function skipScheduleOccurrence(scheduleId: string, dueAt: Date | null): Promise<void> {
+  const schedule = await prisma.billingSchedule.findUnique({ where: { id: scheduleId } });
+  if (!schedule || schedule.status !== "ACTIVE") return;
+  // only ever step over the occurrence the schedule is actually standing on
+  if (dueAt && schedule.nextBillingAt.getTime() !== dueAt.getTime()) return;
+  await prisma.billingSchedule.update({
+    where: { id: schedule.id },
+    data: { nextBillingAt: nextBillingDate(schedule.nextBillingAt, schedule.intervalDays) },
+  });
 }
 
 // ---- webhook events ----
@@ -440,10 +483,67 @@ export async function recordAndProcessEvent(event: ProviderEvent): Promise<"proc
     log.error("billing event failed", { eventId: event.id, type: event.type, ...errorFields(err) });
     await prisma.billingEvent.update({
       where: { providerEventId: event.id },
-      data: { status: "FAILED", error: err instanceof Error ? err.message.slice(0, 1000) : String(err) },
+      // processedAt doubles as "when the handler last ran" so replayFailedBillingEvents
+      // can space its attempts out instead of hammering a provider that is down.
+      data: { status: "FAILED", error: eventError(err), processedAt: new Date() },
     });
     return "failed";
   }
+}
+
+function eventError(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).slice(0, 1000);
+}
+
+/** How long a FAILED event waits before it is retried, and how long it is retried for. */
+const EVENT_REPLAY_AFTER_MS = 5 * 60_000;
+const EVENT_REPLAY_WINDOW_MS = 24 * 3600_000;
+
+/**
+ * Replay events whose handler threw. Stripe is ACKed even then — retrying into
+ * our own bug only burns its retry budget and eventually disables the endpoint —
+ * so without this pass a failed event is simply lost, and with it whatever it
+ * carried (a settled PaymentIntent that never reaches its Payment row).
+ *
+ * Replaying is safe because every handler is idempotent: it re-reads the object
+ * from Stripe and applyIntent never regresses a payment that already settled.
+ * After EVENT_REPLAY_WINDOW_MS the row is left FAILED for an admin to look at
+ * rather than retried forever.
+ */
+export async function replayFailedBillingEvents(now: Date = new Date()): Promise<{ replayed: number; recovered: number; failed: number }> {
+  const result = { replayed: 0, recovered: 0, failed: 0 };
+  if (!paymentsConfigured()) return result;
+  const due = await prisma.billingEvent.findMany({
+    where: {
+      status: "FAILED",
+      receivedAt: { gte: new Date(now.getTime() - EVENT_REPLAY_WINDOW_MS) },
+      OR: [{ processedAt: null }, { processedAt: { lt: new Date(now.getTime() - EVENT_REPLAY_AFTER_MS) } }],
+    },
+    orderBy: { receivedAt: "asc" },
+    take: 25,
+  });
+  for (const row of due) {
+    const event = row.payload as unknown as ProviderEvent;
+    if (!event?.id || !event.type || !event.data?.object) {
+      log.warn("billing event not replayable — stored payload is not an event", { eventId: row.providerEventId });
+      continue;
+    }
+    result.replayed++;
+    try {
+      const handled = await handleProviderEvent(event);
+      await prisma.billingEvent.update({
+        where: { id: row.id },
+        data: { status: handled ? "PROCESSED" : "IGNORED", error: null, processedAt: new Date() },
+      });
+      result.recovered++;
+    } catch (err) {
+      result.failed++;
+      log.warn("billing event replay failed", { eventId: row.providerEventId, type: row.type, ...errorFields(err) });
+      await prisma.billingEvent.update({ where: { id: row.id }, data: { error: eventError(err), processedAt: new Date() } });
+    }
+  }
+  if (result.replayed > 0) log.info("billing events replayed", result);
+  return result;
 }
 
 async function handleProviderEvent(event: ProviderEvent): Promise<boolean> {
@@ -485,8 +585,20 @@ async function handleProviderEvent(event: ProviderEvent): Promise<boolean> {
       if (!intentId) return false;
       const payment = await prisma.payment.findUnique({ where: { providerPaymentIntentId: intentId } });
       if (!payment) return false;
-      await prisma.payment.update({ where: { id: payment.id }, data: { status: "REFUNDED", refundedAt: new Date() } });
-      await audit({ action: "PAYMENT_REFUNDED", resourceType: "payment", resourceId: payment.id });
+      // This event fires for partial refunds too. Only a refund that covers the
+      // whole charge makes the payment REFUNDED; a partial one leaves it settled
+      // (the platform kept the rest), with the amounts recorded in the audit log.
+      const refund = summarizeRefund(obj);
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { refundedAt: new Date(), ...(refund.full ? { status: "REFUNDED" } : {}) },
+      });
+      await audit({
+        action: refund.full ? "PAYMENT_REFUNDED" : "PAYMENT_PARTIALLY_REFUNDED",
+        resourceType: "payment",
+        resourceId: payment.id,
+        after: { full: refund.full, refundedCents: refund.refundedCents, chargeCents: refund.chargeCents, currency: payment.currency },
+      });
       return true;
     }
     case "payment_method.attached":
@@ -536,6 +648,16 @@ export async function runDueSchedules(now: Date = new Date()): Promise<{ charged
         dueAt: schedule.nextBillingAt,
       });
       if (payment.status !== "PENDING") {
+        // This period already has a payment that will never move the schedule on
+        // by itself (a cancelled or refunded one succeeds nothing), so step over
+        // it here too — otherwise every later run re-finds the same dead row
+        // under the same idempotency key and the series stops for good.
+        if (payment.status === "CANCELED" || payment.status === "REFUNDED") {
+          await prisma.billingSchedule.update({
+            where: { id: schedule.id },
+            data: { nextBillingAt: nextBillingDate(schedule.nextBillingAt, schedule.intervalDays, now) },
+          });
+        }
         result.skipped++;
         continue;
       }
@@ -563,10 +685,66 @@ export async function runDueSchedules(now: Date = new Date()): Promise<{ charged
   return result;
 }
 
-/** Retry FAILED automatic payments whose retry time has come (1d → 3d → 7d, then stop). */
-export async function retryFailedPayments(now: Date = new Date()): Promise<{ retried: number; succeeded: number }> {
-  const result = { retried: 0, succeeded: 0 };
+/** An off-session charge sits in PROCESSING this long before its outcome counts as lost. */
+const PROCESSING_STALE_MS = 10 * 60_000;
+
+/**
+ * Settle charges whose outcome was never seen. A lost HTTP response leaves the
+ * row PROCESSING with the money's fate unknown — the customer is blocked and the
+ * platform cannot tell whether it was paid. Re-sending that same attempt (same
+ * idempotency key) makes Stripe replay its original answer, so the row lands on
+ * what actually happened without any risk of charging twice.
+ */
+export async function reconcileStuckPayments(now: Date = new Date()): Promise<number> {
+  if (!paymentsConfigured()) return 0;
+  const stuck = await prisma.payment.findMany({
+    where: { status: "PROCESSING", updatedAt: { lt: new Date(now.getTime() - PROCESSING_STALE_MS) } },
+    include: { customer: true },
+    take: 50,
+  });
+  let settled = 0;
+  for (const payment of stuck) {
+    try {
+      // A reference means the response DID come back at least once; then a plain
+      // read is enough and no charge request needs to be re-sent at all.
+      if (payment.providerPaymentIntentId || payment.providerCheckoutSessionId) {
+        const read = await syncPaymentFromProvider(payment);
+        if (read.status !== "PROCESSING") settled++;
+        continue;
+      }
+      // Nothing to read, so the only way to learn the outcome is to re-send that
+      // same attempt — which is a replay only while Stripe still remembers the
+      // key. updatedAt is when the row was claimed: a replay that reaches Stripe
+      // always writes (an id, or a decline), so an untraced row this old means
+      // every attempt failed in transport.
+      if (!canReplayCharge(payment.updatedAt, now)) {
+        log.error("payment stuck in PROCESSING past Stripe's idempotency window — settle it by hand from the Stripe dashboard", {
+          paymentId: payment.id,
+          attempts: payment.attempts,
+          chargeKey: chargeIdempotencyKey(payment.idempotencyKey, payment.attempts),
+        });
+        continue;
+      }
+      const updated = (await collectPayment(payment, payment.customer, { allowOffSession: true })).payment;
+      if (updated.status !== "PROCESSING") settled++;
+      else {
+        // No way to re-send it either (the card or autoPay is gone): nobody here
+        // can find out what happened, so say so instead of letting the row sit
+        // in a silent counter forever.
+        log.warn("payment stuck in PROCESSING with nothing to ask the provider about", { paymentId: payment.id, attempts: payment.attempts });
+      }
+    } catch (err) {
+      log.error("payment reconcile failed", { paymentId: payment.id, ...errorFields(err) });
+    }
+  }
+  return settled;
+}
+
+/** Retry FAILED automatic payments whose retry time has come (1d → 3d → 7d, then stop), after settling any charge left in the dark. */
+export async function retryFailedPayments(now: Date = new Date()): Promise<{ retried: number; succeeded: number; reconciled: number }> {
+  const result = { retried: 0, succeeded: 0, reconciled: 0 };
   if (!paymentsConfigured()) return result;
+  result.reconciled = await reconcileStuckPayments(now);
   const due = await prisma.payment.findMany({
     where: { status: "FAILED", nextRetryAt: { lte: now }, customer: { autoPay: true, defaultPaymentMethodId: { not: null } } },
     include: { customer: true },

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { registerHandler, enqueue } from "./index";
+import { registerVideoHandlers } from "@/lib/video/jobs";
 import { parseWebhookPayload, type NormalizedEvent, type WebhookPayload } from "@/lib/meta/webhooks";
 import { runAutomations } from "@/lib/automation/engine";
 import { generateAndSendReply, generateAndSendCommentReply } from "@/lib/agent/runtime";
@@ -14,6 +15,7 @@ import { runPublishJob } from "@/lib/meta/publishing";
 import { syncCampaignFromMeta } from "@/lib/meta/marketing";
 import { retryFailedPayments, runDueSchedules } from "@/lib/billing/service";
 import { getGlobalSettings } from "@/lib/settings";
+import { audit } from "@/lib/audit";
 import { createLogger, errorFields } from "@/lib/logger";
 import type { Prisma } from "@prisma/client";
 
@@ -235,6 +237,35 @@ async function handleInboundMessage(ev: Extract<NormalizedEvent, { type: "messag
   );
 }
 
+/**
+ * Comment side effects (a private reply, a DM) have no unique id to collide on
+ * the way an inbound message has Message.mid, so Meta's at-least-once
+ * redelivery — or a webhook.process retry after a LATER event in the same batch
+ * threw — would send the commenter a second private reply. webhook_events is
+ * this codebase's delivery-dedupe anchor (dedupeKey is unique), so a marker row
+ * there settles the race in the database: whoever inserts it first owns this
+ * comment. Returns false when someone already did.
+ */
+async function claimComment(commentId: string, accountId: string): Promise<boolean> {
+  try {
+    await prisma.webhookEvent.create({
+      data: {
+        object: "instagram",
+        dedupeKey: `cmt:handled:${commentId}`,
+        payload: { marker: "comment_handled", commentId, accountId } as Prisma.InputJsonValue,
+        status: "PROCESSED",
+        processedAt: new Date(),
+      },
+    });
+    return true;
+  } catch (err) {
+    if (typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2002") {
+      return false;
+    }
+    throw err;
+  }
+}
+
 async function handleComment(ev: Extract<NormalizedEvent, { type: "comment" }>): Promise<void> {
   const account = await prisma.instagramAccount.findFirst({
     where: { igUserId: ev.entryId, status: "CONNECTED" },
@@ -242,6 +273,12 @@ async function handleComment(ev: Extract<NormalizedEvent, { type: "comment" }>):
   if (!account) return;
   // never react to our own comments
   if (ev.fromId && ev.fromId === account.igUserId) return;
+
+  // Same position as the message path's mid guard: before anything that sends.
+  if (!(await claimComment(ev.commentId, account.id))) {
+    log.info("duplicate comment ignored", { commentId: ev.commentId });
+    return;
+  }
 
   // Resolve Meta's media id to our local ContentItem so rules can be scoped to
   // one specific post/reel. A post the platform hasn't synced yet simply has
@@ -279,16 +316,78 @@ registerHandler("ai.reply", async (payload) => {
   if (!conversationId) return;
   const outcome = await generateAndSendReply(conversationId, String(payload.messageId ?? ""));
   log.info("ai.reply outcome", { conversationId, ...outcome });
+
+  // The agent handing a conversation to a human is the same event an admin's
+  // manual takeover is, so CONVERSATION_HANDOFF rules (alert the team, tag the
+  // lead) must fire here too — the takeover endpoint used to be the only path
+  // that fired them, and the AI path is the one that happens unattended.
+  if (outcome.action === "handed_off") {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { accountId: true, igsid: true },
+    });
+    if (conversation) {
+      await runAutomations("CONVERSATION_HANDOFF", {
+        accountId: conversation.accountId,
+        conversationId,
+        igsid: conversation.igsid,
+      });
+    }
+  }
 });
 
 // ---------- comment.ai_reply ----------
+
+/**
+ * Ceiling on PUBLIC AI comment replies for one Instagram ACCOUNT per hour.
+ * Distinct from an agent's per-user DM cap: one viral post produces hundreds of
+ * comments from hundreds of different people, and every reply is visible under
+ * the account's own post. Counted from the audit row each SENT reply writes, so
+ * a skipped or blocked attempt never consumes another commenter's slot, and the
+ * count is shared by every worker/lambda and survives a restart.
+ *
+ * This is the OUTER of two ceilings today: generateAndSendCommentReply still
+ * applies the agent's per-user DM field (maxRepliesPerUserPerHour, default 20)
+ * account-wide over AIUsage ATTEMPT rows, so that inner one usually binds first.
+ * Removing it belongs in src/lib/agent/runtime.ts, not here.
+ */
+const COMMENT_AI_REPLY_ACCOUNT_HOURLY_CAP = 60;
+/** Written per sent public AI comment reply — the cap counts these. */
+const AI_COMMENT_REPLY_SENT = "AI_COMMENT_REPLY_SENT";
 
 registerHandler("comment.ai_reply", async (payload) => {
   const accountId = String(payload.accountId ?? "");
   const commentId = String(payload.commentId ?? "");
   if (!accountId || !commentId) return;
+
+  const sentLastHour = await prisma.auditLog.count({
+    where: {
+      action: AI_COMMENT_REPLY_SENT,
+      resourceType: "instagram_account",
+      resourceId: accountId,
+      createdAt: { gte: new Date(Date.now() - 3600_000) },
+    },
+  });
+  if (sentLastHour >= COMMENT_AI_REPLY_ACCOUNT_HOURLY_CAP) {
+    log.warn("comment.ai_reply skipped: account hourly reply cap reached", {
+      accountId,
+      commentId,
+      sentLastHour,
+      cap: COMMENT_AI_REPLY_ACCOUNT_HOURLY_CAP,
+    });
+    return;
+  }
+
   const outcome = await generateAndSendCommentReply(accountId, commentId, String(payload.text ?? ""));
   log.info("comment.ai_reply outcome", { accountId, commentId, ...outcome });
+  if (outcome.action === "replied") {
+    await audit({
+      action: AI_COMMENT_REPLY_SENT,
+      resourceType: "instagram_account",
+      resourceId: accountId,
+      after: { commentId },
+    });
+  }
 });
 
 // ---------- lead.process ----------
@@ -471,3 +570,8 @@ export async function ensurePeriodicJobs(): Promise<void> {
   await enqueue("billing.retry", {}, { idempotencyKey: `billing.retry:${hourKey}` });
   await enqueue("queue.cleanup", {}, { idempotencyKey: `queue.cleanup:${dayKey}` });
 }
+
+// Video renders live in their own module (and their own queue lane); registering
+// them here keeps "import the handlers file" the single way a process becomes a
+// worker, whatever kind of work it can do.
+registerVideoHandlers();

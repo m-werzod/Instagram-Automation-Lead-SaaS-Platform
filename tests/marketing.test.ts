@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildCallToAction,
   buildTargeting,
+  campaignArchiveProblem,
+  campaignEditProblem,
+  campaignPauseProblem,
+  nextCreationStep,
   parseAdAccountBillingStatus,
+  parseAdReview,
   parseCampaignInsights,
   parseReachEstimate,
   resolveCtaAndUrl,
@@ -116,6 +121,102 @@ describe("statusFromMeta", () => {
     expect(statusFromMeta("ARCHIVED")).toBe("ARCHIVED");
     expect(statusFromMeta("IN_PROCESS")).toBeNull();
     expect(statusFromMeta(null)).toBeNull();
+  });
+});
+
+/**
+ * Meta has no transaction across campaign → ad set → creative → ad, so every id
+ * it hands back is a real object in Ads Manager. A retry after a mid-chain
+ * failure therefore has to continue from the first MISSING one; starting over
+ * would abandon whatever was already created.
+ */
+describe("nextCreationStep", () => {
+  const none = { metaCampaignId: null, metaAdSetId: null, metaCreativeId: null, metaAdId: null };
+  it("resumes at the first missing object and reports 'done' for a complete chain", () => {
+    expect(nextCreationStep(none)).toBe("campaign");
+    expect(nextCreationStep({ ...none, metaCampaignId: "c1" })).toBe("adset");
+    expect(nextCreationStep({ ...none, metaCampaignId: "c1", metaAdSetId: "s1" })).toBe("creative");
+    expect(nextCreationStep({ ...none, metaCampaignId: "c1", metaAdSetId: "s1", metaCreativeId: "cr1" })).toBe("ad");
+    expect(nextCreationStep({ metaCampaignId: "c1", metaAdSetId: "s1", metaCreativeId: "cr1", metaAdId: "a1" })).toBe("done");
+  });
+});
+
+/**
+ * Meta reviews the AD. The verdict is whatever Meta says and nothing else — an
+ * ad it has not spoken about is null, never "approved".
+ */
+describe("parseAdReview", () => {
+  it("reads the ad's effective_status and every issue Meta attaches", () => {
+    expect(
+      parseAdReview({
+        effective_status: "DISAPPROVED",
+        issues_info: [{ level: "AD", error_code: 1815869, error_summary: "Ad contains restricted content", error_message: "Edit the ad and resubmit." }],
+      }),
+    ).toEqual({
+      status: "DISAPPROVED",
+      issues: [{ level: "AD", code: 1815869, summary: "Ad contains restricted content", message: "Edit the ad and resubmit." }],
+    });
+  });
+  it("is null-not-approved when Meta reports nothing, and has no issues rather than an empty story", () => {
+    expect(parseAdReview({})).toEqual({ status: null, issues: null });
+    expect(parseAdReview({ effective_status: "PENDING_REVIEW", issues_info: [] })).toEqual({ status: "PENDING_REVIEW", issues: null });
+    expect(parseAdReview({ effective_status: "WITH_ISSUES", issues_info: [{}] })).toEqual({
+      status: "WITH_ISSUES",
+      issues: [{ level: null, code: null, summary: null, message: null }],
+    });
+  });
+});
+
+describe("campaign lifecycle guards", () => {
+  it("only pauses something that is actually live in Meta", () => {
+    expect(campaignPauseProblem("ACTIVE")).toBeNull();
+    expect(campaignPauseProblem("PAUSED")).toBeNull();
+    expect(campaignPauseProblem("CREATED")).toBeNull();
+    // pausing a draft would strand it: neither creatable in Meta nor editable
+    expect(campaignPauseProblem("DRAFT")).toMatch(/not been created in Meta/);
+    expect(campaignPauseProblem("READY")).toMatch(/not been created in Meta/);
+    expect(campaignPauseProblem("ERROR")).toMatch(/never made it into Meta/);
+    expect(campaignPauseProblem("ARCHIVED")).toMatch(/archived/);
+  });
+
+  it("refuses to hide a campaign Meta is still spending on, and trusts Meta over the local status", () => {
+    const active = { status: "ACTIVE", effectiveStatus: "ACTIVE" };
+    expect(campaignArchiveProblem("PAUSED", active)).toMatch(/still ACTIVE in Meta/);
+    expect(campaignArchiveProblem("ACTIVE", { status: "PAUSED", effectiveStatus: "CAMPAIGN_PAUSED" })).toBeNull();
+    expect(campaignArchiveProblem("PAUSED", { status: "PAUSED", effectiveStatus: "CAMPAIGN_PAUSED" })).toBeNull();
+    // nothing in Meta to ask about (local draft, demo account) → the local status decides
+    expect(campaignArchiveProblem("ACTIVE", null)).toMatch(/still ACTIVE in Meta/);
+    expect(campaignArchiveProblem("DRAFT", null)).toBeNull();
+    // Meta replied but said nothing: that is not "it stopped" — fall back to what is known
+    expect(campaignArchiveProblem("ACTIVE", { status: null, effectiveStatus: null })).toMatch(/still ACTIVE in Meta/);
+    expect(campaignArchiveProblem("PAUSED", { status: null, effectiveStatus: null })).toBeNull();
+  });
+
+  /**
+   * A chain that failed halfway leaves real objects in Meta, and the retry
+   * resumes from the first missing one — so whatever an existing object already
+   * holds can never be changed by editing the local row. Saving it anyway would
+   * show a budget here that Meta is not spending.
+   */
+  it("refuses edits to what Meta already created, and allows the rest of the retry", () => {
+    const nothing = { metaCampaignId: null, metaAdSetId: null, metaCreativeId: null };
+    const campaignOnly = { ...nothing, metaCampaignId: "c1" };
+    const withAdSet = { ...campaignOnly, metaAdSetId: "s1" };
+
+    // nothing in Meta yet → everything is still editable
+    expect(campaignEditProblem(nothing, ["dailyBudgetCents", "objective", "targeting"])).toBeNull();
+    // the common failure: Meta rejected the ad set, so the budget that lives on
+    // it has NOT been created yet and fixing it is exactly how this is recovered
+    expect(campaignEditProblem(campaignOnly, ["dailyBudgetCents", "targeting"])).toBeNull();
+    // …but the objective is on the campaign object Meta already made
+    expect(campaignEditProblem(campaignOnly, ["objective"])).toMatch(/objective/);
+    expect(campaignEditProblem(withAdSet, ["dailyBudgetCents"])).toMatch(/ad set/);
+    expect(campaignEditProblem(withAdSet, ["dailyBudgetCents"])).toMatch(/Ads Manager/);
+    // the creative has not been made yet → its half of the ad is still editable
+    expect(campaignEditProblem(withAdSet, ["ctaType", "destinationUrl", "creativeSpec"])).toBeNull();
+    expect(campaignEditProblem({ ...withAdSet, metaCreativeId: "cr1" }, ["destinationUrl"])).toMatch(/ad creative/);
+    // fields no Meta object holds (a rename, a local-only link) stay editable throughout
+    expect(campaignEditProblem({ ...withAdSet, metaCreativeId: "cr1" }, ["name", "leadFlowId", "currency"])).toBeNull();
   });
 });
 

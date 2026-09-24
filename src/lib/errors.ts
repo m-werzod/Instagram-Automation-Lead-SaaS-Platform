@@ -25,6 +25,8 @@ export type ErrorCode =
   | "PAYMENT_NOT_CONFIGURED"
   | "PAYMENT_PROVIDER_ERROR"
   | "REQUIRES_PAYMENT"
+  /// A dependency this feature needs is not running (e.g. no video worker with FFmpeg).
+  | "SERVICE_UNAVAILABLE"
   | "INTERNAL";
 
 export class AppError extends Error {
@@ -77,6 +79,7 @@ function defaultStatus(code: ErrorCode): number {
     case "CONFLICT":
       return 409;
     case "CONFIG_MISSING":
+    case "SERVICE_UNAVAILABLE":
       return 503;
     case "META_TOKEN_EXPIRED":
     case "META_AUTH_FAILED":

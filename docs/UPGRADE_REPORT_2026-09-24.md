@@ -4,7 +4,7 @@ Covers the seven-functionality upgrade: an audit of the six existing modules, th
 produced, and the new **AI Video Editor**.
 
 Baseline at start (`8b98b81`): 268 tests, typecheck and lint clean.
-State now (`1fd7733`): **516 tests, typecheck clean, lint clean, production build clean.**
+State now (`2dcb6d5`): **594 tests, typecheck clean, lint clean, production build clean.**
 
 ---
 
@@ -22,9 +22,10 @@ State now (`1fd7733`): **516 tests, typecheck clean, lint clean, production buil
 | 9 — QA & security | 5 adversarial review dimensions, every finding verified. **27 confirmed defects, all remediated** (see §4) |
 | 10 — Report | This document, plus [MANUAL_SETUP_GUIDE.md](../MANUAL_SETUP_GUIDE.md) |
 
-**116 defects fixed**: 60 in the seven repair tracks, 26 more found by the review pass over them,
-3 I found directly, and 27 found by the phase-9 QA review — including a critical one that would have
-made the video editor refuse every render in production.
+**118 defects fixed**: 60 in the seven repair tracks, 26 more found by the review pass over them,
+3 I found directly, 27 found by the phase-9 QA review — including a critical one that would have made
+the video editor refuse every render in production — and 2 gaps the remediation deliberately left
+open, which I then closed myself (see below).
 
 ---
 
@@ -111,8 +112,8 @@ and always failed while the UI reported success.
 
 | Suite | Result |
 | --- | --- |
-| Full unit/integration suite | **516 pass**, 0 fail (was 268) |
-| New video suites | 89 tests across params, render, subtitles, storage |
+| Full unit/integration suite | **594 pass**, 0 fail (was 268) |
+| New video suites | 167 tests across params, render, subtitles, storage, job lifecycle, UI wording |
 | `tsc --noEmit` | Clean |
 | `eslint` | Clean, 0 warnings |
 | Production build | Clean; 14 video routes + 2 pages emitted |
@@ -182,6 +183,20 @@ refuse every render on the exact deployment this platform documents.
 | High | A source video that failed validation left the project unrecoverable, saying "try again in a moment" forever | Remediated |
 | Medium ×13 | Job-lifecycle races, zombie queued jobs, stale preview presented as current, success toasts for queued work, sample selection re-checking itself, untranslated slugs, Blob content-type mismatch, unbounded subtitle words, local storage reported usable on serverless, and others | Remediated |
 | Low ×4 | Suffix Range handling, missing audit records on subtitle edits, clock-skew in the early-wake re-enqueue, capability panel wording | Remediated |
+
+Four items the remediation tracks honestly declined, and what happened to them:
+
+- **Streaming writes to storage.** The upload route could bound how much it read but still had to
+  assemble the accepted bytes, because the driver interface only took a `Buffer`. Both drivers now
+  have a `putStream` that writes as bytes arrive and deletes its partial object on overflow, so the
+  web tier's memory per upload is one chunk rather than one file. The local driver writes to a
+  `.part` file and renames, so a reader can never see a half-written object.
+- **No way to replace a failed source video.** The UI could only describe the dead end, because no
+  API could detach the asset. `DELETE /api/video/assets` now removes a source that failed its checks
+  (and only one that failed), and the editor offers it.
+- **The upload reserve step did not refuse when storage was unusable.** It now returns 503 with the
+  real reason instead of handing back an upload URL that could never hold a file.
+- **Colour-look labels.** The dictionary entries existed; the buttons still showed raw slugs. Wired.
 
 **Tests that failed:** none outstanding. During development one self-written pipeline check failed on
 its own assumption (a synthetic clip had 2 scene cuts where the assertion expected the ≥3 needed to

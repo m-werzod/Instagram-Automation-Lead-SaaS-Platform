@@ -168,3 +168,97 @@ See `.env.example` (authoritative). Groups: core (`APP_URL`, `SESSION_SECRET`, `
 
 The 27-point acceptance list in the product brief, verified manually against seed data plus unit/integration
 suite green. Anything Meta does not support is visibly labeled Unavailable with the reason, never faked.
+
+---
+
+## 10. AI Video Editor — architecture decisions (2026-09-24)
+
+Added in the seven-functionality upgrade. Every decision below was forced by a verified constraint,
+not a preference; the constraint is stated with each one.
+
+### 10.1 Why video work runs in its own queue lane
+
+**Constraint (measured, not assumed):** Vercel functions cap at `maxDuration` 60s, the cron drain
+stops claiming at ~52s, and the filesystem is read-only apart from an ephemeral `/tmp`. A render of a
+60-second Reel takes minutes. FFmpeg therefore *cannot* run on the web tier at all.
+
+**Decision:** `Job.lane` (`default` | `video`). The serverless drain claims `default` only; the
+`video` lane is claimed only by a resident worker that has proved FFmpeg starts (`ffmpegAvailability`
+at boot). A render can never be picked up by a process that would be killed halfway through it.
+
+**Consequence accepted:** deployments without a worker cannot render. Rather than hide that, the
+editor reads `WorkerHeartbeat` and reports *Processing worker: Unavailable* with the reason and the
+fix. Jobs still queue and run later — nothing is lost — but no progress bar moves against nothing.
+
+This forced three queue repairs that the audit had independently flagged: lock **leases** renewed by
+a heartbeat (a 20-minute render was previously declared stale at 5 minutes and re-executed),
+**dead-lettering** on recovery (a job killed by OOM retried forever at full speed), and a **per-job
+timeout** (no outbound call in the codebase set its own deadline).
+
+### 10.2 Why media bytes left Postgres
+
+**Constraint:** `MediaAsset.data` is `bytea` capped at 4 MB because the serverless request body limit
+is 4.5 MB, and `/m/[id]` loads the whole buffer per request with no HTTP Range support.
+
+**Decision:** a driver interface (`src/lib/storage/`) with two implementations — `local` (a directory
+the worker and FFmpeg read directly, no copy) and `vercel-blob` (browser uploads straight to Blob
+with a one-time token, so the file never transits a function). Selected by `STORAGE_DRIVER`, or
+inferred from `BLOB_READ_WRITE_TOKEN`.
+
+The publishing pipeline's existing `MediaAsset` path is untouched: images under 4 MB still work
+exactly as before. Only video uses the new layer.
+
+### 10.3 How natural-language editing is made safe
+
+**Threat:** the product accepts editing instructions in three languages and turns them into FFmpeg
+invocations. A model that could emit a command, a filtergraph, or a path would be a remote code
+execution primitive.
+
+**Decision — three separate barriers, each sufficient on its own:**
+
+1. **The model only proposes data.** `runAssistantTurn` exposes two tools: `propose_edit` (a partial
+   parameter patch) and `explain_unsupported`. Neither executes. The patch is parsed by a strict zod
+   schema (`params.ts`), merged, re-validated, and shown to the operator as a field-by-field diff.
+   Applying it is a separate authenticated request.
+2. **FFmpeg is never given a string.** `src/lib/video/ffmpeg.ts` is the only place in the product that
+   spawns a binary, always with an argv **array** and `shell: false`. There is no command string
+   anywhere for a quote or semicolon to escape from.
+3. **Text reaches FFmpeg only as a file.** Subtitles are written to a generated `.ass` file and
+   referenced by path; caption text is never interpolated into a filtergraph. Brace and backslash
+   sequences are neutralised when the file is written, so caption text cannot become ASS markup.
+
+Verified by rendering caption text containing quotes, semicolons, braces, backslashes, Windows paths
+and filtergraph fragments: it encodes as literal text.
+
+### 10.4 Why "copy this video's style" promises less than it could
+
+**Constraint:** most of what makes an edit recognisable (motion graphics, tracked overlays,
+beat-synced cutting) cannot be reconstructed from an arbitrary video by any pipeline we can run.
+
+**Decision:** the analysis is split into `measured` (FFmpeg facts: scene cuts, cadence, loudness,
+framing, speech/silence windows — reproducible and checkable) and `observed` (a vision model's
+reading — labelled as opinion). The plan they produce tags **every** item `reproducible`,
+`approximate`, or `unsupported`; only the first two carry an applicable patch, and the API refuses to
+apply an `unsupported` op even if a client asks. Re-cutting to a sample's rhythm is deliberately
+`unsupported` rather than approximated badly.
+
+The system never states that a sample was reproduced.
+
+### 10.5 Why per-word subtitle highlighting is conditional
+
+Word-level highlighting needs word-level timings. An OpenAI-compatible transcription endpoint returns
+them; Gemini returns cue-level timings only. Rather than interpolating word positions — which drifts
+visibly from the speech — the control is disabled when the track has no word timings, with the reason
+shown. `buildAssFile` also falls back to a single cue line if asked to highlight without them.
+
+### 10.6 Why "Upload to Instagram" does not upload
+
+Instagram's publishing API **fetches** media from a URL; it does not accept an upload. So the export
+screen prepares that URL, verifies it is genuinely reachable from the internet (a render served from
+`localhost` cannot be published, however finished it is), checks the account's publish permission,
+lists Meta's own size/duration/aspect constraints, and hands the composer a prefilled draft. The
+existing `PublishJob` state machine then does the real work, after the operator confirms.
+
+Local-driver renders are exposed at `/v/{token}` — an HMAC over the asset id plus an expiry, serving
+only `EXPORT` and `THUMBNAIL` assets, so a source video or an uploaded music track never becomes
+publicly reachable.

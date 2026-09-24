@@ -4,7 +4,9 @@ Private, admin-only Instagram automation platform built around the **Lead Button
 configurable button (colors, shape, size, texts) that sends Instagram viewers into an admin-designed
 question flow and lands every answer in the built-in CRM. Also: official Meta OAuth account connection,
 AI agents (Anthropic / OpenAI / Google) answering DMs, DM keyword lead flows, email notifications,
-Marketing-API campaigns with hard spend safeguards, automations, analytics, and a full audit trail.
+Marketing-API campaigns with hard spend safeguards, automations, analytics, a full audit trail, and an
+**AI Video Editor** (real FFmpeg: audio mixing, burned-in subtitles, style analysis, AI-assisted edits)
+whose exports feed the same Instagram publishing pipeline.
 
 **UI languages:** O‘zbekcha (default) · English · Русский — switchable from the header; the whole
 interface is dictionary-driven (`src/lib/i18n/`).
@@ -68,8 +70,15 @@ exists so every module is explorable before connecting a real account.
 
 ```bash
 npm run dev           # terminal 2 — web app on http://localhost:3000
-npm run worker        # terminal 3 — queue worker (webhooks, AI replies, flows, email)
+npm run worker        # terminal 3 — queue worker (webhooks, AI replies, flows, email, video renders)
 ```
+
+The worker claims **video renders** only when FFmpeg is installed on that machine (`ffmpeg -version`
+must work). Without it the worker still runs everything else and logs `video lane disabled`, and the
+AI Video Editor reports video processing as unavailable **with the reason** instead of queueing work
+nothing can run. Serverless hosts cannot render at all — their functions stop after 60 seconds — so
+production needs a real worker process for video. See
+[MANUAL_SETUP_GUIDE.md](MANUAL_SETUP_GUIDE.md) §10.
 
 Alternative for quick dev without a third terminal: set `QUEUE_INLINE=true` in `.env` — jobs run inside
 the web process (the standalone worker is the production mode).
@@ -108,7 +117,7 @@ Note: passwords are **not** trimmed, so a trailing space from copy-paste will be
 ## 5. Tests / quality gates
 
 ```bash
-npm test              # 80 unit/integration tests (Meta & AI fully mocked — no network, no real accounts)
+npm test              # 514 unit/integration tests (Meta, AI and FFmpeg mocked — no network, no real accounts)
 npm run typecheck     # tsc --noEmit (strict)
 npm run lint
 npm run build         # production build
@@ -171,6 +180,9 @@ src/lib/leadflow/engine.ts  one-question-per-step DM state machine
 src/lib/automation/*        trigger → condition → action engine
 src/lib/queue/*             DB-backed job queue (SKIP LOCKED) + handlers (webhooks, AI, publishing, billing, campaign sync)
 src/lib/knowledge/*         extract → chunk → embed → retrieve
+src/lib/video/*             AI Video Editor — FFmpeg argv builder, probe, ASS subtitles, audio mixing,
+                            speech-to-text, sample-style analysis, chat assistant, job runner
+src/lib/storage/*           object storage for video (local disk / Vercel Blob) — Postgres cannot hold it
 src/lib/email/*             EmailService with queued retries
 src/app/api/*               REST surface (zod-validated, audited, RBAC-scoped)
 src/app/(dashboard)/*       control-center UI, incl. Target wizard, Billing and the staff-only Admin overview
@@ -179,4 +191,7 @@ docs/INSTAGRAM_SETUP.md     adding an Instagram account, start to finish
 docs/META_API.md            verified Meta capability reference (incl. publishing/targeting/estimate endpoints)
 docs/DEPLOYMENT.md          production deployment guide (incl. Stripe webhook + AI gateway setup)
 docs/AUDIT_2026-09-12.md    pre-upgrade architecture audit and gap analysis
+docs/AUDIT_2026-09-24.md    second audit — verified defects, and the plan this upgrade followed
+MANUAL_SETUP_GUIDE.md       every step that cannot be done inside the repo (Meta, Stripe, AI, video
+                            storage, the FFmpeg worker), with exact click-paths
 ```

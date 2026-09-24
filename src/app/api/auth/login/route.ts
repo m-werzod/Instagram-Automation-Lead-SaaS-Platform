@@ -7,7 +7,7 @@ import { route, parseBody, clientIp, assertSameOrigin, enforceRateLimit } from "
 import { AppError } from "@/lib/errors";
 import { audit, AuditActions } from "@/lib/audit";
 import { createLogger, errorFields } from "@/lib/logger";
-import { LIMITS, LOGIN_LOCKOUT, loginLockout, type LoginFailureCounts } from "@/lib/rate-limit";
+import { LIMITS, LOGIN_LOCKOUT, loginLockout, resetRateLimit, type LoginFailures } from "@/lib/rate-limit";
 
 const log = createLogger("auth.login");
 
@@ -23,7 +23,7 @@ const loginSchema = z.object({
  * rows this route already writes. No new table: AuditLog is indexed on
  * (action, createdAt), which is exactly the lookup below.
  */
-async function recentLoginFailures(login: string, ip: string): Promise<LoginFailureCounts> {
+async function recentLoginFailures(login: string, ip: string): Promise<LoginFailures> {
   const since = new Date(Date.now() - LOGIN_LOCKOUT.windowMs);
   // "unknown" is every un-attributable caller at once; locking on it would be a
   // self-inflicted outage rather than a defence, so only the login scope applies.
@@ -35,22 +35,20 @@ async function recentLoginFailures(login: string, ip: string): Promise<LoginFail
       ...(byIp ? { OR: [{ ip }, { after: { path: ["login"], equals: login } }] } : { after: { path: ["login"], equals: login } }),
     },
     select: { ip: true, after: true, createdAt: true },
-    orderBy: { createdAt: "asc" },
+    // Newest first, so that when `take` bites on a noisy installation it keeps
+    // what just happened rather than what is about to expire — and so the row
+    // that decides when the lock lifts (the threshold-th newest) is always in
+    // hand, thresholds being far below the cap.
+    orderBy: { createdAt: "desc" },
     take: 200,
   });
 
-  const counts: LoginFailureCounts = { forLogin: 0, forIp: 0, oldestForLogin: null, oldestForIp: null };
+  const failures: LoginFailures = { forLogin: [], forIp: [] };
   for (const row of rows) {
-    if ((row.after as { login?: string } | null)?.login === login) {
-      counts.forLogin++;
-      counts.oldestForLogin ??= row.createdAt;
-    }
-    if (byIp && row.ip === ip) {
-      counts.forIp++;
-      counts.oldestForIp ??= row.createdAt;
-    }
+    if ((row.after as { login?: string } | null)?.login === login) failures.forLogin.push(row.createdAt);
+    if (byIp && row.ip === ip) failures.forIp.push(row.createdAt);
   }
-  return counts;
+  return failures;
 }
 
 export const POST = route(async (req: NextRequest) => {
@@ -59,7 +57,8 @@ export const POST = route(async (req: NextRequest) => {
   const body = await parseBody(req, loginSchema);
   const login = normalizeLogin(body.login);
 
-  enforceRateLimit(`login:${ip}:${login}`, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs);
+  const loginKey = `login:${ip}:${login}`;
+  enforceRateLimit(loginKey, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs);
   // Same reasoning as the durable counter below: with no proxy header to go on,
   // `unknown` is every caller at once, so one shared bucket would cap the whole
   // installation at LOGIN_IP sign-ins rather than cap an attacker. The per-login
@@ -71,7 +70,7 @@ export const POST = route(async (req: NextRequest) => {
   // Checked before the password is verified: a locked-out attacker must not get
   // free bcrypt work out of us, and must not learn whether the login exists.
   const lock = await recentLoginFailures(login, ip)
-    .then((counts) => loginLockout(counts))
+    .then((failures) => loginLockout(failures))
     .catch((err) => {
       // Availability wins over the extra guard: the in-process limiter is still
       // in force above, so a failed count degrades rather than bars sign-in.
@@ -112,9 +111,19 @@ export const POST = route(async (req: NextRequest) => {
     });
     // identical response for unknown login / bad password / disabled account
     throw new AppError("UNAUTHORIZED", "Incorrect login or password", {
-      fix: `Check your credentials. Sign-in locks after ${LOGIN_LOCKOUT.perLogin} failed attempts in ${Math.round(LOGIN_LOCKOUT.windowMs / 60_000)} minutes.`,
+      // Quote the ceiling this caller actually meets first: the in-process
+      // limiter stops them at LOGIN.limit long before the durable lockout's
+      // higher, installation-wide threshold is in reach.
+      fix: `Check your credentials. Further attempts are refused after ${LIMITS.LOGIN.limit} failures from one address, and the login itself locks after ${LOGIN_LOCKOUT.perLogin} failures in ${Math.round(LOGIN_LOCKOUT.windowMs / 60_000)} minutes.`,
     });
   }
+
+  // The right password clears this address's failure count for this login —
+  // without it a legitimate admin signing in from a handful of devices inside
+  // one window locks themselves out of their own account. Only the per-login
+  // bucket is cleared: the IP-wide one caps spraying across OTHER logins, which
+  // one correct password says nothing about.
+  resetRateLimit(loginKey);
 
   const { token, session } = await createSession(admin.id, ip, req.headers.get("user-agent"));
   prisma.admin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }).catch(() => undefined);

@@ -212,6 +212,13 @@ function normalizeIp(raw: string | null | undefined): string | null {
  * appends the address it saw (Vercel, nginx, Cloudflare all do). Chain more
  * proxies and set TRUSTED_PROXY_HOPS to the number of EXTRA hops, so the entry
  * they appended is skipped too.
+ *
+ * Both fallbacks are only as strong as that assumption, because both headers
+ * are ordinary request headers: behind a proxy that writes X-Real-IP but NOT
+ * X-Forwarded-For, a caller sending an X-Forwarded-For of their own is read in
+ * preference to the real one, and with no proxy at all every value here is
+ * theirs. Naming the header the proxy actually writes in TRUSTED_IP_HEADER
+ * (`x-real-ip` is a valid answer) removes the guesswork.
  */
 export function clientIp(req: NextRequest): string {
   const trusted = trustedIpHeader();

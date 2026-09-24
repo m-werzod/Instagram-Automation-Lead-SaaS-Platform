@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { assertSameOrigin, clientIp, isLocalHostname, route, trustedHosts, ok } from "@/lib/api";
 import { _resetCoreEnvCache } from "@/lib/env";
 import { AppError } from "@/lib/errors";
-import { LIMITS, LOGIN_LOCKOUT, loginLockout, rateLimit, rateLimiterInfo, _resetRateLimiter } from "@/lib/rate-limit";
+import { LIMITS, LOGIN_LOCKOUT, loginLockout, rateLimit, rateLimiterInfo, resetRateLimit, _resetRateLimiter } from "@/lib/rate-limit";
 import { redact } from "@/lib/logger";
 
 /**
@@ -297,6 +297,22 @@ describe("rate-limit bucket expiry", () => {
       expect(rateLimit(LOGIN_KEY, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs).allowed).toBe(true);
     });
   });
+
+  /**
+   * The login bucket counts every attempt, successes included, over fifteen
+   * minutes. Without this the admin who signs in from a laptop, a phone and a
+   * second browser locks themselves out of their own account for the rest of
+   * the window — so the login route clears the bucket on a correct password.
+   */
+  it("forgets a bucket on demand, so a success can clear its own failures", () => {
+    exhaustLogin();
+    expect(rateLimit(LOGIN_KEY, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs).allowed).toBe(false);
+    resetRateLimit(LOGIN_KEY);
+    expect(rateLimit(LOGIN_KEY, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs).allowed).toBe(true);
+    // and only that key
+    resetRateLimit("login:203.0.113.7:someone-else");
+    expect(rateLimit(LOGIN_KEY, LIMITS.LOGIN.limit, LIMITS.LOGIN.windowMs).remaining).toBe(LIMITS.LOGIN.limit - 2);
+  });
 });
 
 /**
@@ -305,33 +321,52 @@ describe("rate-limit bucket expiry", () => {
  * audit rows; this is the decision it makes from those counts.
  */
 describe("loginLockout", () => {
+  const NOW = new Date("2026-01-01T12:00:00.000Z").getTime();
+  /** `count` failures a minute apart, newest first — the order the route reads them in. */
+  const failures = (count: number, newestAgoMs = 0) =>
+    Array.from({ length: count }, (_, i) => new Date(NOW - newestAgoMs - i * 60_000));
+
   it("lets normal mistyping through", () => {
-    expect(loginLockout({ forLogin: LOGIN_LOCKOUT.perLogin - 1, forIp: 0 }).locked).toBe(false);
+    expect(loginLockout({ forLogin: failures(LOGIN_LOCKOUT.perLogin - 1), forIp: [] }, NOW).locked).toBe(false);
   });
 
   it("locks a login that keeps failing, wherever the attempts come from", () => {
-    const res = loginLockout({ forLogin: LOGIN_LOCKOUT.perLogin, forIp: 1 });
+    const res = loginLockout({ forLogin: failures(LOGIN_LOCKOUT.perLogin), forIp: failures(1) }, NOW);
     expect(res.locked).toBe(true);
     expect(res.scope).toBe("login");
   });
 
   it("locks an address spraying many different logins", () => {
-    const res = loginLockout({ forLogin: 1, forIp: LOGIN_LOCKOUT.perIp });
+    const res = loginLockout({ forLogin: failures(1), forIp: failures(LOGIN_LOCKOUT.perIp) }, NOW);
     expect(res.locked).toBe(true);
     expect(res.scope).toBe("ip");
   });
 
-  it("reports when the lock lifts, counted from the oldest failure still in the window", () => {
-    const now = Date.now();
-    const res = loginLockout(
-      { forLogin: LOGIN_LOCKOUT.perLogin, forIp: 0, oldestForLogin: new Date(now - 60_000) },
-      now,
-    );
-    expect(res.retryAfterSec).toBe(Math.ceil((LOGIN_LOCKOUT.windowMs - 60_000) / 1000));
+  it("reports when the lock lifts, counted from the newest failure when it is only just locked", () => {
+    const res = loginLockout({ forLogin: failures(LOGIN_LOCKOUT.perLogin, 60_000), forIp: [] }, NOW);
+    // exactly at the threshold, so the last of them is also the decisive one
+    const decisiveAgoMs = 60_000 + (LOGIN_LOCKOUT.perLogin - 1) * 60_000;
+    expect(res.retryAfterSec).toBe(Math.ceil((LOGIN_LOCKOUT.windowMs - decisiveAgoMs) / 1000));
   });
 
-  it("falls back to the full window when it has no timestamp to go on", () => {
-    const res = loginLockout({ forLogin: LOGIN_LOCKOUT.perLogin, forIp: 0 });
+  /**
+   * Past the threshold the oldest failure expires long before the lock ends:
+   * quoting it tells the user to come back at a time they will still be refused.
+   * What matters is the threshold-th newest — the one whose expiry drops the
+   * count below the limit.
+   */
+  it("counts the lift from the failure that drops the count below the threshold, not the oldest", () => {
+    const res = loginLockout({ forLogin: failures(LOGIN_LOCKOUT.perLogin * 2), forIp: [] }, NOW);
+    const decisiveAgoMs = (LOGIN_LOCKOUT.perLogin - 1) * 60_000;
+    expect(res.retryAfterSec).toBe(Math.ceil((LOGIN_LOCKOUT.windowMs - decisiveAgoMs) / 1000));
+    // the oldest of those would have claimed the lock had already lifted
+    expect(res.retryAfterSec).toBeGreaterThan(1);
+  });
+
+  it("falls back to the full window rather than a NaN wait when a timestamp is unusable", () => {
+    const forLogin = failures(LOGIN_LOCKOUT.perLogin);
+    forLogin[LOGIN_LOCKOUT.perLogin - 1] = new Date(Number.NaN);
+    const res = loginLockout({ forLogin, forIp: [] }, NOW);
     expect(res.retryAfterSec).toBe(Math.ceil(LOGIN_LOCKOUT.windowMs / 1000));
   });
 

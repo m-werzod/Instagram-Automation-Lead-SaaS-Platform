@@ -63,7 +63,8 @@ interface AccountRow {
   isDemo: boolean;
   followersCount: number | null;
   token: { status: string; expiresAt: string | null; lastRefreshAt: string | null; scopes: string[] };
-  capabilities: Array<{ key: string; label: string; available: boolean; reason?: string }>;
+  /** `warning` means available-but-expiring — the ads token is days from lapsing. */
+  capabilities: Array<{ key: string; label: string; available: boolean; reason?: string; warning?: string }>;
   counts: { conversations: number; leads: number; content: number; agents: number };
 }
 
@@ -259,15 +260,28 @@ export default function InstagramPage() {
                 </div>
                 <div className="grid gap-1.5 sm:grid-cols-2">
                   {caps.map((cap) => (
-                    <div key={cap.key} className="flex items-center gap-2 rounded-lg bg-(--color-panel-2) px-3 py-2" title={cap.reason}>
+                    <div
+                      key={cap.key}
+                      className="flex items-start gap-2 rounded-lg bg-(--color-panel-2) px-3 py-2"
+                      title={cap.warning ?? cap.reason}
+                    >
+                      {/* A warning means the feature still works but is about to stop —
+                          amber, not the red of something already unavailable. */}
                       {cap.available ? (
-                        <CheckCircle2 size={15} className="shrink-0 text-(--color-ok)" />
+                        cap.warning ? (
+                          <AlertTriangle size={15} className="mt-px shrink-0 text-(--color-warn)" />
+                        ) : (
+                          <CheckCircle2 size={15} className="mt-px shrink-0 text-(--color-ok)" />
+                        )
                       ) : (
-                        <XCircle size={15} className="shrink-0 text-(--color-fg-faint)" />
+                        <XCircle size={15} className="mt-px shrink-0 text-(--color-fg-faint)" />
                       )}
-                      <span className={cap.available ? "text-xs font-medium" : "text-xs text-(--color-fg-muted)"}>
-                        {CAP_LABEL[cap.key]?.(d) ?? cap.label}
-                      </span>
+                      <div className="min-w-0">
+                        <span className={cap.available ? "text-xs font-medium" : "text-xs text-(--color-fg-muted)"}>
+                          {CAP_LABEL[cap.key]?.(d) ?? cap.label}
+                        </span>
+                        {cap.warning && <p className="mt-0.5 text-[11px] leading-4 text-(--color-warn)">{cap.warning}</p>}
+                      </div>
                     </div>
                   ))}
                 </div>

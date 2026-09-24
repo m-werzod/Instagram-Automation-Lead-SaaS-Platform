@@ -64,6 +64,15 @@ export function rateLimit(key: string, limit: number, windowMs: number): RateLim
   return { allowed: true, remaining: limit - bucket.timestamps.length, retryAfterSec: 0 };
 }
 
+/**
+ * Forget one key's window. Exists for the "the attempt succeeded, stop counting
+ * it against them" case: a bucket that also counts successes would otherwise
+ * lock a legitimate caller out for the rest of the window.
+ */
+export function resetRateLimit(key: string): void {
+  buckets.delete(key);
+}
+
 export const LIMITS = {
   /** login attempts per IP+login — first line only; `loginLockout()` is the durable one */
   LOGIN: { limit: 5, windowMs: 15 * 60_000 },
@@ -109,14 +118,16 @@ export const LOGIN_LOCKOUT = {
   perIp: 25,
 } as const;
 
-export interface LoginFailureCounts {
-  /** LOGIN_FAILED rows inside the window whose audited login matches */
-  forLogin: number;
-  /** LOGIN_FAILED rows inside the window from the same IP, any login */
-  forIp: number;
-  /** oldest counted failure per scope, so the caller can say when the lock lifts */
-  oldestForLogin?: Date | null;
-  oldestForIp?: Date | null;
+/**
+ * Times of the LOGIN_FAILED rows inside the window, NEWEST FIRST — times rather
+ * than plain counts because the moment a lock lifts is decided by one specific
+ * failure (see `loginLockout`), and a count cannot name it.
+ */
+export interface LoginFailures {
+  /** failures whose audited login matches */
+  forLogin: Date[];
+  /** failures from the same IP, any login */
+  forIp: Date[];
 }
 
 export interface LoginLockoutResult {
@@ -126,20 +137,29 @@ export interface LoginLockoutResult {
 }
 
 /**
- * Decide whether sign-in is locked, from failure counts the caller reads out of
+ * Decide whether sign-in is locked, from the failures the caller reads out of
  * the AuditLog. Pure on purpose: the counting query needs a database, this
  * decision does not, so the thresholds stay unit-testable.
  */
-export function loginLockout(counts: LoginFailureCounts, now: number = Date.now()): LoginLockoutResult {
+export function loginLockout(failures: LoginFailures, now: number = Date.now()): LoginLockoutResult {
   const scope: "login" | "ip" | null =
-    counts.forLogin >= LOGIN_LOCKOUT.perLogin ? "login" : counts.forIp >= LOGIN_LOCKOUT.perIp ? "ip" : null;
+    failures.forLogin.length >= LOGIN_LOCKOUT.perLogin
+      ? "login"
+      : failures.forIp.length >= LOGIN_LOCKOUT.perIp
+        ? "ip"
+        : null;
   if (!scope) return { locked: false, scope: null, retryAfterSec: 0 };
 
-  const oldest = (scope === "login" ? counts.oldestForLogin : counts.oldestForIp)?.getTime();
-  // The lock lifts when the oldest counted failure falls out of the window.
+  const times = scope === "login" ? failures.forLogin : failures.forIp;
+  const threshold = scope === "login" ? LOGIN_LOCKOUT.perLogin : LOGIN_LOCKOUT.perIp;
+  // The lock lifts when the count falls BELOW the threshold, which happens as
+  // the threshold-th newest failure leaves the window — not as the oldest one
+  // does. With more failures than the threshold the oldest expires long before
+  // the lock ends, so counting from it would promise a return we do not honour.
+  const decisive = times[threshold - 1]?.getTime();
   const retryAfterSec =
-    oldest !== undefined && Number.isFinite(oldest)
-      ? Math.max(1, Math.ceil((oldest + LOGIN_LOCKOUT.windowMs - now) / 1000))
+    decisive !== undefined && Number.isFinite(decisive)
+      ? Math.max(1, Math.ceil((decisive + LOGIN_LOCKOUT.windowMs - now) / 1000))
       : Math.ceil(LOGIN_LOCKOUT.windowMs / 1000);
   return { locked: true, scope, retryAfterSec };
 }

@@ -13,7 +13,8 @@ export interface AccountSummary {
   isDemo: boolean;
   adAccountId: string | null;
   webhookSubscribed: boolean;
-  capabilities: Array<{ key: string; label: string; available: boolean; reason?: string }>;
+  /** `warning` means available-but-expiring (e.g. the ads token is days from lapsing). */
+  capabilities: Array<{ key: string; label: string; available: boolean; reason?: string; warning?: string }>;
 }
 
 interface AccountContextShape {

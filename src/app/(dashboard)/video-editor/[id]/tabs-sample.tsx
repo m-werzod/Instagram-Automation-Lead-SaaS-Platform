@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, Info, Loader2, CheckCircle2, MinusCircle, XCircle } from "lucide-react";
+import { Sparkles, Info, Loader2, CheckCircle2, MinusCircle, XCircle, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useI18n } from "@/lib/i18n/provider";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -26,24 +26,35 @@ export function SampleTab({ state, onReload }: { state: EditorState; onReload: (
   const samples = state.project.assets.filter((a) => a.role === "SAMPLE" && a.status === "READY");
   const analyses = state.project.samples;
   const latest = analyses[0];
+  const retrySampleId = latest?.sampleAsset?.id ?? null;
+  // The route refuses the analysis outright without a worker, so the button
+  // says so here instead of queueing a click that comes back as an error.
+  const canAnalyze = state.capabilities.rendering.available;
   const [busy, setBusy] = React.useState(false);
   const [selected, setSelected] = React.useState<string[]>([]);
 
   const plan: PlanItemRow[] = React.useMemo(() => latest?.plan ?? [], [latest?.plan]);
 
-  // Pre-select the applicable items whenever a new analysis arrives. Keyed on
-  // the analysis id, not on `applicable`, so re-rendering does not wipe the
-  // operator's own selection.
+  // Pre-select the applicable items once per analysis, the first time that
+  // analysis actually has a plan. Re-seeding on later reloads would silently
+  // re-check items the operator had deliberately excluded, and applying would
+  // then include work they said no to.
   const analysisId = latest?.id;
+  const seededFor = React.useRef<string | null>(null);
   React.useEffect(() => {
-    setSelected((plan ?? []).filter((p) => p.feasibility !== "unsupported" && p.patch).map((p) => p.op));
+    if (!analysisId || plan.length === 0 || seededFor.current === analysisId) return;
+    seededFor.current = analysisId;
+    setSelected(plan.filter((p) => p.feasibility !== "unsupported" && p.patch).map((p) => p.op));
   }, [analysisId, plan]);
 
   async function analyze(sampleAssetId: string) {
     setBusy(true);
     try {
       await api("/api/video/sample", { method: "POST", json: { projectId: state.project.id, sampleAssetId } });
-      toast.success(t.analyzing);
+      // Only queued — the analysis runs on the worker, not here.
+      toast.message(d.videoEditor.jobs.queuedToast, {
+        description: state.capabilities.worker.available ? d.videoEditor.jobs.queuedHint : d.videoEditor.jobs.workerOffline,
+      });
       await onReload();
     } catch {
       /* reported */
@@ -95,26 +106,58 @@ export function SampleTab({ state, onReload }: { state: EditorState; onReload: (
                   <p className="truncate text-sm">{s.filename}</p>
                   <p className="text-xs text-(--color-fg-muted)">{formatDuration(s.durationSec)}</p>
                 </div>
-                <Button size="sm" disabled={busy} onClick={() => void analyze(s.id)}>
+                <Button size="sm" disabled={busy || !canAnalyze} onClick={() => void analyze(s.id)}>
                   {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1.5 h-4 w-4" />}
                   {t.analyze}
                 </Button>
               </div>
             ))}
+
+            {!canAnalyze && (
+              <p className="flex items-start gap-1.5 text-xs text-(--color-fg-muted)">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-warn)" />
+                {state.capabilities.rendering.reason} {state.capabilities.rendering.fix}
+              </p>
+            )}
           </div>
         </Card>
       )}
 
       {!latest ? (
         <Card className="p-6 text-sm text-(--color-fg-muted)">{t.noPlan}</Card>
+      ) : latest.status === "QUEUED" || latest.status === "RUNNING" ? (
+        <Card className="space-y-2 p-6 text-sm text-(--color-fg-muted)">
+          <p className="flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" /> {t.analyzing}
+          </p>
+          {/* A worker that went away mid-queue would otherwise leave this
+              spinning with nothing to explain it. */}
+          {!state.capabilities.worker.available && (
+            <p className="flex items-start gap-1.5 text-xs">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-warn)" />
+              {d.videoEditor.jobs.workerOffline}
+            </p>
+          )}
+        </Card>
       ) : latest.status !== "DONE" ? (
-        <Card className="flex items-center gap-2 p-6 text-sm text-(--color-fg-muted)">
-          {latest.status === "FAILED" ? (
-            <span className="text-(--color-danger)">{latest.error}</span>
+        // Anything that stopped without a plan — FAILED, CANCELLED, or a state
+        // added later — is over, so it says so and offers the run again rather
+        // than spinning forever.
+        <Card className="space-y-3 p-6 text-sm">
+          <p className="text-(--color-danger)">{latest.error ?? (latest.status === "CANCELLED" ? t.cancelled : t.stopped)}</p>
+          {retrySampleId ? (
+            <Button size="sm" variant="secondary" disabled={busy || !canAnalyze} onClick={() => void analyze(retrySampleId)}>
+              {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1.5 h-4 w-4" />}
+              {t.retry}
+            </Button>
           ) : (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" /> {t.analyzing}
-            </>
+            <p className="text-(--color-fg-muted)">{t.sampleGone}</p>
+          )}
+          {retrySampleId && !canAnalyze && (
+            <p className="flex items-start gap-1.5 text-xs text-(--color-fg-muted)">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-warn)" />
+              {state.capabilities.rendering.reason} {state.capabilities.rendering.fix}
+            </p>
           )}
         </Card>
       ) : (

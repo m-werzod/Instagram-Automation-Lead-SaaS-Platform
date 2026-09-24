@@ -48,7 +48,11 @@ export function ExportTab({ state, onReload }: { state: EditorState; onReload: (
     setBusy(true);
     try {
       await api("/api/video/jobs", { method: "POST", json: { projectId: state.project.id, kind: "EXPORT" } });
-      toast.success(d.videoEditor.jobs.exportJob);
+      // Nothing has rendered yet — the job is queued, and may sit there if no
+      // worker is online. Saying "success" here would invent a finished export.
+      toast.message(d.videoEditor.jobs.queuedToast, {
+        description: state.capabilities.worker.available ? d.videoEditor.jobs.queuedHint : d.videoEditor.jobs.workerOffline,
+      });
       await onReload();
     } catch {
       /* reported */

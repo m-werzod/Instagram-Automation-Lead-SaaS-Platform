@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { subtitleStyleSchema, type SubtitlePreset, type SubtitleStyle } from "./params";
+import { subtitleStyleSchema, SUBTITLE_PRESET_STYLES, type SubtitlePreset, type SubtitleStyle } from "./params";
+
+export { SUBTITLE_PRESET_STYLES };
 
 /**
  * Subtitle generation and styling.
@@ -17,10 +19,43 @@ import { subtitleStyleSchema, type SubtitlePreset, type SubtitleStyle } from "./
 
 // ---- cue model ----
 
+/**
+ * Word-level highlighting emits one ASS dialogue line per word and re-renders
+ * the cue's whole word list inside each, so the file it produces grows as
+ * (words on the cue) x (characters on the cue). These are bounds on input
+ * rather than on rendering because the renderer must be free to trust what it
+ * is handed.
+ *
+ * Counting words alone is not enough: 300 cues of 64 hundred-character words
+ * are only 19,200 timings, yet they render to a 126 MB subtitle file. The
+ * character budget below is the one that actually bounds the work; the count
+ * caps are the cheap, legible first line.
+ */
+const MAX_WORD_CHARS = 100;
+/**
+ * Whisper emits one cue per spoken segment, up to ~30 s — around 75 words of
+ * ordinary speech, and more when the speaker is fast. A cap near that number
+ * would reject real transcripts (which are stored unvalidated by the
+ * transcription job and then re-sent by the editor on every save), so this sits
+ * far above human speech rather than close to it.
+ */
+const MAX_WORDS_PER_CUE = 250;
+/** Per-cue alone still permits 5000 x 250; the track as a whole needs a ceiling too. */
+const MAX_WORDS_PER_TRACK = 20_000;
+/**
+ * Characters of ASS the word-highlight renderer may be asked to emit for one
+ * track. A 20,000-word transcript in ordinary cues costs ~7 M, so this leaves
+ * real work untouched while capping the file at something libass and the worker
+ * can hold.
+ */
+const MAX_HIGHLIGHT_CHARS = 12_000_000;
+/** Timestamps, style fields and the colour tags wrapped around the lit word. */
+const ASS_LINE_OVERHEAD = 64;
+
 export const wordSchema = z.object({
   start: z.number().min(0),
   end: z.number().min(0),
-  text: z.string(),
+  text: z.string().max(MAX_WORD_CHARS),
 });
 
 export const cueSchema = z.object({
@@ -28,10 +63,40 @@ export const cueSchema = z.object({
   end: z.number().min(0),
   text: z.string().max(2000),
   /** Present only when the transcription provider returned word timings. */
-  words: z.array(wordSchema).optional(),
+  words: z.array(wordSchema).max(MAX_WORDS_PER_CUE).optional(),
 });
 
-export const cuesSchema = z.array(cueSchema).max(5000);
+export const cuesSchema = z
+  .array(cueSchema)
+  .max(5000)
+  .superRefine((cues, ctx) => {
+    let words = 0;
+    let renderChars = 0;
+    for (const cue of cues) {
+      const onCue = cue.words?.length ?? 0;
+      if (onCue === 0) continue;
+      words += onCue;
+      let chars = 0;
+      for (const word of cue.words!) chars += word.text.length;
+      renderChars += onCue * (chars + onCue + ASS_LINE_OVERHEAD);
+    }
+
+    if (words > MAX_WORDS_PER_TRACK) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: "array",
+        maximum: MAX_WORDS_PER_TRACK,
+        inclusive: true,
+        message: `This track carries ${words} word timings; at most ${MAX_WORDS_PER_TRACK} can be rendered.`,
+      });
+    }
+    if (renderChars > MAX_HIGHLIGHT_CHARS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `These word timings would render to about ${Math.round(renderChars / 1_000_000)} MB of subtitle data; the limit is ${MAX_HIGHLIGHT_CHARS / 1_000_000} MB. Split the track, or shorten the words on its longest cues.`,
+      });
+    }
+  });
 
 export type SubtitleCue = z.infer<typeof cueSchema>;
 export type SubtitleWord = z.infer<typeof wordSchema>;
@@ -94,6 +159,54 @@ export function wrapCueText(text: string, maxCharsPerLine = 32, maxLines = 2): s
   return out.join("\n");
 }
 
+/**
+ * Re-time cues onto the rendered timeline.
+ *
+ * Captions are written against the SOURCE video, but they are burned into the
+ * OUTPUT, which trimming and speed have already moved: FFmpeg applies `-ss` and
+ * `setpts`, so output time is `(sourceTime - trimStart) / speed`. Without this
+ * every trimmed or sped-up export shows its captions at the wrong moment — the
+ * text is right and the timing is silently wrong, which is worse than no
+ * captions at all. Cues that fall entirely outside the kept range are dropped.
+ */
+export function retimeCues(
+  cues: SubtitleCue[],
+  opts: { trimStartSec?: number; trimEndSec?: number; speed?: number },
+): SubtitleCue[] {
+  const start = Math.max(0, opts.trimStartSec ?? 0);
+  const end = opts.trimEndSec;
+  const speed = opts.speed && opts.speed > 0 ? opts.speed : 1;
+  if (start === 0 && end === undefined && speed === 1) return cues;
+
+  const map = (t: number) => (t - start) / speed;
+
+  const out: SubtitleCue[] = [];
+  for (const cue of cues) {
+    if (end !== undefined && cue.start >= end) continue;
+    if (cue.end <= start) continue;
+    const clippedStart = Math.max(cue.start, start);
+    const clippedEnd = end === undefined ? cue.end : Math.min(cue.end, end);
+    if (clippedEnd <= clippedStart) continue;
+
+    const words = cue.words
+      ?.filter((w) => w.end > start && (end === undefined || w.start < end))
+      .map((w) => ({
+        start: Math.max(0, map(Math.max(w.start, start))),
+        end: Math.max(0, map(end === undefined ? w.end : Math.min(w.end, end))),
+        text: w.text,
+      }))
+      .filter((w) => w.end > w.start);
+
+    out.push({
+      start: Math.max(0, map(clippedStart)),
+      end: Math.max(0, map(clippedEnd)),
+      text: cue.text,
+      ...(words && words.length > 0 ? { words } : {}),
+    });
+  }
+  return out;
+}
+
 // ---- presets ----
 
 /**
@@ -101,87 +214,6 @@ export function wrapCueText(text: string, maxCharsPerLine = 32, maxLines = 2): s
  * then adjusting any field is the intended workflow, so presets are just
  * starting values rather than a separate rendering path.
  */
-export const SUBTITLE_PRESET_STYLES: Record<SubtitlePreset, Partial<SubtitleStyle>> = {
-  "clean-white": {
-    fontSizePct: 5.2,
-    bold: true,
-    textColor: "#FFFFFF",
-    outlineColor: "#000000",
-    outlineWidth: 2,
-    backgroundOpacity: 0,
-    shadow: 0,
-    position: "lower-center",
-    uppercase: false,
-  },
-  "bold-social": {
-    fontSizePct: 7,
-    bold: true,
-    textColor: "#FFFFFF",
-    outlineColor: "#000000",
-    outlineWidth: 3.5,
-    backgroundOpacity: 0,
-    shadow: 1,
-    position: "lower-center",
-    uppercase: true,
-  },
-  minimal: {
-    fontSizePct: 4.2,
-    bold: false,
-    textColor: "#FFFFFF",
-    outlineColor: "#000000",
-    outlineWidth: 1,
-    backgroundOpacity: 0,
-    shadow: 0,
-    position: "bottom",
-    uppercase: false,
-  },
-  "high-contrast": {
-    fontSizePct: 5.5,
-    bold: true,
-    textColor: "#FFFFFF",
-    backgroundColor: "#000000",
-    backgroundOpacity: 0.85,
-    outlineWidth: 0,
-    shadow: 0,
-    position: "lower-center",
-    uppercase: false,
-  },
-  creator: {
-    fontSizePct: 6.5,
-    bold: true,
-    textColor: "#FFFFFF",
-    outlineColor: "#111111",
-    outlineWidth: 3,
-    shadow: 2,
-    backgroundOpacity: 0,
-    position: "middle",
-    uppercase: true,
-  },
-  "highlighted-words": {
-    fontSizePct: 6.5,
-    bold: true,
-    textColor: "#FFFFFF",
-    outlineColor: "#000000",
-    outlineWidth: 3,
-    backgroundOpacity: 0,
-    position: "lower-center",
-    wordHighlight: true,
-    wordHighlightColor: "#FFD400",
-    uppercase: true,
-  },
-  professional: {
-    fontSizePct: 4.6,
-    bold: false,
-    textColor: "#FFFFFF",
-    backgroundColor: "#1A1A1A",
-    backgroundOpacity: 0.7,
-    outlineWidth: 0,
-    shadow: 0,
-    position: "bottom",
-    uppercase: false,
-  },
-};
-
 export function applyPreset(preset: SubtitlePreset, over: Partial<SubtitleStyle> = {}): SubtitleStyle {
   return subtitleStyleSchema.parse({ ...SUBTITLE_PRESET_STYLES[preset], ...over, preset });
 }

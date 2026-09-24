@@ -7,8 +7,9 @@ import { accountScope } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
 import { notFound, validationError, AppError } from "@/lib/errors";
 import { drainNow } from "@/lib/queue";
+import { createLogger, errorFields } from "@/lib/logger";
 import { editParamsSchema } from "@/lib/video/params";
-import { enqueueVideoJob } from "@/lib/video/jobs";
+import { enqueueVideoJob, reconcileStalledVideoJobs } from "@/lib/video/jobs";
 import { videoCapabilities } from "@/lib/video/service";
 
 /**
@@ -18,6 +19,12 @@ import { videoCapabilities } from "@/lib/video/service";
  * an offline worker would leave an operator watching a progress bar that never
  * moves. The check names the missing dependency and how to fix it.
  */
+
+const log = createLogger("api.video.jobs");
+
+/** Throttle for the stalled-job sweep below; per process, which is enough. */
+const RECONCILE_EVERY_MS = 60_000;
+let lastReconcileAt = 0;
 
 export const GET = route(async (req: NextRequest) => {
   const auth = await requireAdmin();
@@ -39,6 +46,19 @@ export const GET = route(async (req: NextRequest) => {
       outputAssetId: true, startedAt: true, finishedAt: true, createdAt: true,
     },
   });
+
+  // Nothing else reconciles a VideoJob whose worker died — the queue's own
+  // recovery sweep only repairs Job rows — and this poll is exactly when an
+  // operator is staring at the progress bar it left behind. after() keeps the
+  // sweep off the response path.
+  const watching = jobs.some((j) => j.status === "QUEUED" || j.status === "RUNNING");
+  if (watching && Date.now() - lastReconcileAt > RECONCILE_EVERY_MS) {
+    lastReconcileAt = Date.now();
+    after(async () => {
+      await reconcileStalledVideoJobs().catch((err) => log.warn("stalled video job sweep failed", errorFields(err)));
+    });
+  }
+
   return ok({ jobs });
 });
 

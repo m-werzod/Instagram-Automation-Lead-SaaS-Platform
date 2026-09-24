@@ -4,6 +4,7 @@ import { route } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guard";
 import { accountScope } from "@/lib/auth/access";
 import { notFound } from "@/lib/errors";
+import { parseByteRange } from "@/lib/http/range";
 import { getStorage } from "@/lib/storage";
 
 /**
@@ -32,7 +33,6 @@ export const GET = route(async (req: NextRequest, ctx: { params: Promise<{ id: s
   const stat = await storage.stat(asset.storageKey);
   const total = stat?.sizeBytes ?? asset.sizeBytes;
 
-  const rangeHeader = req.headers.get("range");
   const headers = new Headers({
     "content-type": asset.mimeType,
     "accept-ranges": "bytes",
@@ -42,17 +42,18 @@ export const GET = route(async (req: NextRequest, ctx: { params: Promise<{ id: s
     "content-disposition": "inline",
   });
 
-  if (rangeHeader) {
-    const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
-    const start = m?.[1] ? Number(m[1]) : 0;
-    const end = m?.[2] ? Number(m[2]) : Math.max(start, total - 1);
-    if (!Number.isFinite(start) || start >= total) {
-      return new NextResponse(null, { status: 416, headers: { "content-range": `bytes */${total}` } });
-    }
-    const clampedEnd = Math.min(end, total - 1);
-    const stream = await storage.read(asset.storageKey, { start, end: clampedEnd });
-    headers.set("content-range", `bytes ${start}-${clampedEnd}/${total}`);
-    headers.set("content-length", String(clampedEnd - start + 1));
+  // Players seek with every range form, the suffix one ("bytes=-500", the LAST
+  // 500 bytes) included — an MP4 whose moov atom sits at the end is fetched
+  // exactly that way before playback can start.
+  const parsed = parseByteRange(req.headers.get("range"), total);
+  if (parsed.kind === "unsatisfiable") {
+    return new NextResponse(null, { status: 416, headers: { "content-range": `bytes */${total}` } });
+  }
+  if (parsed.kind === "ok") {
+    const { start, end } = parsed.range;
+    const stream = await storage.read(asset.storageKey, { start, end });
+    headers.set("content-range", `bytes ${start}-${end}/${total}`);
+    headers.set("content-length", String(end - start + 1));
     return new NextResponse(stream as unknown as BodyInit, { status: 206, headers });
   }
 

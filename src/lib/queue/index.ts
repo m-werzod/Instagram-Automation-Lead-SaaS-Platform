@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Job, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createLogger, errorFields } from "@/lib/logger";
@@ -166,18 +167,25 @@ export async function heartbeatJob(jobId: string, workerId: string, lane: JobLan
   return res.count > 0;
 }
 
-export async function completeJob(jobId: string): Promise<void> {
-  await prisma.job.update({
-    where: { id: jobId },
+/**
+ * Terminal writes are conditional on this worker still holding the lock. A run
+ * whose lease lapsed (the process stalled, recovery handed the job to someone
+ * else) must not write its outcome over the worker that has it now — the same
+ * reason heartbeatJob reports a lost lock. `false` = the write was dropped.
+ */
+export async function completeJob(jobId: string, owner?: string | null): Promise<boolean> {
+  const res = await prisma.job.updateMany({
+    where: { id: jobId, ...(owner ? { lockedBy: owner, status: "RUNNING" } : {}) },
     data: { status: "COMPLETED", lockedAt: null, lockedBy: null, leaseExpiresAt: null, lastError: null },
   });
+  return res.count > 0;
 }
 
-export async function failJob(job: Job, err: unknown): Promise<void> {
+export async function failJob(job: Job, err: unknown, owner?: string | null): Promise<boolean> {
   const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   const dead = job.attempts >= job.maxAttempts;
-  await prisma.job.update({
-    where: { id: job.id },
+  const res = await prisma.job.updateMany({
+    where: { id: job.id, ...(owner ? { lockedBy: owner, status: "RUNNING" } : {}) },
     data: {
       status: dead ? "DEAD" : "FAILED",
       lastError: message.slice(0, 2000),
@@ -187,7 +195,9 @@ export async function failJob(job: Job, err: unknown): Promise<void> {
       runAt: dead ? job.runAt : new Date(Date.now() + backoffMs(job.attempts)),
     },
   });
+  if (res.count === 0) return false;
   (dead ? log.error : log.warn)("job failed", { jobId: job.id, type: job.type, attempt: job.attempts, dead, error: message });
+  return true;
 }
 
 /**
@@ -229,7 +239,7 @@ export async function recoverStaleJobs(): Promise<number> {
         leaseExpiresAt: null,
         lastError: exhausted
           ? "worker lock expired and retries are exhausted — job dead-lettered"
-          : "worker lock expired (the process died or was killed mid-run)",
+          : "worker lock expired (the process died, or the handler outran its time budget and was abandoned)",
         ...(exhausted ? {} : { runAt: new Date(Date.now() + backoffMs(job.attempts)) }),
       },
     });
@@ -297,9 +307,22 @@ export async function isVideoWorkerOnline(withinMs = 5 * 60_000): Promise<boolea
 
 // ---- handler registry ----
 
-export type JobHandler = (payload: Record<string, unknown>, job: Job) => Promise<void>;
+export type JobHandler = (payload: Record<string, unknown>, job: Job, signal: AbortSignal) => Promise<void>;
 
 const handlers = new Map<string, JobHandler>();
+
+/**
+ * The running job's abort signal, for work reached through a call chain that
+ * does not thread one (queue/handlers.ts calls runPublishJob(id) and nothing
+ * else). Aborted when the handler's time budget expires — the only way code
+ * with side effects can learn that the queue has stopped waiting for it and
+ * that this job is going to be run again.
+ */
+const jobContext = new AsyncLocalStorage<{ job: Job; signal: AbortSignal }>();
+
+export function currentJobSignal(): AbortSignal | undefined {
+  return jobContext.getStore()?.signal;
+}
 
 export function registerHandler(type: JobType, handler: JobHandler): void {
   handlers.set(type, handler);
@@ -323,9 +346,16 @@ export class JobTimeoutError extends Error {
  *  - a lease heartbeat while the handler runs, so a legitimately long job
  *    (a video render) is not declared stale and executed a second time.
  *
- * The timeout abandons the await; it cannot kill work already in flight inside
- * the handler, so handlers that spawn processes take an AbortSignal of their own
- * (see runVideoJob). The job is then failed normally and retried with backoff.
+ * The timeout can only abandon the await — nothing in JavaScript kills a promise
+ * — so the handler keeps running with all of its side effects in flight. That is
+ * why a timed-out job is NOT failed here: failing it releases the lock and puts
+ * the job back a few seconds later, ON TOP of the pass still running, and for
+ * publish.run that second pass can create a second Instagram media container and
+ * post twice. Instead the job keeps the lease it already holds and the lease
+ * simply stops being renewed, so no worker can claim it until the lease lapses
+ * (recoverStaleJobs then retries it with backoff) — the first moment a retry is
+ * known not to overlap. Handlers also get an AbortSignal, so a cooperative one
+ * can stop at its next checkpoint instead of running on blind.
  */
 export async function processJob(job: Job, workerId?: string): Promise<void> {
   const handler = handlers.get(job.type);
@@ -346,23 +376,67 @@ export async function processJob(job: Job, workerId?: string): Promise<void> {
     // never hold the process open just for a heartbeat
     heartbeat.unref?.();
   }
+  const stopHeartbeat = () => {
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = null;
+  };
+
+  const controller = new AbortController();
+  // Identity, not `instanceof`: a handler that rejects in the same tick the timer
+  // fires must still be treated as a handler failure, not as an abandoned pass.
+  const expired = new JobTimeoutError(budgetMs);
+  const running = jobContext.run({ job, signal: controller.signal }, async () =>
+    handler((job.payload ?? {}) as Record<string, unknown>, job, controller.signal),
+  );
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     await Promise.race([
-      handler((job.payload ?? {}) as Record<string, unknown>, job),
+      running,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new JobTimeoutError(budgetMs)), budgetMs);
+        timer = setTimeout(() => reject(expired), budgetMs);
         timer.unref?.();
       }),
     ]);
-    await completeJob(job.id);
+    await completeJob(job.id, owner);
   } catch (err) {
-    await failJob(job, err);
+    if (err === expired) {
+      controller.abort(expired);
+      stopHeartbeat();
+      watchAbandonedRun(job, owner, running, budgetMs);
+      return;
+    }
+    await failJob(job, err, owner);
   } finally {
     if (timer) clearTimeout(timer);
-    if (heartbeat) clearInterval(heartbeat);
+    stopHeartbeat();
   }
+}
+
+/**
+ * Keep listening to a handler the timeout walked away from: it still owns the
+ * job's lease, so if it does come back its real outcome is the job's outcome.
+ * The write is conditional on this worker still holding the lock, so a handler
+ * that surfaces long after recovery gave the job to someone else changes nothing.
+ */
+function watchAbandonedRun(job: Job, owner: string | null, running: Promise<void>, budgetMs: number): void {
+  log.error("handler exceeded its budget — job left on its lease instead of being retried underneath it", {
+    jobId: job.id,
+    type: job.type,
+    attempt: job.attempts,
+    budgetMs,
+  });
+  void running
+    .then(
+      async () => {
+        const recorded = await completeJob(job.id, owner);
+        log.warn("abandoned handler finished after the budget", { jobId: job.id, type: job.type, recorded });
+      },
+      async (err) => {
+        await failJob(job, err, owner);
+      },
+    )
+    .catch((err) => log.error("could not record an abandoned handler's outcome", { jobId: job.id, ...errorFields(err) }));
 }
 
 /**

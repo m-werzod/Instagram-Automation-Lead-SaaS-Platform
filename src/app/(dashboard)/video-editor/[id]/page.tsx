@@ -95,6 +95,20 @@ export default function VideoProjectPage() {
     [projectId, load],
   );
 
+  const [removing, setRemoving] = React.useState(false);
+
+  async function removeFailedSource(assetId: string) {
+    setRemoving(true);
+    try {
+      await api(`/api/video/assets?assetId=${encodeURIComponent(assetId)}`, { method: "DELETE" });
+      await load();
+    } catch {
+      /* api() reported it */
+    } finally {
+      setRemoving(false);
+    }
+  }
+
   async function undo() {
     try {
       await api(`/api/video/projects/${projectId}`, { method: "PATCH", json: { undo: true } });
@@ -132,7 +146,11 @@ export default function VideoProjectPage() {
   }
 
   const { project, capabilities } = state;
-  const hasSource = Boolean(project.sourceAsset);
+  const source = project.sourceAsset;
+  // A source that failed its probe can never render anything, so the editor
+  // says why instead of leaving every button to fail with "still being checked".
+  const sourceFailed = source?.status === "FAILED";
+  const sourceChecking = source?.status === "UPLOADING";
 
   return (
     <div className="space-y-5">
@@ -158,7 +176,7 @@ export default function VideoProjectPage() {
         }
       />
 
-      {!hasSource ? (
+      {!source ? (
         <div className="grid gap-4 lg:grid-cols-2">
           <UploadDrop
             projectId={project.id}
@@ -179,8 +197,37 @@ export default function VideoProjectPage() {
             )}
           </Card>
         </div>
+      ) : sourceFailed ? (
+        <Card className="space-y-3 p-5">
+          <p className="flex items-center gap-2 text-sm font-medium text-(--color-danger)">
+            <AlertTriangle className="h-4 w-4" /> {t.sourceFailed.title}
+          </p>
+          <p className="text-sm text-(--color-fg-muted)">
+            <span className="text-(--color-fg)">{source.filename}</span> — {source.error ?? t.sourceFailed.unknownReason}
+          </p>
+          <p className="text-sm text-(--color-fg-muted)">{t.sourceFailed.canReplace}</p>
+          <div className="flex flex-wrap gap-2">
+            {/* Detaching the failed asset is what actually unblocks the project:
+                a completed upload only adopts a new source while sourceAssetId
+                is still null. */}
+            <Button size="sm" disabled={removing} onClick={() => void removeFailedSource(source.id)}>
+              {removing ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+              {removing ? t.sourceFailed.removing : t.sourceFailed.removeAndRetry}
+            </Button>
+            <Button asChild size="sm" variant="secondary">
+              <Link href="/video-editor">{t.sourceFailed.startNew}</Link>
+            </Button>
+          </div>
+        </Card>
       ) : (
         <>
+          {sourceChecking && (
+            <p className="flex items-start gap-1.5 text-xs text-(--color-fg-muted)">
+              <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+              {t.sourceChecking}
+            </p>
+          )}
+
           <div className="flex flex-wrap gap-1 border-b border-(--color-border)">
             {TABS.map((key) => (
               <button

@@ -1,6 +1,119 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { buildRenderArgs, atempoChain, resolveTargetSize, effectiveDuration, escapeFilterPath, buildAudioExtractArgs, buildThumbnailArgs } from "@/lib/video/render";
 import { applyEditPatch, defaultEditParams } from "@/lib/video/params";
+import { enqueueVideoJob, reconcileStalledVideoJobs, runVideoJob } from "@/lib/video/jobs";
+
+type Row = Record<string, unknown>;
+
+/**
+ * The job lifecycle is pure bookkeeping between two tables, so it is tested
+ * against an in-memory stand-in for the two of them — no database, no FFmpeg.
+ */
+const { store, enqueueMock, prismaMock } = vi.hoisted(() => {
+  const store = {
+    videoJobs: [] as Row[],
+    jobs: [] as Row[],
+    seq: 0,
+    /** Lets a test mutate the snapshot a read returns, to stage a lost update. */
+    onVideoJobRead: null as null | ((snapshot: Row) => void),
+  };
+
+  const matches = (row: Row, where: Row = {}): boolean =>
+    Object.entries(where).every(([key, cond]) => {
+      const value = row[key];
+      if (cond !== null && typeof cond === "object" && !(cond instanceof Date)) {
+        const c = cond as Record<string, unknown>;
+        if ("in" in c) return (c.in as unknown[]).includes(value);
+        if ("lt" in c) return value != null && (value as Date) < (c.lt as Date);
+        return false;
+      }
+      return value === cond;
+    });
+
+  const table = (rows: Row[], prefix: string, onRead?: () => ((snapshot: Row) => void) | null) => ({
+    create: async ({ data }: { data: Row }) => {
+      const row: Row = { id: `${prefix}${++store.seq}`, status: "QUEUED", progressPct: 0, error: null, startedAt: null, finishedAt: null, queueJobId: null, createdAt: new Date(), updatedAt: new Date(), ...data };
+      rows.push(row);
+      return { ...row };
+    },
+    findUnique: async ({ where }: { where: Row }) => {
+      const row = rows.find((r) => matches(r, where));
+      if (!row) return null;
+      const snapshot = { ...row };
+      onRead?.()?.(snapshot);
+      return snapshot;
+    },
+    findFirst: async ({ where }: { where: Row }) => {
+      const row = rows.find((r) => matches(r, where));
+      return row ? { ...row } : null;
+    },
+    findMany: async ({ where, take }: { where?: Row; take?: number } = {}) => rows.filter((r) => matches(r, where)).slice(0, take ?? rows.length).map((r) => ({ ...r })),
+    update: async ({ where, data }: { where: Row; data: Row }) => {
+      const row = rows.find((r) => matches(r, where));
+      if (!row) throw new Error("record not found");
+      Object.assign(row, data, { updatedAt: new Date() });
+      return { ...row };
+    },
+    updateMany: async ({ where, data }: { where: Row; data: Row }) => {
+      const hit = rows.filter((r) => matches(r, where));
+      for (const row of hit) Object.assign(row, data, { updatedAt: new Date() });
+      return { count: hit.length };
+    },
+    delete: async ({ where }: { where: Row }) => {
+      const i = rows.findIndex((r) => matches(r, where));
+      if (i === -1) throw new Error("record not found");
+      return rows.splice(i, 1)[0];
+    },
+  });
+
+  return {
+    store,
+    // Mirrors the real queue: a second enqueue under a live key is a no-op.
+    enqueueMock: vi.fn(async (_type: string, payload: Record<string, unknown>, opts?: { idempotencyKey?: string }) => {
+      const key = opts?.idempotencyKey ?? null;
+      if (key && store.jobs.some((j) => j.idempotencyKey === key)) return null;
+      // The real queue stores the payload with the row, which is what names the
+      // VideoJob behind a key before the reverse link is written.
+      const job: Row = { id: `q${++store.seq}`, idempotencyKey: key, payload, status: "PENDING", attempts: 0, maxAttempts: 3 };
+      store.jobs.push(job);
+      return job;
+    }),
+    prismaMock: {
+      videoJob: table(store.videoJobs, "vj", () => store.onVideoJobRead),
+      job: table(store.jobs, "q"),
+    },
+  };
+});
+
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
+
+vi.mock("@/lib/queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/queue")>()),
+  enqueue: enqueueMock,
+}));
+
+function seedVideoJob(row: Row): Row {
+  const seeded: Row = {
+    id: `vj-${store.videoJobs.length + 1}`,
+    accountId: "acc1",
+    projectId: "prj1",
+    kind: "THUMBNAIL",
+    status: "QUEUED",
+    params: {},
+    progressPct: 0,
+    error: null,
+    queueJobId: null,
+    startedAt: null,
+    finishedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...row,
+  };
+  store.videoJobs.push(seeded);
+  return seeded;
+}
+
+const HOUR_AGO = () => new Date(Date.now() - 60 * 60_000);
 
 const SOURCE = { width: 1920, height: 1080, durationSec: 60, hasAudio: true };
 
@@ -168,5 +281,172 @@ describe("helper invocations", () => {
     const a = buildThumbnailArgs("/tmp/in.mp4", "/tmp/out.jpg", 12.5, 720);
     expect(a[a.indexOf("-ss") + 1]).toBe("12.500");
     expect(a[a.indexOf("-frames:v") + 1]).toBe("1");
+  });
+});
+
+/**
+ * A video job row is the only thing the editor watches, so it must never
+ * disagree with the queue: no row queued behind a deduplicated key, no cancel
+ * overwritten by the run it was meant to stop, no row left running after the
+ * process behind it died.
+ */
+describe("video job lifecycle", () => {
+  beforeEach(() => {
+    store.videoJobs.length = 0;
+    store.jobs.length = 0;
+    store.seq = 0;
+    store.onVideoJobRead = null;
+    enqueueMock.mockClear();
+  });
+
+  const input = { accountId: "acc1", projectId: "prj1", kind: "PROBE" as const, params: { assetId: "a1" } };
+
+  it("records the queue entry it created on the happy path", async () => {
+    const job = await enqueueVideoJob(input);
+    expect(job.status).toBe("QUEUED");
+    expect(job.queueJobId).toBe(store.jobs[0]!.id);
+    expect(store.videoJobs).toHaveLength(1);
+  });
+
+  it("hands back the job that already owns the work instead of queueing a second one", async () => {
+    store.jobs.push({ id: "q-first", idempotencyKey: "video-probe:a1", status: "COMPLETED", attempts: 1, maxAttempts: 3 });
+    const first = seedVideoJob({ id: "vj-first", status: "DONE", queueJobId: "q-first" });
+
+    const job = await enqueueVideoJob({ ...input, idempotencyKey: "video-probe:a1" });
+
+    expect(job.id).toBe(first.id);
+    expect(job.status).toBe("DONE");
+    expect(enqueueMock).not.toHaveBeenCalled();
+    expect(store.videoJobs).toHaveLength(1);
+  });
+
+  it("drops its own row when a concurrent request wins the key", async () => {
+    enqueueMock.mockImplementationOnce(async (_type, _payload, opts) => {
+      store.jobs.push({ id: "q-winner", idempotencyKey: opts?.idempotencyKey ?? null, status: "PENDING", attempts: 0, maxAttempts: 3 });
+      seedVideoJob({ id: "vj-winner", queueJobId: "q-winner" });
+      return null;
+    });
+
+    const job = await enqueueVideoJob({ ...input, idempotencyKey: "video-probe:a1" });
+
+    expect(job.id).toBe("vj-winner");
+    expect(store.videoJobs).toHaveLength(1);
+  });
+
+  it("resolves the winner of a duplicate race before its queue link is written", async () => {
+    enqueueMock.mockImplementationOnce(async (_type, _payload, opts) => {
+      // The winner's queue entry exists but its VideoJob has not yet recorded
+      // queueJobId — the window a second identical request lands in.
+      store.jobs.push({
+        id: "q-winner",
+        idempotencyKey: opts?.idempotencyKey ?? null,
+        payload: { videoJobId: "vj-winner" },
+        status: "PENDING",
+        attempts: 0,
+        maxAttempts: 3,
+      });
+      seedVideoJob({ id: "vj-winner", queueJobId: null });
+      return null;
+    });
+
+    const job = await enqueueVideoJob({ ...input, idempotencyKey: "video-probe:a1" });
+
+    // Not FAILED: the work really is queued, it is just not linked back yet.
+    expect(job.id).toBe("vj-winner");
+    expect(job.status).toBe("QUEUED");
+    expect(store.videoJobs).toHaveLength(1);
+  });
+
+  it("fails the row honestly when the key is held by a queue entry no job owns", async () => {
+    store.jobs.push({ id: "q-orphan", idempotencyKey: "video-probe:a1", status: "DEAD", attempts: 3, maxAttempts: 3 });
+
+    const job = await enqueueVideoJob({ ...input, idempotencyKey: "video-probe:a1" });
+
+    // Never QUEUED: nothing would ever pick it up.
+    expect(job.status).toBe("FAILED");
+    expect(job.error).toMatch(/already queued/i);
+  });
+
+  it("abandons a run when a cancel lands between the read and the RUNNING write", async () => {
+    seedVideoJob({ id: "vj-cancel", status: "CANCELLED" });
+    let firstRead = true;
+    store.onVideoJobRead = (snapshot) => {
+      // The row was still QUEUED when this attempt read it; the cancel landed
+      // immediately afterwards.
+      if (firstRead) {
+        firstRead = false;
+        snapshot.status = "QUEUED";
+      }
+    };
+
+    await runVideoJob("vj-cancel");
+
+    const row = store.videoJobs[0]!;
+    expect(row.status).toBe("CANCELLED");
+    expect(row.startedAt).toBeNull();
+  });
+
+  it("restarts a row left RUNNING by an attempt whose process died", async () => {
+    seedVideoJob({ id: "vj-crashed", kind: "WAVEFORM", status: "RUNNING", startedAt: HOUR_AGO() });
+
+    // WAVEFORM is unimplemented, so reaching the dispatch switch at all proves
+    // the attempt was not abandoned as someone else's run.
+    await expect(runVideoJob("vj-crashed")).rejects.toThrow(/not implemented/i);
+
+    const row = store.videoJobs[0]!;
+    expect(row.status).toBe("FAILED");
+    expect(row.error).toMatch(/not implemented/i);
+  });
+
+  it("fails stalled jobs whose queue entry is gone, and leaves live ones alone", async () => {
+    store.jobs.push(
+      { id: "q-dead", idempotencyKey: null, status: "DEAD", attempts: 3, maxAttempts: 3 },
+      { id: "q-running", idempotencyKey: null, status: "RUNNING", attempts: 1, maxAttempts: 3 },
+      { id: "q-retrying", idempotencyKey: null, status: "FAILED", attempts: 1, maxAttempts: 3 },
+    );
+    seedVideoJob({ id: "vj-dead", status: "RUNNING", queueJobId: "q-dead", startedAt: HOUR_AGO(), updatedAt: HOUR_AGO() });
+    seedVideoJob({ id: "vj-live", status: "RUNNING", queueJobId: "q-running", startedAt: HOUR_AGO(), updatedAt: HOUR_AGO() });
+    seedVideoJob({ id: "vj-retrying", status: "RUNNING", queueJobId: "q-retrying", startedAt: HOUR_AGO(), updatedAt: HOUR_AGO() });
+    seedVideoJob({ id: "vj-never-queued", status: "QUEUED", queueJobId: null, updatedAt: HOUR_AGO() });
+    seedVideoJob({ id: "vj-fresh", status: "RUNNING", queueJobId: "q-dead", startedAt: new Date(), updatedAt: new Date() });
+
+    const failed = await reconcileStalledVideoJobs();
+
+    expect(failed).toBe(2);
+    const byId = Object.fromEntries(store.videoJobs.map((r) => [r.id as string, r]));
+    expect(byId["vj-dead"]!.status).toBe("FAILED");
+    expect(byId["vj-dead"]!.error).toMatch(/worker stopped/i);
+    expect(byId["vj-never-queued"]!.status).toBe("FAILED");
+    // A retry is still pending and a running render is still running: neither is
+    // abandoned, however long it has been going.
+    expect(byId["vj-live"]!.status).toBe("RUNNING");
+    expect(byId["vj-retrying"]!.status).toBe("RUNNING");
+    expect(byId["vj-fresh"]!.status).toBe("RUNNING");
+  });
+
+  it("fails a job whose worker died on its last attempt, but not one still holding its lease", async () => {
+    // Both entries have exhausted their retries, so neither will ever be
+    // claimed again; only the lease says whether one is still being worked on.
+    store.jobs.push(
+      { id: "q-abandoned", idempotencyKey: null, status: "RUNNING", attempts: 3, maxAttempts: 3, leaseExpiresAt: HOUR_AGO(), lockedAt: HOUR_AGO() },
+      { id: "q-held", idempotencyKey: null, status: "RUNNING", attempts: 3, maxAttempts: 3, leaseExpiresAt: new Date(Date.now() + 5 * 60_000), lockedAt: HOUR_AGO() },
+    );
+    seedVideoJob({ id: "vj-abandoned", status: "RUNNING", queueJobId: "q-abandoned", startedAt: HOUR_AGO(), updatedAt: HOUR_AGO() });
+    seedVideoJob({ id: "vj-held", status: "RUNNING", queueJobId: "q-held", startedAt: HOUR_AGO(), updatedAt: HOUR_AGO() });
+
+    expect(await reconcileStalledVideoJobs()).toBe(1);
+
+    const byId = Object.fromEntries(store.videoJobs.map((r) => [r.id as string, r]));
+    expect(byId["vj-abandoned"]!.status).toBe("FAILED");
+    expect(byId["vj-abandoned"]!.error).toMatch(/worker stopped/i);
+    expect(byId["vj-held"]!.status).toBe("RUNNING");
+  });
+
+  it("leaves a job still waiting in the queue backlog alone", async () => {
+    store.jobs.push({ id: "q-pending", idempotencyKey: null, status: "PENDING", attempts: 0, maxAttempts: 3 });
+    seedVideoJob({ id: "vj-backlog", status: "QUEUED", queueJobId: "q-pending", updatedAt: HOUR_AGO() });
+
+    expect(await reconcileStalledVideoJobs()).toBe(0);
+    expect(store.videoJobs[0]!.status).toBe("QUEUED");
   });
 });

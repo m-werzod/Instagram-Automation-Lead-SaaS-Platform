@@ -31,6 +31,22 @@ export interface PutOptions {
   publicRead?: boolean;
 }
 
+export interface PutStreamOptions extends PutOptions {
+  /** Abort and delete the partial object once this many bytes have arrived. */
+  maxBytes: number;
+  /** Cancels the write (client disconnected, request aborted). */
+  signal?: AbortSignal;
+}
+
+export class UploadTooLargeError extends Error {
+  readonly maxBytes: number;
+  constructor(maxBytes: number) {
+    super(`Upload exceeded the ${Math.floor(maxBytes / 1024 / 1024)} MB limit`);
+    this.name = "UploadTooLargeError";
+    this.maxBytes = maxBytes;
+  }
+}
+
 export interface PutResult {
   key: string;
   /** Set only when the driver serves the object itself (Blob). */
@@ -43,6 +59,16 @@ export interface StorageDriver {
   /** True when the driver hands out URLs Meta can fetch without our help. */
   readonly hasNativePublicUrls: boolean;
   put(key: string, data: Buffer | Uint8Array, opts: PutOptions): Promise<PutResult>;
+  /**
+   * Write from a stream, so the web tier's memory stays O(chunk) rather than
+   * O(file). An upload is the one place where the difference decides whether a
+   * single tenant can exhaust the host: a 500 MB file buffered whole peaks at
+   * roughly twice that during assembly.
+   *
+   * Implementations must clean up a partial object when the stream aborts, so a
+   * cancelled or over-long upload never leaves a half file behind.
+   */
+  putStream(key: string, body: ReadableStream<Uint8Array>, opts: PutStreamOptions): Promise<PutResult>;
   /** Streams bytes; `range` is a byte range when the client asked for one. */
   read(key: string, range?: { start: number; end?: number }): Promise<ReadableStream<Uint8Array>>;
   /** Whole object in memory — only for files known to be small (subtitles, probes). */
@@ -182,7 +208,25 @@ export function storageStatus(): StorageStatus {
       maxUploadMb,
     };
   }
+  // The local driver needs a writable filesystem the web tier shares with the
+  // worker. On a serverless host there is none (only an ephemeral per-invocation
+  // /tmp), so an upload would appear to succeed and then be unreachable. Say so
+  // rather than showing storage as ready.
+  if (isServerlessHost()) {
+    return {
+      driver,
+      configured: false,
+      reason:
+        "Local file storage cannot work on a serverless host: each invocation gets its own temporary filesystem, so an uploaded file would not survive or be visible to the worker.",
+      maxUploadMb,
+    };
+  }
   return { driver, configured: true, reason: null, maxUploadMb };
+}
+
+/** Platform markers for hosts whose filesystem is ephemeral and per-invocation. */
+export function isServerlessHost(): boolean {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
 }
 
 /** Where the local driver keeps files. Also used by the worker for scratch space. */

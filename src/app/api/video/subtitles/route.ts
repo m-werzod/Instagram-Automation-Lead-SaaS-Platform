@@ -160,6 +160,17 @@ export const PATCH = route(async (req: NextRequest) => {
   }
 
   const cues = (updated.cues as unknown as SubtitleCue[]) ?? [];
+
+  await audit({
+    adminId: auth.admin.id,
+    action: AuditActions.UPDATED_VIDEO_PROJECT,
+    resourceType: "SubtitleTrack",
+    resourceId: track.id,
+    before: { language: track.language, cues: ((track.cues as unknown as SubtitleCue[]) ?? []).length, style: track.style },
+    after: { language: updated.language, cues: cues.length, style: updated.style, madeDefault: body.makeDefault === true },
+    ip: clientIp(req),
+  });
+
   return ok({
     track: updated,
     cueCount: cues.length,
@@ -179,6 +190,7 @@ export const DELETE = route(async (req: NextRequest) => {
   });
   if (!track) throw notFound("Subtitle track");
 
+  const cueCount = ((track.cues as unknown as SubtitleCue[]) ?? []).length;
   await prisma.subtitleTrack.delete({ where: { id: track.id } });
 
   // A project must never point at a track that no longer exists.
@@ -189,6 +201,15 @@ export const DELETE = route(async (req: NextRequest) => {
       data: { params: { ...params, subtitles: { ...params.subtitles, trackId: null } } as never },
     });
   }
+
+  await audit({
+    adminId: auth.admin.id,
+    action: AuditActions.DELETED_VIDEO_PROJECT,
+    resourceType: "SubtitleTrack",
+    resourceId: track.id,
+    before: { projectId: track.projectId, language: track.language, source: track.source, cues: cueCount },
+    ip: clientIp(req),
+  });
 
   return ok({ deleted: true });
 });

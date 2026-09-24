@@ -1,4 +1,4 @@
-import { assertSafeKey, StorageError, type PutOptions, type PutResult, type StorageDriver } from "./index";
+import { assertSafeKey, StorageError, UploadTooLargeError, type PutOptions, type PutResult, type PutStreamOptions, type StorageDriver } from "./index";
 
 /**
  * Vercel Blob storage, for deployments whose web tier is serverless.
@@ -58,6 +58,53 @@ export class VercelBlobDriver implements StorageDriver {
     const json = (await res.json()) as BlobPutResponse;
     this.urlCache.set(key, json.url);
     return { key, publicUrl: json.url, sizeBytes: body.byteLength };
+  }
+
+  /**
+   * Hand the body straight to fetch, counting bytes as they pass so an
+   * over-long upload is cut off rather than relayed in full. `duplex: "half"`
+   * is required by undici whenever a request body is a stream.
+   */
+  async putStream(key: string, body: ReadableStream<Uint8Array>, opts: PutStreamOptions): Promise<PutResult> {
+    assertSafeKey(key);
+    let written = 0;
+    const counted = body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          written += chunk.byteLength;
+          if (written > opts.maxBytes) throw new UploadTooLargeError(opts.maxBytes);
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+
+    const res = await fetch(`${API}/${encodeURI(key)}`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token()}`,
+        "x-api-version": "7",
+        "x-content-type": opts.contentType,
+        "x-add-random-suffix": "0",
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+      body: counted,
+      signal: opts.signal,
+      // @ts-expect-error — duplex is required for a streaming body and is not
+      // in the DOM lib types Next.js ships.
+      duplex: "half",
+    }).catch(async (err) => {
+      // A rejected count aborts the fetch; make sure no partial object survives.
+      await this.delete(key).catch(() => {});
+      throw err;
+    });
+
+    if (!res.ok) {
+      await this.delete(key).catch(() => {});
+      throw new StorageError(`Vercel Blob rejected the upload (${res.status}): ${(await res.text()).slice(0, 300)}`);
+    }
+    const json = (await res.json()) as BlobPutResponse;
+    this.urlCache.set(key, json.url);
+    return { key, publicUrl: json.url, sizeBytes: written };
   }
 
   private async resolveUrl(key: string): Promise<string> {

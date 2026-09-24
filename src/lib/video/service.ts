@@ -43,23 +43,37 @@ export async function videoCapabilities(): Promise<VideoCapabilities> {
   const hasGoogle = Boolean(aiKeyFor("google"));
   const hasChatKey = Boolean(aiKeyFor("openai") || aiKeyFor("anthropic") || aiKeyFor("google"));
 
+  /**
+   * What decides whether a render can happen is whether a WORKER that can
+   * render is online — never whether this process has FFmpeg. On the documented
+   * deployment the web tier is serverless and never has FFmpeg, so asking about
+   * the local binary here would refuse every render while a perfectly healthy
+   * worker sat idle. The local probe is kept only as context for the
+   * single-host case, where the same machine runs both.
+   */
   const workerCap: VideoCapability = workerOnline
-    ? { available: true, reason: null, fix: null }
+    ? {
+        available: true,
+        reason: null,
+        fix: null,
+        detail: ff.available ? (ff.ffmpegVersion ?? "FFmpeg available here too") : null,
+      }
     : {
         available: false,
-        reason: "No worker with FFmpeg has reported in during the last five minutes, so queued renders will wait.",
-        fix: "Run `npm run worker` on a machine that has FFmpeg installed (see MANUAL_SETUP_GUIDE.md → Video processing worker). A serverless deployment cannot run renders: its functions stop after 60 seconds.",
+        reason: ff.available
+          ? "FFmpeg is installed here, but no worker has reported in during the last five minutes, so queued renders will wait."
+          : "No worker with FFmpeg has reported in during the last five minutes, so queued renders will wait.",
+        fix: "Run `npm run worker` on a machine that has FFmpeg installed (see MANUAL_SETUP_GUIDE.md → Video processing worker). A serverless deployment cannot run renders itself: its functions stop after 60 seconds.",
       };
 
+  /** Work that runs as a video job needs the same worker, whatever else it needs. */
+  const needsWorker = (cap: VideoCapability): VideoCapability =>
+    cap.available && !workerOnline
+      ? { available: false, reason: workerCap.reason, fix: workerCap.fix, detail: cap.detail }
+      : cap;
+
   return {
-    rendering: ff.available
-      ? workerCap
-      : {
-          available: false,
-          reason: ff.reason ?? "FFmpeg is not available.",
-          fix: "Install FFmpeg on the worker host and restart the worker.",
-          detail: ff.ffmpegVersion,
-        },
+    rendering: workerCap,
     worker: workerCap,
     storage: {
       available: storage.configured,
@@ -68,16 +82,22 @@ export async function videoCapabilities(): Promise<VideoCapabilities> {
       driver: storage.driver,
       maxUploadMb: storage.maxUploadMb,
     },
-    subtitlesAuto: stt.available
-      ? { available: true, reason: null, fix: null, detail: `${stt.provider} (${stt.model})` }
-      : { available: false, reason: stt.reason, fix: stt.fix },
-    sampleAnalysis: hasGoogle
-      ? { available: true, reason: null, fix: null, detail: process.env.GEMINI_VIDEO_MODEL?.trim() || "gemini-2.5-flash" }
-      : {
-          available: false,
-          reason: "Style observation needs a vision model; no Google AI key is configured.",
-          fix: "Set GOOGLE_AI_API_KEY. Without it, a sample is still measured with FFmpeg (cuts, pacing, loudness, framing) but not visually described.",
-        },
+    // Transcription and style analysis both run as video jobs, so a configured
+    // provider alone is not enough to call them available.
+    subtitlesAuto: needsWorker(
+      stt.available
+        ? { available: true, reason: null, fix: null, detail: `${stt.provider} (${stt.model})` }
+        : { available: false, reason: stt.reason, fix: stt.fix },
+    ),
+    sampleAnalysis: needsWorker(
+      hasGoogle
+        ? { available: true, reason: null, fix: null, detail: process.env.GEMINI_VIDEO_MODEL?.trim() || "gemini-2.5-flash" }
+        : {
+            available: false,
+            reason: "Style observation needs a vision model; no Google AI key is configured.",
+            fix: "Set GOOGLE_AI_API_KEY. Without it, a sample is still measured with FFmpeg (cuts, pacing, loudness, framing) but not visually described.",
+          },
+    ),
     chatAssistant: hasChatKey
       ? { available: true, reason: null, fix: null }
       : {

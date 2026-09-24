@@ -39,7 +39,7 @@ import { Field, Input } from "@/components/ui/input";
 import { centsToMoney, formatDate, timeAgo, truncate } from "@/lib/utils";
 import { CampaignWizard, type ContentOption, type WizardInitial, type WizardOptions } from "@/components/campaigns/campaign-wizard";
 import { AdBillingBanner, type AdBillingStatus } from "@/components/campaigns/ad-billing-status";
-import { computeCampaignQuote, type Pricing } from "@/lib/billing/pricing";
+import { campaignQuoteOrProblem, type Pricing } from "@/lib/billing/pricing";
 
 /**
  * Target — promoted posts and Reels with a real Meta button. The only screen
@@ -396,8 +396,13 @@ function CampaignCard({
     : `${centsToMoney(c.lifetimeBudgetCents, c.currency)} ${d.campaigns.wizard.lifetime.toLowerCase()}`;
   const local = c.status === "DRAFT" || c.status === "READY" || c.status === "ERROR";
   const inMeta = Boolean(c.metaCampaignId);
-  // platform fee (ours) — Meta's spend is separate and billed by Meta
-  const quote = pricing ? computeCampaignQuote(c, pricing) : null;
+  // Platform fee (ours) — Meta's spend is separate and billed by Meta. A fee the
+  // server would refuse to compute (a budget in a currency the pricing cannot be
+  // applied to) is reported on this one card: computing it with the throwing
+  // function took the entire list down over a single unpriceable campaign.
+  const fee = pricing ? campaignQuoteOrProblem(c, pricing) : null;
+  const quote = fee?.quote ?? null;
+  const feeProblem = fee?.problem ?? null;
   const feePaid = c.payments.some((p) => p.status === "SUCCEEDED");
   const feeDue = Boolean(quote && !quote.free && !feePaid);
   const ins = c.insightsSnapshot;
@@ -497,13 +502,28 @@ function CampaignCard({
           </div>
         )}
 
+        {feeProblem && local && (
+          <div className="flex items-start gap-2 rounded-lg bg-(--color-warn-soft) px-3 py-2 text-[11px] leading-4 text-(--color-warn)">
+            <AlertTriangle size={13} className="mt-px shrink-0" />
+            <span className="min-w-0 break-words">
+              <span className="font-semibold">{d.billing.payFee}: {d.common.unavailable}</span> — {feeProblem}
+            </span>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-2 border-t border-(--color-border) pt-3">
           {local && (
             <>
               <Button size="sm" variant="secondary" onClick={onEdit}>
                 <PencilLine size={14} /> {d.campaigns.wizard.edit}
               </Button>
-              {feeDue && quote ? (
+              {feeProblem ? (
+                // No honest amount to offer, and the server refuses the campaign
+                // for the same reason — so neither button pretends otherwise.
+                <Button size="sm" disabled title={feeProblem}>
+                  <CreditCard size={14} /> {d.billing.payFee} · {d.common.unavailable}
+                </Button>
+              ) : feeDue && quote ? (
                 <PayFeeButton campaignId={c.id} amount={centsToMoney(quote.totalCents, quote.currency)} onDone={onReload} />
               ) : (
                 <Button size="sm" variant="secondary" disabled={isBusy("meta") || !adsAvailable} title={!adsAvailable ? adsReason : undefined} onClick={onCreateInMeta}>

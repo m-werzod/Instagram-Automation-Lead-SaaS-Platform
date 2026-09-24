@@ -33,8 +33,63 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
   const [busy, setBusy] = React.useState(false);
   const [language, setLanguage] = React.useState<"uz" | "ru" | "en">("uz");
   const [cues, setCues] = React.useState<SubtitleCueRow[]>(active?.cues ?? []);
+  const [dirty, setDirty] = React.useState(false);
+  const [conflict, setConflict] = React.useState(false);
 
-  React.useEffect(() => setCues(active?.cues ?? []), [active?.id, active?.cues]);
+  /** What the server last showed us, so a refresh can tell "new" from "same". */
+  const loaded = React.useRef({ trackId: active?.id, serialized: JSON.stringify(active?.cues ?? []) });
+  const dirtyRef = React.useRef(false);
+  /** The lines as they stand now, readable from inside an awaited save. */
+  const cuesRef = React.useRef(cues);
+  React.useEffect(() => {
+    cuesRef.current = cues;
+  }, [cues]);
+
+  const setDirtyState = React.useCallback((value: boolean) => {
+    dirtyRef.current = value;
+    setDirty(value);
+  }, []);
+
+  const editCues = React.useCallback(
+    (next: React.SetStateAction<SubtitleCueRow[]>) => {
+      setDirtyState(true);
+      setCues(next);
+    },
+    [setDirtyState],
+  );
+
+  /**
+   * The project reloads every four seconds while any job runs. Adopting the
+   * server's cues on each of those would erase whatever the operator is typing,
+   * so an unsaved editor keeps its own lines and says the server copy moved.
+   */
+  React.useEffect(() => {
+    const serverCues = active?.cues ?? [];
+    const serialized = JSON.stringify(serverCues);
+    const action = cueRefreshAction({
+      loadedTrackId: loaded.current.trackId,
+      incomingTrackId: active?.id,
+      serverChanged: serialized !== loaded.current.serialized,
+      dirty: dirtyRef.current,
+    });
+    if (action === "none") return;
+    loaded.current = { trackId: active?.id, serialized };
+    if (action === "conflict") {
+      setConflict(true);
+      return;
+    }
+    setCues(serverCues);
+    setDirtyState(false);
+    setConflict(false);
+  }, [active?.id, active?.cues, setDirtyState]);
+
+  /** Closing the tab with unsaved lines is almost always an accident. */
+  React.useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   const hasWordTimings = (active?.cues ?? []).some((c) => Array.isArray(c.words) && c.words.length > 0);
   const style = params.subtitles.style;
@@ -43,7 +98,10 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
     setBusy(true);
     try {
       await api("/api/video/jobs", { method: "POST", json: { projectId: state.project.id, kind: "TRANSCRIBE", languageHint: language } });
-      toast.success(t.generating);
+      // The job is only queued here; nothing has listened to the audio yet.
+      toast.message(d.videoEditor.jobs.queuedToast, {
+        description: state.capabilities.worker.available ? d.videoEditor.jobs.queuedHint : d.videoEditor.jobs.workerOffline,
+      });
       await onReload();
     } catch {
       /* reported */
@@ -69,9 +127,17 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
 
   async function saveCues() {
     if (!active) return;
+    const sent = JSON.stringify(cues);
     setBusy(true);
     try {
       await api("/api/video/subtitles", { method: "PATCH", json: { trackId: active.id, cues } });
+      // Our own save is not someone else's edit: recording what we sent keeps
+      // the reload below from raising a conflict over it. Lines typed while the
+      // request was in flight were not part of it, so they stay unsaved rather
+      // than being quietly marked clean — or adopted away by the refresh.
+      loaded.current = { trackId: active.id, serialized: sent };
+      if (JSON.stringify(cuesRef.current) === sent) setDirtyState(false);
+      setConflict(false);
       toast.success(d.common.saved);
       await onReload();
     } catch {
@@ -222,7 +288,7 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
                     variant={style.position === position ? "default" : "secondary"}
                     onClick={() => void onPatch({ subtitles: { style: { position } } })}
                   >
-                    {position}
+                    {t.positions[position]}
                   </Button>
                 ))}
               </div>
@@ -247,8 +313,25 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
           </Card>
 
           <Card>
-            <CardHeader title={`${t.cues} (${cues.length})`} />
+            <CardHeader title={`${t.cues} (${cues.length})${dirty ? ` · ${t.unsavedCues}` : ""}`} />
             <div className="space-y-2 p-4 pt-0">
+              {conflict && (
+                <div className="flex flex-wrap items-start gap-2 rounded-md border border-(--color-warn)/25 bg-(--color-warn-soft) p-3 text-xs">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-warn)" />
+                  <p className="min-w-0 flex-1">{t.cuesChangedElsewhere}</p>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setCues(active?.cues ?? []);
+                      setDirtyState(false);
+                      setConflict(false);
+                    }}
+                  >
+                    {t.discardChanges}
+                  </Button>
+                </div>
+              )}
               <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                 {cues.map((cue, i) => (
                   <div key={i} className="grid gap-2 rounded-md border border-(--color-border) p-2 sm:grid-cols-[80px_80px_1fr_auto]">
@@ -257,21 +340,21 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
                       step={0.1}
                       className="rounded border border-(--color-border) bg-(--color-panel-2) px-2 py-1 text-xs"
                       value={cue.start}
-                      onChange={(e) => setCues((c) => c.map((x, j) => (j === i ? { ...x, start: Number(e.target.value) } : x)))}
+                      onChange={(e) => editCues((c) => c.map((x, j) => (j === i ? { ...x, start: Number(e.target.value) } : x)))}
                     />
                     <input
                       type="number"
                       step={0.1}
                       className="rounded border border-(--color-border) bg-(--color-panel-2) px-2 py-1 text-xs"
                       value={cue.end}
-                      onChange={(e) => setCues((c) => c.map((x, j) => (j === i ? { ...x, end: Number(e.target.value) } : x)))}
+                      onChange={(e) => editCues((c) => c.map((x, j) => (j === i ? { ...x, end: Number(e.target.value) } : x)))}
                     />
                     <input
                       className="rounded border border-(--color-border) bg-(--color-panel-2) px-2 py-1 text-sm"
                       value={cue.text}
-                      onChange={(e) => setCues((c) => c.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
+                      onChange={(e) => editCues((c) => c.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
                     />
-                    <Button size="sm" variant="ghost" aria-label={t.deleteLine} onClick={() => setCues((c) => c.filter((_, j) => j !== i))}>
+                    <Button size="sm" variant="ghost" aria-label={t.deleteLine} onClick={() => editCues((c) => c.filter((_, j) => j !== i))}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -284,13 +367,13 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
                   onClick={() => {
                     const last = cues[cues.length - 1];
                     const start = last ? last.end + 0.1 : 0;
-                    setCues((c) => [...c, { start, end: start + 2, text: "" }]);
+                    editCues((c) => [...c, { start, end: start + 2, text: "" }]);
                   }}
                 >
                   <Plus className="mr-1.5 h-4 w-4" />
                   {t.addLine}
                 </Button>
-                <Button size="sm" disabled={busy} onClick={() => void saveCues()}>
+                <Button size="sm" disabled={busy || !dirty} onClick={() => void saveCues()}>
                   {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
                   {d.common.save}
                 </Button>
@@ -301,6 +384,25 @@ export function SubtitlesTab({ state, onPatch, onReload }: TabProps) {
       )}
     </div>
   );
+}
+
+/**
+ * What a project refresh should do with the cue editor's local state.
+ *
+ * Exported so the rule can be tested without a DOM: the editor is polled every
+ * few seconds while a job runs, and getting this wrong silently destroys typing.
+ */
+export function cueRefreshAction(input: {
+  loadedTrackId: string | undefined;
+  incomingTrackId: string | undefined;
+  serverChanged: boolean;
+  dirty: boolean;
+}): "adopt" | "conflict" | "none" {
+  // Switching to a different track is an explicit act, so its cues win even
+  // over unsaved edits to the previous one.
+  if (input.loadedTrackId !== input.incomingTrackId) return "adopt";
+  if (!input.serverChanged) return "none";
+  return input.dirty ? "conflict" : "adopt";
 }
 
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
@@ -330,7 +432,13 @@ function RangeField({
   onCommit: (v: number) => void;
 }) {
   const [local, setLocal] = React.useState(value);
-  React.useEffect(() => setLocal(value), [value]);
+  const [adjusting, setAdjusting] = React.useState(false);
+  // Presets rewrite every style field server-side, so the slider follows the
+  // reloaded parameters — except while it is being moved, when a background
+  // refresh would otherwise yank it out from under the operator's hand.
+  React.useEffect(() => {
+    if (!adjusting) setLocal(value);
+  }, [value, adjusting]);
   return (
     <label className="block text-xs">
       <span className="mb-1.5 flex items-center justify-between font-medium text-(--color-fg-muted)">
@@ -347,6 +455,8 @@ function RangeField({
         min={min}
         max={max}
         step={step}
+        onFocus={() => setAdjusting(true)}
+        onBlur={() => setAdjusting(false)}
         onChange={(e) => setLocal(Number(e.target.value))}
         onMouseUp={() => onCommit(local)}
         onTouchEnd={() => onCommit(local)}

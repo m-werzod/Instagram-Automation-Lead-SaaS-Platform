@@ -61,7 +61,24 @@ async function main() {
         await recordWorkerHeartbeat({ workerId, lanes, ffmpeg: videoEnabled, kind: "worker", jobsDone: doneSinceHeartbeat });
         doneSinceHeartbeat = 0;
       }
-      const processed = await drainOnce(workerId, 20, lanes);
+
+      /**
+       * Keep the heartbeat alive WHILE draining, not only between drains. A
+       * single render can run for many minutes, and without this the worker
+       * would be reported offline mid-job — which the editor reads as "no
+       * worker", refusing new renders exactly when one is demonstrably running.
+       */
+      const beat = setInterval(() => {
+        lastHeartbeat = Date.now();
+        void recordWorkerHeartbeat({ workerId, lanes, ffmpeg: videoEnabled, kind: "worker" }).catch(() => {});
+      }, 30_000);
+      beat.unref?.();
+      let processed = 0;
+      try {
+        processed = await drainOnce(workerId, 20, lanes);
+      } finally {
+        clearInterval(beat);
+      }
       doneSinceHeartbeat += processed;
       if (processed === 0) {
         await sleep(pollMs);

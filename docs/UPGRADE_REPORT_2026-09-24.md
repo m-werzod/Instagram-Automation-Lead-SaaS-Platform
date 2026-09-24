@@ -19,11 +19,12 @@ State now (`1fd7733`): **516 tests, typecheck clean, lint clean, production buil
 | 5 — AI agents | Cost table, retry semantics, background processing, prompt-injection framing |
 | 6–7 — Video editor | Storage layer, FFmpeg pipeline, audio mixing, subtitles, sample analysis, chat assistant |
 | 8 — Publishing bridge | Export hands a real, reachable URL to the existing publish pipeline |
-| 9 — QA & security | 5 adversarial review dimensions, every finding verified. **0 confirmed defects** |
+| 9 — QA & security | 5 adversarial review dimensions, every finding verified. **27 confirmed defects, all remediated** (see §4) |
 | 10 — Report | This document, plus [MANUAL_SETUP_GUIDE.md](../MANUAL_SETUP_GUIDE.md) |
 
-**86 defects fixed** (60 in the seven repair tracks, 26 more found by the review pass over them),
-plus 3 I found and fixed directly.
+**116 defects fixed**: 60 in the seven repair tracks, 26 more found by the review pass over them,
+3 I found directly, and 27 found by the phase-9 QA review — including a critical one that would have
+made the video editor refuse every render in production.
 
 ---
 
@@ -143,11 +144,18 @@ and always failed while the UI reported success.
 - FFmpeg 8.0.1 and ffprobe present
 
 **Independent QA (phase 9):** 5 adversarial dimensions — video security, video correctness, the
-applied fixes, UI honesty and i18n, integration and deployment. Every finding was to be verified by a
-second agent. **Zero confirmed defects**, with line-level evidence of what each reviewer probed:
-argv-only FFmpeg invocation, path-traversal guards, tenant isolation across all 12 video handlers,
-the `/v/` role gate, migration correctness and absence of drift, handler registration in every
-draining process, and the export-bridge shape matching what the publish route accepts.
+applied fixes, UI honesty and i18n, integration and deployment. Every finding was verified by a
+second agent that tried to refute it.
+
+**27 defects confirmed, 1 refuted.** They are listed in §4 and were all remediated. An earlier draft
+of this report said "zero confirmed defects"; that was wrong — it was written from partial workflow
+output while several reviewers were still running, and is corrected here.
+
+What the reviewers *did* clear, with line-level evidence: argv-only FFmpeg invocation with no reachable
+injection path, path-traversal guards on storage keys, tenant isolation across all 12 video handlers
+including child-id lookups, the `/v/` role gate, absence of SSRF, migration correctness with no schema
+drift, handler registration in every draining process, and the export-bridge shape matching what the
+publish route accepts.
 
 **i18n:** 1248 keys in each of en/uz/ru, zero divergence, 154 video-editor keys per language.
 
@@ -156,11 +164,28 @@ own output is statement splitting.
 
 ---
 
-## 4. Tests that failed
+## 4. Defects the QA pass found, and what happened to them
 
-None are outstanding. During development one self-written pipeline check failed because the synthetic
-clip had 2 scene cuts and the assertion expected the ≥3 needed to emit a pacing item; the product
-logic was correct and the check was replaced by proper repo tests.
+The review was worth running: it found a **critical** flaw that would have made the video editor
+refuse every render on the exact deployment this platform documents.
+
+| Severity | Defect | Resolution |
+| --- | --- | --- |
+| Critical | The render gate asked whether the **web** process had FFmpeg. On Vercel it never does, so every render was refused while a healthy worker sat idle | Gated on the worker heartbeat instead; the local binary is now only context for the single-host case |
+| High | The worker stopped heart-beating *while* draining, so a worker busy with a long render reported itself offline and new renders were refused | Heartbeat renews during the drain |
+| High | Burned-in subtitles ignored trim and speed, so every trimmed or sped-up export had captions at the wrong moment | `retimeCues()` maps cues onto the rendered timeline; 8 tests |
+| High | Subtitle presets were inert — each one relabelled the style and rendered identically | Selecting a preset expands its full style; 5 tests |
+| High | The currency-mismatch guard threw during the Campaigns list render, taking the whole Target page down | Remediated |
+| High | The per-job timeout abandoned the await without stopping the handler, which could double-publish a post | Remediated |
+| High | The byte-upload route buffered the whole body and its size check was bypassable with chunked encoding | Remediated |
+| High | Unsaved subtitle edits were wiped by the background poll | Remediated |
+| High | A source video that failed validation left the project unrecoverable, saying "try again in a moment" forever | Remediated |
+| Medium ×13 | Job-lifecycle races, zombie queued jobs, stale preview presented as current, success toasts for queued work, sample selection re-checking itself, untranslated slugs, Blob content-type mismatch, unbounded subtitle words, local storage reported usable on serverless, and others | Remediated |
+| Low ×4 | Suffix Range handling, missing audit records on subtitle edits, clock-skew in the early-wake re-enqueue, capability panel wording | Remediated |
+
+**Tests that failed:** none outstanding. During development one self-written pipeline check failed on
+its own assumption (a synthetic clip had 2 scene cuts where the assertion expected the ≥3 needed to
+emit a pacing item); the product logic was correct and the check was replaced by proper repo tests.
 
 ---
 

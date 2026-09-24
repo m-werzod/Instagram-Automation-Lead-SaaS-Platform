@@ -5,6 +5,7 @@ import {
   buildVttFile,
   parseSubtitleFile,
   normalizeCues,
+  retimeCues,
   wrapCueText,
   applyPreset,
   SUBTITLE_PRESET_STYLES,
@@ -169,5 +170,63 @@ describe("SRT and VTT", () => {
   it("ignores junk instead of throwing", () => {
     expect(parseSubtitleFile("not a subtitle file at all")).toEqual([]);
     expect(parseSubtitleFile("")).toEqual([]);
+  });
+});
+
+describe("re-timing cues onto the rendered timeline", () => {
+  const cues: SubtitleCue[] = [
+    { start: 0, end: 2, text: "before the cut" },
+    { start: 10, end: 12, text: "kept" },
+    { start: 14, end: 16, text: "also kept" },
+    { start: 40, end: 42, text: "after the cut" },
+  ];
+
+  it("shifts cues by the trim start", () => {
+    const out = retimeCues(cues, { trimStartSec: 10 });
+    expect(out[0]).toMatchObject({ start: 0, end: 2, text: "kept" });
+    expect(out[1]).toMatchObject({ start: 4, end: 6, text: "also kept" });
+  });
+
+  it("drops cues outside the kept range", () => {
+    const out = retimeCues(cues, { trimStartSec: 10, trimEndSec: 20 });
+    expect(out.map((c) => c.text)).toEqual(["kept", "also kept"]);
+  });
+
+  it("compresses timings by the speed factor", () => {
+    const out = retimeCues([{ start: 10, end: 20, text: "x" }], { speed: 2 });
+    expect(out[0]).toMatchObject({ start: 5, end: 10 });
+  });
+
+  it("applies trim and speed together, the way the render does", () => {
+    // FFmpeg seeks to trimStart then rescales PTS, so output time is (t - start) / speed.
+    const out = retimeCues([{ start: 30, end: 34, text: "x" }], { trimStartSec: 10, speed: 2 });
+    expect(out[0]).toMatchObject({ start: 10, end: 12 });
+  });
+
+  it("re-times word timings alongside their cue", () => {
+    const out = retimeCues(
+      [{ start: 10, end: 12, text: "a b", words: [{ start: 10, end: 11, text: "a" }, { start: 11, end: 12, text: "b" }] }],
+      { trimStartSec: 10, speed: 2 },
+    );
+    expect(out[0]?.words).toEqual([
+      { start: 0, end: 0.5, text: "a" },
+      { start: 0.5, end: 1, text: "b" },
+    ]);
+  });
+
+  it("clips a cue that straddles the trim boundary", () => {
+    const out = retimeCues([{ start: 8, end: 14, text: "straddles" }], { trimStartSec: 10, trimEndSec: 12 });
+    expect(out[0]).toMatchObject({ start: 0, end: 2 });
+  });
+
+  it("returns the input untouched when there is no trim or speed change", () => {
+    expect(retimeCues(cues, {})).toBe(cues);
+  });
+
+  it("never produces a negative timestamp", () => {
+    for (const c of retimeCues(cues, { trimStartSec: 11, speed: 1.5 })) {
+      expect(c.start).toBeGreaterThanOrEqual(0);
+      expect(c.end).toBeGreaterThan(c.start);
+    }
   });
 });

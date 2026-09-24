@@ -61,23 +61,22 @@ export function UploadDrop({
     setPhase("uploading");
     setProgress(0);
     try {
+      // One MIME for the whole upload: the direct-upload token is minted for the
+      // type sent here, and Blob rejects a body that arrives with a different
+      // one — which is exactly what happened when the browser reported no type
+      // and each step guessed separately.
+      const mimeType = uploadMimeType(file.name, file.type, role);
+
       const begin = await api<BeginResponse>("/api/video/assets", {
         method: "PUT",
-        json: {
-          projectId,
-          role,
-          filename: file.name,
-          // Browsers occasionally give an empty type for MKV; fall back by extension.
-          mimeType: file.type || guessMime(file.name, role),
-          sizeBytes: file.size,
-        },
+        json: { projectId, role, filename: file.name, mimeType, sizeBytes: file.size },
       });
 
       if (begin.upload.mode === "direct") {
-        await putWithProgress(begin.upload.url, file, setProgress, begin.upload.token);
+        await putWithProgress(begin.upload.url, file, mimeType, setProgress, begin.upload.token);
         await api("/api/video/assets", { method: "POST", json: { assetId: begin.asset.id } });
       } else {
-        await putWithProgress(begin.upload.url, file, setProgress);
+        await putWithProgress(begin.upload.url, file, mimeType, setProgress);
       }
 
       setPhase("checking");
@@ -170,19 +169,28 @@ export function UploadDrop({
 }
 
 /** XHR rather than fetch: only XHR reports upload progress. */
-function putWithProgress(url: string, file: File, onProgress: (pct: number) => void, bearer?: string): Promise<void> {
+function putWithProgress(
+  url: string,
+  file: File,
+  contentType: string,
+  onProgress: (pct: number) => void,
+  bearer?: string,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url, true);
-    xhr.withCredentials = true;
+    xhr.open(bearer ? "PUT" : "POST", url, true);
+    // Credentials only on the same-origin proxy upload. Blob answers with a
+    // wildcard CORS origin, which a credentialed request is not allowed to
+    // accept, so sending cookies there fails the upload outright — and the
+    // one-time token below is the only authentication it needs.
+    xhr.withCredentials = !bearer;
     if (bearer) {
       // Direct-to-Blob uploads authenticate with the one-time client token.
-      xhr.open("PUT", url, true);
       xhr.setRequestHeader("authorization", `Bearer ${bearer}`);
       xhr.setRequestHeader("x-api-version", "7");
-      xhr.setRequestHeader("x-content-type", file.type || "application/octet-stream");
+      xhr.setRequestHeader("x-content-type", contentType);
     } else {
-      xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
+      xhr.setRequestHeader("content-type", contentType);
     }
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
@@ -194,6 +202,16 @@ function putWithProgress(url: string, file: File, onProgress: (pct: number) => v
     xhr.onerror = () => reject(new Error("Upload failed"));
     xhr.send(file);
   });
+}
+
+/**
+ * The single MIME type an upload is described by. Browsers occasionally report
+ * an empty type (MKV, and some MOV files), so it falls back to the extension —
+ * but every step of the upload must then use this same answer.
+ */
+export function uploadMimeType(filename: string, browserType: string, role: UploadRole): string {
+  const reported = browserType.split(";")[0]!.trim();
+  return reported || guessMime(filename, role);
 }
 
 function guessMime(filename: string, role: UploadRole): string {

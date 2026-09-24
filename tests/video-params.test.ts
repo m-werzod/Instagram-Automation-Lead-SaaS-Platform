@@ -103,3 +103,48 @@ describe("Instagram export checks", () => {
     expect(warnings).toEqual([]);
   });
 });
+
+describe("subtitle preset selection", () => {
+  it("applies the whole preset, not just its name", () => {
+    // Selecting a preset must change how captions render. Previously only the
+    // stored name changed, so every preset burned in identical captions.
+    const base = defaultEditParams();
+    const next = applyEditPatch(base, { subtitles: { style: { preset: "bold-social" } } });
+    expect(next.subtitles.style.preset).toBe("bold-social");
+    expect(next.subtitles.style.fontSizePct).not.toBe(base.subtitles.style.fontSizePct);
+    expect(next.subtitles.style.uppercase).toBe(true);
+    expect(next.subtitles.style.outlineWidth).toBe(3.5);
+  });
+
+  it("gives visually distinct results for distinct presets", () => {
+    const base = defaultEditParams();
+    const seen = new Set(
+      (["clean-white", "bold-social", "minimal", "high-contrast", "creator", "professional"] as const).map((preset) => {
+        const s = applyEditPatch(base, { subtitles: { style: { preset } } }).subtitles.style;
+        return `${s.fontSizePct}|${s.outlineWidth}|${s.backgroundOpacity}|${s.position}|${s.uppercase}`;
+      }),
+    );
+    expect(seen.size).toBeGreaterThanOrEqual(5);
+  });
+
+  it("lets an explicit field override the preset it came with", () => {
+    const next = applyEditPatch(defaultEditParams(), {
+      subtitles: { style: { preset: "bold-social", fontSizePct: 3 } },
+    });
+    expect(next.subtitles.style.fontSizePct).toBe(3);
+    expect(next.subtitles.style.uppercase).toBe(true);
+  });
+
+  it("keeps customisations when the patch does not name a new preset", () => {
+    const customised = applyEditPatch(defaultEditParams(), { subtitles: { style: { fontSizePct: 9 } } });
+    const next = applyEditPatch(customised, { subtitles: { style: { textColor: "#FF0000" } } });
+    expect(next.subtitles.style.fontSizePct).toBe(9);
+    expect(next.subtitles.style.textColor).toBe("#FF0000");
+  });
+
+  it("only turns word highlighting on for the preset that means it", () => {
+    const base = defaultEditParams();
+    expect(applyEditPatch(base, { subtitles: { style: { preset: "highlighted-words" } } }).subtitles.style.wordHighlight).toBe(true);
+    expect(applyEditPatch(base, { subtitles: { style: { preset: "minimal" } } }).subtitles.style.wordHighlight).toBe(false);
+  });
+});

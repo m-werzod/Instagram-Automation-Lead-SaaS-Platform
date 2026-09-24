@@ -5,7 +5,7 @@ import { route, ok, assertSameOrigin, parseBody, clientIp, enforceRateLimit } fr
 import { requireAdmin } from "@/lib/auth/guard";
 import { accountScope, assertAccountAccess } from "@/lib/auth/access";
 import { audit, AuditActions } from "@/lib/audit";
-import { notFound, validationError } from "@/lib/errors";
+import { AppError, notFound, validationError } from "@/lib/errors";
 import { drainNow } from "@/lib/queue";
 import { buildStorageKey, getStorage, maxUploadBytes, storageStatus, storageDriverName } from "@/lib/storage";
 import { enqueueVideoJob } from "@/lib/video/jobs";
@@ -87,6 +87,18 @@ export const PUT = route(async (req: NextRequest) => {
   await assertAccountAccess(auth, project.accountId);
 
   assertAcceptable(body.role, body.mimeType, body.sizeBytes);
+
+  // The UI hides the uploader when storage is unusable, but the API is not the
+  // UI: reserving a row and handing back an upload URL that can never hold a
+  // file would produce an asset stuck UPLOADING forever.
+  const storage = storageStatus();
+  if (!storage.configured) {
+    throw new AppError("SERVICE_UNAVAILABLE", "File storage is not usable on this deployment", {
+      status: 503,
+      reason: storage.reason ?? undefined,
+      fix: "See MANUAL_SETUP_GUIDE.md → Video storage.",
+    });
+  }
 
   const key = buildStorageKey(project.accountId, body.role.toLowerCase(), body.filename);
   const driver = storageDriverName();
@@ -195,3 +207,54 @@ function assertAcceptable(role: (typeof ROLES)[number], mimeType: string, sizeBy
   }
 }
 
+const replaceSchema = z.object({
+  /** The failed SOURCE asset to detach and remove. */
+  assetId: z.string().min(1),
+});
+
+/**
+ * Detach and delete a source video that failed validation.
+ *
+ * Without this a project whose upload turned out not to be playable is stuck
+ * forever: the project points at the bad asset, and completing another upload
+ * only adopts a new source while `sourceAssetId` is still null. Restricted to
+ * assets that actually failed, so a working source can never be removed out
+ * from under a render by mistake.
+ */
+export const DELETE = route(async (req: NextRequest) => {
+  assertSameOrigin(req);
+  const auth = await requireAdmin();
+  const assetId = req.nextUrl.searchParams.get("assetId");
+  const parsed = replaceSchema.safeParse({ assetId });
+  if (!parsed.success) throw validationError("assetId is required");
+
+  const asset = await prisma.videoAsset.findFirst({
+    where: { id: parsed.data.assetId, ...(await accountScope(auth)) },
+  });
+  if (!asset) throw notFound("Video asset");
+  if (asset.status !== "FAILED") {
+    throw validationError("Only a file that failed its checks can be removed this way.", {
+      reason: `This asset is ${asset.status.toLowerCase()}.`,
+      fix: "Delete the whole project if you want to start again.",
+    });
+  }
+
+  const storage = await getStorage();
+  await storage.delete(asset.storageKey).catch(() => {});
+
+  await prisma.$transaction([
+    prisma.videoProject.updateMany({ where: { sourceAssetId: asset.id }, data: { sourceAssetId: null } }),
+    prisma.videoAsset.delete({ where: { id: asset.id } }),
+  ]);
+
+  await audit({
+    adminId: auth.admin.id,
+    action: AuditActions.DELETED_VIDEO_ASSET,
+    resourceType: "VideoAsset",
+    resourceId: asset.id,
+    before: { role: asset.role, filename: asset.filename, error: asset.error },
+    ip: clientIp(req),
+  });
+
+  return ok({ deleted: true });
+});

@@ -162,6 +162,42 @@ export const subtitleStyleSchema = z.object({
 
 export type SubtitleStyle = z.infer<typeof subtitleStyleSchema>;
 
+/**
+ * Ready-made looks. Selecting a preset must actually change how captions render,
+ * so a patch that names one starts from these values (see applyEditPatch) rather
+ * than only relabelling the current style.
+ */
+export const SUBTITLE_PRESET_STYLES: Record<SubtitlePreset, Partial<SubtitleStyle>> = {
+  "clean-white": {
+    fontSizePct: 5.2, bold: true, textColor: "#FFFFFF", outlineColor: "#000000", outlineWidth: 2,
+    backgroundOpacity: 0, shadow: 0, position: "lower-center", uppercase: false, wordHighlight: false,
+  },
+  "bold-social": {
+    fontSizePct: 7, bold: true, textColor: "#FFFFFF", outlineColor: "#000000", outlineWidth: 3.5,
+    backgroundOpacity: 0, shadow: 1, position: "lower-center", uppercase: true, wordHighlight: false,
+  },
+  minimal: {
+    fontSizePct: 4.2, bold: false, textColor: "#FFFFFF", outlineColor: "#000000", outlineWidth: 1,
+    backgroundOpacity: 0, shadow: 0, position: "bottom", uppercase: false, wordHighlight: false,
+  },
+  "high-contrast": {
+    fontSizePct: 5.5, bold: true, textColor: "#FFFFFF", backgroundColor: "#000000", backgroundOpacity: 0.85,
+    outlineWidth: 0, shadow: 0, position: "lower-center", uppercase: false, wordHighlight: false,
+  },
+  creator: {
+    fontSizePct: 6.5, bold: true, textColor: "#FFFFFF", outlineColor: "#111111", outlineWidth: 3,
+    shadow: 2, backgroundOpacity: 0, position: "middle", uppercase: true, wordHighlight: false,
+  },
+  "highlighted-words": {
+    fontSizePct: 6.5, bold: true, textColor: "#FFFFFF", outlineColor: "#000000", outlineWidth: 3,
+    backgroundOpacity: 0, position: "lower-center", wordHighlight: true, wordHighlightColor: "#FFD400", uppercase: true,
+  },
+  professional: {
+    fontSizePct: 4.6, bold: false, textColor: "#FFFFFF", backgroundColor: "#1A1A1A", backgroundOpacity: 0.7,
+    outlineWidth: 0, shadow: 0, position: "bottom", uppercase: false, wordHighlight: false,
+  },
+};
+
 export const subtitlesSchema = z.object({
   /** SubtitleTrack id to render. Null renders none. */
   trackId: z.string().nullable().default(null),
@@ -193,6 +229,24 @@ export function defaultEditParams(): EditParams {
  * model cannot half-specify a track and leave a nonsensical combination behind.
  * Anything the patch does not mention is preserved exactly.
  */
+/**
+ * Merge a subtitle-style patch.
+ *
+ * Naming a different preset applies that preset's whole look, then anything the
+ * patch says explicitly on top. Without this a preset button would change only
+ * the stored preset name and leave every visual field at its previous value —
+ * the control would appear to work and render identically.
+ */
+export function mergeSubtitleStyle(current: SubtitleStyle, patch?: Record<string, unknown>): SubtitleStyle {
+  if (!patch) return current;
+  const nextPreset = patch.preset as SubtitlePreset | undefined;
+  const base =
+    nextPreset && nextPreset !== current.preset
+      ? { ...current, ...SUBTITLE_PRESET_STYLES[nextPreset], preset: nextPreset }
+      : current;
+  return subtitleStyleSchema.parse({ ...base, ...patch });
+}
+
 export function applyEditPatch(current: EditParams, patch: unknown): EditParams {
   const p = (patch ?? {}) as Record<string, unknown>;
   const merged: Record<string, unknown> = {
@@ -207,10 +261,7 @@ export function applyEditPatch(current: EditParams, patch: unknown): EditParams 
     subtitles: {
       ...current.subtitles,
       ...((p.subtitles as object) ?? {}),
-      style: {
-        ...current.subtitles.style,
-        ...(((p.subtitles as { style?: object })?.style as object) ?? {}),
-      },
+      style: mergeSubtitleStyle(current.subtitles.style, (p.subtitles as { style?: Record<string, unknown> })?.style),
     },
   };
   return editParamsSchema.parse(merged);

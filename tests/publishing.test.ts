@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Job } from "@prisma/client";
 import {
   buildContainerParams,
   describePublishError,
@@ -10,6 +11,10 @@ import {
   parseContainerStatus,
   parsePublishingLimit,
   publishRunKey,
+  runPublishJob,
+  EARLY_WAKE_MARGIN_MS,
+  POLL_DELAY_MS,
+  PUBLISH_PASS_LEASE_MS,
   PUBLISH_QUOTA_ERROR_CODE,
   QUOTA_RETRY_DELAY_MS,
   RATE_LIMIT_RETRY_DELAY_MS,
@@ -23,6 +28,139 @@ import {
 import { insightMetricsFor } from "@/lib/meta/media";
 import { contentDispositionFor } from "@/lib/resources";
 import { MetaApiError } from "@/lib/meta/client";
+import { jobTimeoutMs, processJob, registerHandler } from "@/lib/queue";
+
+type Row = Record<string, unknown>;
+
+/**
+ * The publish state machine is bookkeeping between two tables plus a handful of
+ * Graph calls, so it runs here against in-memory stand-ins for both — no
+ * database, no network. The database's clock is a value a test sets, because
+ * disagreeing with it is exactly what used to strand scheduled posts.
+ */
+const { store, prismaMock, graphMock, resolveAccessMock } = vi.hoisted(() => {
+  const store = {
+    publishJobs: [] as Row[],
+    jobs: [] as Row[],
+    seq: 0,
+    dbNow: Date.now(),
+    /** What the mocked Graph API answers this test. */
+    graph: (async () => ({})) as (args: { path: string; method?: string }) => Promise<unknown>,
+  };
+
+  const same = (a: unknown, b: unknown) => (a instanceof Date && b instanceof Date ? a.getTime() === b.getTime() : a === b);
+
+  const matches = (row: Row, where: Row = {}): boolean =>
+    Object.entries(where).every(([key, cond]) => {
+      if (key === "OR") return (cond as Row[]).some((c) => matches(row, c));
+      const value = row[key];
+      if (cond !== null && typeof cond === "object" && !(cond instanceof Date)) {
+        const c = cond as Record<string, unknown>;
+        if ("not" in c) return !same(value, c.not);
+        if ("notIn" in c) return !(c.notIn as unknown[]).includes(value);
+        if ("in" in c) return (c.in as unknown[]).includes(value);
+        if ("lt" in c) return value instanceof Date && value.getTime() < (c.lt as Date).getTime();
+        return false;
+      }
+      return same(value, cond);
+    });
+
+  const table = (rows: Row[], make: (data: Row) => Row, decorate?: (row: Row, args: Row) => Row) => ({
+    create: async ({ data }: { data: Row }) => {
+      const row = make(data);
+      rows.push(row);
+      return { ...row };
+    },
+    findUnique: async ({ where, ...args }: { where: Row } & Row) => {
+      const row = rows.find((r) => matches(r, where));
+      if (!row) return null;
+      return decorate ? decorate({ ...row }, args) : { ...row };
+    },
+    update: async ({ where, data }: { where: Row; data: Row }) => {
+      const row = rows.find((r) => matches(r, where));
+      if (!row) throw new Error("record not found");
+      Object.assign(row, data);
+      return { ...row };
+    },
+    updateMany: async ({ where, data }: { where: Row; data: Row }) => {
+      const hit = rows.filter((r) => matches(r, where));
+      for (const row of hit) Object.assign(row, data);
+      return { count: hit.length };
+    },
+    upsert: async () => ({}),
+  });
+
+  return {
+    store,
+    graphMock: vi.fn(async (args: { path: string; method?: string }) => store.graph(args)),
+    resolveAccessMock: vi.fn(async () => ({ host: "graph.instagram.com", accessToken: "tok" })),
+    prismaMock: {
+      publishJob: table(
+        store.publishJobs,
+        (data) => ({ id: `pj${++store.seq}`, attempts: 0, childContainerIds: [], ...data }),
+        (row, args) => ((args.include as Row | undefined)?.account ? { ...row, account: { id: "acc1", igUserId: "ig1", isDemo: false } } : row),
+      ),
+      job: table(store.jobs, (data) => {
+        if (data.idempotencyKey && store.jobs.some((j) => j.idempotencyKey === data.idempotencyKey)) {
+          throw Object.assign(new Error("Unique constraint failed on idempotencyKey"), { code: "P2002" });
+        }
+        return { id: `q${++store.seq}`, status: "PENDING", attempts: 0, maxAttempts: 5, lockedBy: null, ...data };
+      }),
+      contentItem: { upsert: async () => ({}) },
+      $queryRaw: async () => [{ now: new Date(store.dbNow) }],
+    },
+  };
+});
+
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
+
+vi.mock("@/lib/meta/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/meta/client")>()),
+  graphCall: graphMock,
+}));
+
+vi.mock("@/lib/meta/tokens", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/meta/tokens")>()),
+  resolveAccess: resolveAccessMock,
+}));
+
+beforeEach(() => {
+  store.publishJobs.length = 0;
+  store.jobs.length = 0;
+  store.seq = 0;
+  store.dbNow = Date.parse("2026-10-01T09:00:00Z");
+  store.graph = async () => ({});
+  graphMock.mockClear();
+});
+
+function seedPublishJob(row: Row = {}): Row {
+  const seeded: Row = {
+    id: `pj-${store.publishJobs.length + 1}`,
+    accountId: "acc1",
+    mediaType: "IMAGE",
+    caption: null,
+    items: [{ url: "https://cdn.example.com/a.jpg", kind: "IMAGE" }],
+    shareToFeed: null,
+    coverUrl: null,
+    status: "SCHEDULED",
+    scheduledAt: new Date(store.dbNow - 1000),
+    startedAt: null,
+    publishedAt: null,
+    containerId: null,
+    childContainerIds: [],
+    publishedMediaId: null,
+    permalink: null,
+    attempts: 0,
+    lastError: null,
+    ...row,
+  };
+  store.publishJobs.push(seeded);
+  return seeded;
+}
+
+const keyOf = (job: Row, now: number) => wakeKey({ id: job.id as string, scheduledAt: job.scheduledAt as Date }, now);
+const queuedPasses = () => store.jobs.filter((j) => j.type === "publish.run");
+const pendingPasses = () => queuedPasses().filter((j) => j.status === "PENDING");
 
 /**
  * Publishing maps onto Meta's container → status → media_publish protocol.
@@ -289,5 +427,292 @@ describe("contentDispositionFor", () => {
   it("falls back to a name when there is none, and supports attachment", () => {
     expect(contentDispositionFor("   ")).toBe(`inline; filename="file"; filename*=UTF-8''file`);
     expect(contentDispositionFor("a.pdf", "attachment")).toMatch(/^attachment; /);
+  });
+});
+
+describe("waking a scheduled post early", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("parks the next pass on the database's clock, never on this process's", async () => {
+    // The database decides when a queue row runs. "Two minutes ahead" measured on
+    // a worker clock that is two minutes behind is no wait at all: the row is
+    // runnable again immediately and lands in the same minute bucket the key is
+    // derived from, enqueue drops the re-queue as a duplicate — nothing queued,
+    // and the post sits in SCHEDULED forever.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T08:00:00Z"));
+    store.dbNow = Date.parse("2026-10-01T08:02:00Z");
+    const job = seedPublishJob({ scheduledAt: new Date("2026-10-01T08:03:00Z") });
+
+    await runPublishJob(job.id as string);
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(queuedPasses()).toHaveLength(1);
+    expect((queuedPasses()[0]!.runAt as Date).getTime()).toBe(store.dbNow + EARLY_WAKE_MARGIN_MS);
+    expect(queuedPasses()[0]!.idempotencyKey).toBe(keyOf(job, store.dbNow));
+    expect(queuedPasses()[0]!.idempotencyKey).not.toBe(keyOf(job, Date.now()));
+  });
+
+  it("re-queues under a fresh key when the key it derives is already spent", async () => {
+    // The row this pass is running under can hold that very key. Dropping the
+    // enqueue as a duplicate then leaves nothing queued at all.
+    const job = seedPublishJob({ scheduledAt: new Date(store.dbNow + 3 * 60_000) });
+    const key = keyOf(job, store.dbNow);
+    store.jobs.push({ id: "q-spent", type: "publish.run", idempotencyKey: key, status: "COMPLETED", attempts: 1, maxAttempts: 3 });
+
+    await runPublishJob(job.id as string);
+
+    expect(pendingPasses()).toHaveLength(1);
+    expect(pendingPasses()[0]!.idempotencyKey).not.toBe(key);
+  });
+
+  it("leaves the waking to a pass that really is still queued", async () => {
+    const job = seedPublishJob({ scheduledAt: new Date(store.dbNow + 3 * 60_000) });
+    const key = keyOf(job, store.dbNow);
+    store.jobs.push({ id: "q-live", type: "publish.run", idempotencyKey: key, status: "PENDING", attempts: 0, maxAttempts: 3 });
+
+    await runPublishJob(job.id as string);
+
+    expect(pendingPasses()).toHaveLength(1); // the queued one, not a second copy
+    expect(pendingPasses()[0]!.id).toBe("q-live");
+  });
+});
+
+describe("one publish pass at a time", () => {
+  it("does not start a second pass while another one holds the job", async () => {
+    const heldSince = new Date(store.dbNow - 60_000);
+    const job = seedPublishJob({ status: "PROCESSING", startedAt: heldSince });
+
+    await runPublishJob(job.id as string);
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(job.startedAt).toBe(heldSince); // the holder's fence is untouched
+    expect(queuedPasses()).toHaveLength(1);
+    expect((queuedPasses()[0]!.runAt as Date).getTime()).toBe(heldSince.getTime() + PUBLISH_PASS_LEASE_MS);
+  });
+
+  it("takes the job over once the holder's lease has lapsed", async () => {
+    const job = seedPublishJob({ status: "PROCESSING", startedAt: new Date(store.dbNow - PUBLISH_PASS_LEASE_MS - 1000), containerId: "c1" });
+    store.graph = async ({ path, method }) => (method === "POST" && path.endsWith("/media_publish") ? { id: "m1" } : { status_code: "FINISHED" });
+
+    await runPublishJob(job.id as string);
+
+    expect(job.status).toBe("PUBLISHED");
+    expect(job.publishedMediaId).toBe("m1");
+  });
+
+  it("never publishes behind the pass that replaced it", async () => {
+    // The queue's timeout abandons the await but cannot stop the handler, so an
+    // abandoned pass runs on while the job is retried. Reaching media_publish
+    // after a later pass took the job over is the second Instagram post.
+    const job = seedPublishJob({ containerId: "c1" });
+    let published = 0;
+    store.graph = async ({ path, method }) => {
+      if (method === "POST" && path.endsWith("/media_publish")) {
+        published++;
+        return { id: "m1" };
+      }
+      job.startedAt = new Date(store.dbNow + 5_000); // a later pass claims it mid-call
+      return { status_code: "FINISHED" };
+    };
+
+    await runPublishJob(job.id as string);
+
+    expect(published).toBe(0);
+    expect(job.status).toBe("PROCESSING"); // left to its new owner, not failed
+  });
+
+  it("stops before publishing once the queue has abandoned the pass", async () => {
+    const controller = new AbortController();
+    const job = seedPublishJob({ containerId: "c1" });
+    let published = 0;
+    store.graph = async ({ path, method }) => {
+      if (method === "POST" && path.endsWith("/media_publish")) {
+        published++;
+        return { id: "m1" };
+      }
+      controller.abort(); // the handler's budget expires while Meta is answering
+      return { status_code: "FINISHED" };
+    };
+
+    await runPublishJob(job.id as string, controller.signal);
+
+    expect(published).toBe(0);
+    expect(job.status).not.toBe("FAILED"); // the retry decides, not the abandoned pass
+  });
+
+  it("hands the job to a fresh pass when the queue abandons this one", async () => {
+    // An abandoned pass is the one loss with no successor: the queue left its
+    // row RUNNING only until the handler returns, and then records that clean
+    // return as COMPLETED, so recovery never revives it. Stopping here without
+    // queueing anything strands the post in PROCESSING — a status neither retry
+    // nor delete accepts, so nothing can ever move it again.
+    const controller = new AbortController();
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = async () => {
+      controller.abort();
+      return { status_code: "FINISHED" };
+    };
+
+    await runPublishJob(job.id as string, controller.signal);
+
+    expect(job.startedAt).toBeNull(); // the lease is free for whoever runs next
+    expect(pendingPasses()).toHaveLength(1);
+    expect((pendingPasses()[0]!.runAt as Date).getTime()).toBeLessThanOrEqual(store.dbNow);
+
+    store.graph = async ({ path, method }) => (method === "POST" && path.endsWith("/media_publish") ? { id: "m1" } : { status_code: "FINISHED" });
+    await runPublishJob(job.id as string);
+    expect(job.status).toBe("PUBLISHED"); // the post still goes out, exactly once
+  });
+
+  it("releases the job between passes so its own next poll can claim it", async () => {
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = async () => ({ status_code: "IN_PROGRESS" });
+
+    await runPublishJob(job.id as string);
+
+    expect(job.startedAt).toBeNull();
+    expect(job.attempts).toBe(1);
+    expect(queuedPasses()).toHaveLength(1);
+    expect((queuedPasses()[0]!.runAt as Date).getTime()).toBeGreaterThanOrEqual(Date.now() + POLL_DELAY_MS - 50);
+
+    store.graph = async ({ path, method }) => (method === "POST" && path.endsWith("/media_publish") ? { id: "m1" } : { status_code: "FINISHED" });
+    await runPublishJob(job.id as string);
+    expect(job.status).toBe("PUBLISHED");
+  });
+});
+
+describe("a handler that outran its time budget", () => {
+  const queueJob = (row: Row = {}): Row => {
+    const seeded: Row = {
+      id: "q1",
+      type: "publish.run",
+      payload: {},
+      lane: "default",
+      status: "RUNNING",
+      priority: 5,
+      attempts: 1,
+      maxAttempts: 5,
+      runAt: new Date(store.dbNow - 1000),
+      lockedAt: new Date(store.dbNow),
+      lockedBy: "w1",
+      leaseExpiresAt: new Date(store.dbNow + 300_000),
+      ...row,
+    };
+    store.jobs.push(seeded);
+    return seeded;
+  };
+
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps its lease instead of being retried underneath the running handler", async () => {
+    // Failing it here released the lock and put the job back seconds later, on
+    // top of a handler still talking to Instagram — the double publish.
+    vi.useFakeTimers();
+    let finish: (() => void) | undefined;
+    const hung = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let handlerSignal: AbortSignal | undefined;
+    registerHandler("publish.run", async (_payload, _job, signal) => {
+      handlerSignal = signal;
+      await hung;
+    });
+    const row = queueJob();
+    const runAt = row.runAt;
+
+    const pass = processJob(row as unknown as Job, "w1");
+    await vi.advanceTimersByTimeAsync(jobTimeoutMs("default") + 10);
+    await pass;
+
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(row.status).toBe("RUNNING"); // still leased: no other worker can claim it
+    expect(row.lockedBy).toBe("w1");
+    expect(row.runAt).toBe(runAt); // and no retry was scheduled
+
+    finish?.();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(row.status).toBe("COMPLETED"); // its real outcome, once it came back
+  });
+
+  it("still fails a handler that genuinely returns an error", async () => {
+    registerHandler("publish.run", async () => {
+      throw new Error("boom");
+    });
+    const row = queueJob();
+
+    await processJob(row as unknown as Job, "w1");
+
+    expect(row.status).toBe("FAILED");
+    expect(row.lockedBy).toBeNull();
+    expect((row.runAt as Date).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("reaches work that was called without a signal of its own", async () => {
+    // queue/handlers.ts calls runPublishJob(id) and passes nothing else, so the
+    // abort has to arrive through the running job's context — otherwise the pass
+    // the queue walked away from carries on and publishes behind its retry.
+    vi.useFakeTimers();
+    const job = seedPublishJob({ containerId: "c1" });
+    let published = 0;
+    let answerMeta: (() => void) | undefined;
+    const metaSilence = new Promise<void>((resolve) => {
+      answerMeta = resolve;
+    });
+    store.graph = async ({ path, method }) => {
+      if (method === "POST" && path.endsWith("/media_publish")) {
+        published++;
+        return { id: "m1" };
+      }
+      await metaSilence; // Meta says nothing until the budget is long gone
+      return { status_code: "FINISHED" };
+    };
+    let pass: Promise<void> | undefined;
+    registerHandler("publish.run", async (payload) => {
+      pass = runPublishJob(String(payload.publishJobId));
+      await pass;
+    });
+    const row = queueJob({ payload: { publishJobId: job.id } });
+
+    const run = processJob(row as unknown as Job, "w1");
+    await vi.advanceTimersByTimeAsync(jobTimeoutMs("default") + 10);
+    await run;
+
+    answerMeta?.();
+    await pass;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(published).toBe(0);
+    expect(job.status).toBe("PROCESSING"); // left for the retry, not failed or published
+
+    // The queue row is settled the instant the abandoned handler returns, so
+    // recoverStaleJobs will never revive it: the pass the stopping pass queued
+    // is the only thing left that can finish this post.
+    expect(row.status).toBe("COMPLETED");
+    expect(job.startedAt).toBeNull();
+    expect(pendingPasses()).toHaveLength(1);
+  });
+
+  it("drops a late outcome when the job has already been given to another worker", async () => {
+    vi.useFakeTimers();
+    let finish: (() => void) | undefined;
+    const hung = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    registerHandler("publish.run", async () => {
+      await hung;
+    });
+    const row = queueJob();
+
+    const pass = processJob(row as unknown as Job, "w1");
+    await vi.advanceTimersByTimeAsync(jobTimeoutMs("default") + 10);
+    await pass;
+
+    // recovery handed the job on while the abandoned handler was still running
+    Object.assign(row, { status: "RUNNING", lockedBy: "w2" });
+    finish?.();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(row.lockedBy).toBe("w2");
+    expect(row.status).toBe("RUNNING"); // the abandoned pass wrote nothing
   });
 });

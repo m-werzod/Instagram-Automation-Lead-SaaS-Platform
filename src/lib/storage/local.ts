@@ -1,13 +1,15 @@
-import { createReadStream } from "node:fs";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import {
   assertSafeKey,
   localStorageRoot,
   StorageError,
+  UploadTooLargeError,
   type PutOptions,
   type PutResult,
+  type PutStreamOptions,
   type StorageDriver,
 } from "./index";
 
@@ -47,6 +49,51 @@ export class LocalDriver implements StorageDriver {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     await writeFile(full, buf);
     return { key, publicUrl: null, sizeBytes: buf.byteLength };
+  }
+
+  /**
+   * Stream to a sibling `.part` file and rename only once the whole body has
+   * arrived. A rename within one filesystem is atomic, so a reader can never
+   * observe a half-written object, and an abort leaves nothing but the
+   * discarded temporary — which this deletes.
+   */
+  async putStream(key: string, body: ReadableStream<Uint8Array>, opts: PutStreamOptions): Promise<PutResult> {
+    const full = this.pathFor(key);
+    await mkdir(dirname(full), { recursive: true });
+    const partial = `${full}.part`;
+    const out = createWriteStream(partial);
+
+    let written = 0;
+    const reader = body.getReader();
+    try {
+      for (;;) {
+        if (opts.signal?.aborted) throw new StorageError("Upload cancelled");
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        written += value.byteLength;
+        // Stop the moment the limit is passed: the remaining bytes are never
+        // read, so an oversized upload costs one chunk of memory, not a file.
+        if (written > opts.maxBytes) throw new UploadTooLargeError(opts.maxBytes);
+        if (!out.write(value)) {
+          await new Promise<void>((resolve, reject) => {
+            out.once("drain", resolve);
+            out.once("error", reject);
+          });
+        }
+      }
+      await new Promise<void>((resolve, reject) => {
+        out.end(() => resolve());
+        out.once("error", reject);
+      });
+      await rename(partial, full);
+      return { key, publicUrl: null, sizeBytes: written };
+    } catch (err) {
+      out.destroy();
+      await reader.cancel().catch(() => {});
+      await rm(partial, { force: true }).catch(() => {});
+      throw err;
+    }
   }
 
   async read(key: string, range?: { start: number; end?: number }): Promise<ReadableStream<Uint8Array>> {

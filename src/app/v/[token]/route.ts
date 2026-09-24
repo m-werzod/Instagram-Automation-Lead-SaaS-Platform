@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { parseByteRange } from "@/lib/http/range";
 import { getStorage, verifyAssetToken } from "@/lib/storage";
 
 /**
@@ -45,19 +46,18 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
     "content-disposition": "inline",
   });
 
-  // Meta's fetcher issues range requests for large media.
-  const range = req.headers.get("range");
-  if (range) {
-    const m = /bytes=(\d*)-(\d*)/.exec(range);
-    const start = m?.[1] ? Number(m[1]) : 0;
-    const end = m?.[2] ? Number(m[2]) : total - 1;
-    if (!Number.isFinite(start) || start >= total) {
-      return new NextResponse(null, { status: 416, headers: { "content-range": `bytes */${total}` } });
-    }
-    const clampedEnd = Math.min(end, total - 1);
-    const stream = await storage.read(asset.storageKey, { start, end: clampedEnd });
-    headers.set("content-range", `bytes ${start}-${clampedEnd}/${total}`);
-    headers.set("content-length", String(clampedEnd - start + 1));
+  // Meta's fetcher issues range requests for large media, suffix ranges
+  // ("bytes=-500", the LAST 500 bytes) among them — answering those with the
+  // head of the file hands it corrupt media it has no way to detect.
+  const parsed = parseByteRange(req.headers.get("range"), total);
+  if (parsed.kind === "unsatisfiable") {
+    return new NextResponse(null, { status: 416, headers: { "content-range": `bytes */${total}` } });
+  }
+  if (parsed.kind === "ok") {
+    const { start, end } = parsed.range;
+    const stream = await storage.read(asset.storageKey, { start, end });
+    headers.set("content-range", `bytes ${start}-${end}/${total}`);
+    headers.set("content-length", String(end - start + 1));
     return new NextResponse(stream as unknown as BodyInit, { status: 206, headers });
   }
 

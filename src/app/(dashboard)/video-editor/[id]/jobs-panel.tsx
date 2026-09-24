@@ -29,7 +29,9 @@ export function JobsPanel({ state, onReload }: { state: EditorState; onReload: (
     setBusy(true);
     try {
       await api("/api/video/jobs", { method: "POST", json: { projectId: state.project.id, kind } });
-      toast.success(kind === "PREVIEW" ? t.preview : t.exportJob);
+      // Queued is all that happened: the render itself starts when a worker
+      // picks the job up, which is never guaranteed to be now.
+      toast.message(t.queuedToast, { description: workerOffline ? t.workerOffline : t.queuedHint });
       await onReload();
     } catch {
       /* reported */
@@ -47,7 +49,18 @@ export function JobsPanel({ state, onReload }: { state: EditorState; onReload: (
     }
   }
 
-  const preview = state.project.assets.find((a) => a.role === "PREVIEW");
+  // `updatedAt` is part of both payload rows but is not declared on the shared
+  // row types, which this change does not own.
+  const projectUpdatedAt = (state.project as { updatedAt?: string }).updatedAt;
+  const subtitles = state.project.params?.subtitles;
+  // Saving cue text writes the subtitle track, not the project, so the
+  // project's own timestamp misses the commonest edit there is once captions
+  // are burned into the picture. The render reads exactly this track.
+  const burnedInTrack =
+    subtitles?.burnIn && subtitles.trackId ? state.project.subtitle.find((tr) => tr.id === subtitles.trackId) : undefined;
+  const editedAt = lastEditAt(projectUpdatedAt, (burnedInTrack as { updatedAt?: string } | undefined)?.updatedAt);
+  const preview = state.project.assets.find((a) => a.role === "PREVIEW" && a.status === "READY");
+  const previewStale = preview ? isPreviewStale(previewRenderedAt(preview.id, preview.createdAt, jobs), editedAt) : false;
 
   return (
     <div className="space-y-4">
@@ -74,7 +87,15 @@ export function JobsPanel({ state, onReload }: { state: EditorState; onReload: (
           )}
 
           {preview && (
-            <video src={`/api/video/assets/${preview.id}/stream`} controls className="w-full rounded-md bg-black" preload="metadata" />
+            <>
+              <video src={`/api/video/assets/${preview.id}/stream`} controls className="w-full rounded-md bg-black" preload="metadata" />
+              {previewStale && (
+                <p className="flex items-start gap-1.5 text-xs text-(--color-fg-muted)">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-(--color-warn)" />
+                  {d.videoEditor.unsavedPreview}
+                </p>
+              )}
+            </>
           )}
         </div>
       </Card>
@@ -130,6 +151,57 @@ export function JobsPanel({ state, onReload }: { state: EditorState; onReload: (
       </Card>
     </div>
   );
+}
+
+/**
+ * When the parameters behind a preview were read.
+ *
+ * The asset row is written only after FFmpeg finishes, so its own timestamp is
+ * later than the settings it was built from: an edit made while the render was
+ * running would look older than the file it invalidated. The job that produced
+ * it read the parameters when it started, so that is the honest reference; an
+ * older preview whose job has scrolled out of the list falls back to the asset.
+ */
+export function previewRenderedAt(previewId: string, previewCreatedAt: string, jobs: VideoJobRow[]): string {
+  const job = jobs.find((j) => j.outputAssetId === previewId);
+  return job?.startedAt ?? job?.createdAt ?? previewCreatedAt;
+}
+
+/**
+ * The most recent of several edit timestamps, ignoring missing and unparsable
+ * ones so a bad value can never masquerade as "just now".
+ *
+ * A preview is out of date with respect to more than the project row: saving
+ * subtitle lines touches only the track, and those words are in the picture
+ * whenever they are burned in.
+ */
+export function lastEditAt(...stamps: Array<string | undefined | null>): string | undefined {
+  let best: { at: number; raw: string } | undefined;
+  for (const raw of stamps) {
+    if (!raw) continue;
+    const at = Date.parse(raw);
+    if (!Number.isFinite(at)) continue;
+    if (!best || at > best.at) best = { at, raw };
+  }
+  return best?.raw;
+}
+
+/**
+ * A preview shows one specific set of parameters. Once the project is edited
+ * again it is a picture of settings that are no longer in force, and showing it
+ * unlabelled would present a stale render as the current one.
+ *
+ * The comparison is deliberately one-sided: with no project timestamp, or an
+ * unparsable one, nothing is claimed either way. It can also flag a preview that
+ * is still accurate when an unrelated write (a finished export) touched the
+ * project — over-warning, never under-warning.
+ */
+export function isPreviewStale(previewCreatedAt: string, projectUpdatedAt: string | undefined): boolean {
+  if (!projectUpdatedAt) return false;
+  const rendered = Date.parse(previewCreatedAt);
+  const edited = Date.parse(projectUpdatedAt);
+  if (!Number.isFinite(rendered) || !Number.isFinite(edited)) return false;
+  return edited > rendered;
 }
 
 function JobIcon({ status }: { status: VideoJobRow["status"] }) {

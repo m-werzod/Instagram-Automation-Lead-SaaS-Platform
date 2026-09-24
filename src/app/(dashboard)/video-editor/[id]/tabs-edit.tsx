@@ -147,7 +147,7 @@ export function EditTab({ state, onPatch }: TabProps) {
                 variant={params.look.preset === preset ? "default" : "secondary"}
                 onClick={() => void onPatch({ look: { preset } })}
               >
-                {preset}
+                {t.looks[preset]}
               </Button>
             ))}
           </div>

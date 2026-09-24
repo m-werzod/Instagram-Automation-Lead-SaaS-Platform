@@ -16,7 +16,7 @@ import {
   resolveTargetSize,
 } from "./render";
 import { editParamsSchema, type EditParams } from "./params";
-import { buildAssFile, normalizeCues, type SubtitleCue } from "./subtitles";
+import { buildAssFile, normalizeCues, retimeCues, type SubtitleCue } from "./subtitles";
 import { subtitleStyleSchema } from "./params";
 import { transcribeAudio, SttUnavailableError } from "./stt";
 import { buildEditingPlan, measureSample, observeSample } from "./sample";
@@ -45,6 +45,15 @@ export interface EnqueueVideoJobInput {
 }
 
 export async function enqueueVideoJob(input: EnqueueVideoJobInput): Promise<VideoJob> {
+  // PROBE and SAMPLE_ANALYZE key their work off the asset / analysis id, so the
+  // same request arriving twice is ordinary. The queue answers a duplicate key
+  // with null, which used to leave a VideoJob row QUEUED that nothing would ever
+  // run; hand back the job that already owns the key instead.
+  if (input.idempotencyKey) {
+    const owner = await videoJobForQueueKey(input.idempotencyKey);
+    if (owner) return owner;
+  }
+
   const job = await prisma.videoJob.create({
     data: {
       accountId: input.accountId,
@@ -56,16 +65,54 @@ export async function enqueueVideoJob(input: EnqueueVideoJobInput): Promise<Vide
     },
   });
 
-  const queued = await enqueue(
-    "video.process",
-    { videoJobId: job.id },
-    { idempotencyKey: input.idempotencyKey ?? `video:${job.id}`, maxAttempts: 3 },
-  );
+  const idempotencyKey = input.idempotencyKey ?? `video:${job.id}`;
+  const queued = await enqueue("video.process", { videoJobId: job.id }, { idempotencyKey, maxAttempts: 3 });
 
   if (queued) {
-    await prisma.videoJob.update({ where: { id: job.id }, data: { queueJobId: queued.id } });
+    return prisma.videoJob.update({ where: { id: job.id }, data: { queueJobId: queued.id } });
   }
-  return job;
+
+  // Lost the race with a concurrent identical request: that one's job is the
+  // real one, so drop the row we just made rather than keep a twin nothing runs.
+  const owner = await videoJobForQueueKey(idempotencyKey);
+  if (owner && owner.id !== job.id) {
+    await prisma.videoJob.delete({ where: { id: job.id } }).catch(() => {});
+    return owner;
+  }
+
+  // The key belongs to a queue entry no VideoJob owns any more, so this row can
+  // never be picked up. Say so instead of showing a job queued forever.
+  log.warn("video job could not be queued — its idempotency key is held by an orphaned queue entry", {
+    videoJobId: job.id,
+    kind: job.kind,
+    idempotencyKey,
+  });
+  return prisma.videoJob.update({
+    where: { id: job.id },
+    data: {
+      status: "FAILED",
+      error: "Identical work is already queued under the same key, and the job that owns it is gone. Try again once that queue entry has cleared.",
+      finishedAt: new Date(),
+    },
+  });
+}
+
+/** The VideoJob that owns the queue entry holding this idempotency key, if any. */
+async function videoJobForQueueKey(idempotencyKey: string): Promise<VideoJob | null> {
+  const queued = await prisma.job.findUnique({ where: { idempotencyKey }, select: { id: true, payload: true } });
+  if (!queued) return null;
+
+  // The queue entry names its VideoJob the instant it exists, while the reverse
+  // link (queueJobId) is only written a round-trip later — so a duplicate
+  // request landing inside that window has to resolve the owner through the
+  // payload, or it would mistake the winner of the race for an orphan.
+  const named = (queued.payload as { videoJobId?: unknown } | null)?.videoJobId;
+  if (typeof named === "string" && named) {
+    const owner = await prisma.videoJob.findUnique({ where: { id: named } });
+    if (owner) return owner;
+  }
+
+  return prisma.videoJob.findFirst({ where: { queueJobId: queued.id }, orderBy: { createdAt: "desc" } });
 }
 
 /** Mark a job cancelled; a running render notices at its next progress tick. */
@@ -153,11 +200,25 @@ async function prepareSubtitles(ws: Workspace, projectId: string, params: EditPa
   const track = await prisma.subtitleTrack.findFirst({ where: { id: trackId, projectId } });
   if (!track) return null;
 
-  const cues = normalizeCues((track.cues as unknown as SubtitleCue[]) ?? []);
+  const stored = normalizeCues((track.cues as unknown as SubtitleCue[]) ?? []);
+  if (stored.length === 0) return null;
+
+  // Cues are written against the source; the burn-in lands on the trimmed and
+  // speed-adjusted output, so they have to move with it.
+  const cues = retimeCues(stored, {
+    trimStartSec: params.video.trim?.startSec,
+    trimEndSec: params.video.trim?.endSec,
+    speed: params.video.speed,
+  });
   if (cues.length === 0) return null;
 
-  const stored = subtitleStyleSchema.safeParse(track.style ?? {});
-  const style = stored.success ? { ...stored.data, ...params.subtitles.style } : params.subtitles.style;
+  // The project's style is the operator's current choice and wins; the track's
+  // stored style only fills anything the project has not expressed.
+  const trackStyle = subtitleStyleSchema.safeParse(track.style ?? {});
+  const style = trackStyle.success
+    ? subtitleStyleSchema.parse({ ...trackStyle.data, ...params.subtitles.style })
+    : params.subtitles.style;
+
   const hasWordTimings = cues.some((c) => Array.isArray(c.words) && c.words.length > 0);
   const effective = { ...style, wordHighlight: style.wordHighlight && hasWordTimings };
 
@@ -422,10 +483,26 @@ export async function runVideoJob(videoJobId: string): Promise<void> {
   if (job.status === "CANCELLED") return;
   if (job.status === "DONE") return;
 
-  await prisma.videoJob.update({
-    where: { id: job.id },
-    data: { status: "RUNNING", startedAt: new Date(), progressPct: 0, error: null },
+  if (job.status === "RUNNING") {
+    // The queue only re-runs this handler after the previous attempt's lease
+    // lapsed, so a row still marked RUNNING means that attempt's process died.
+    log.warn("previous attempt of this video job died mid-run — restarting it", {
+      videoJobId,
+      kind: job.kind,
+      startedAt: job.startedAt,
+    });
+  }
+
+  // Compare-and-set, not a plain update: a cancel landing between the read above
+  // and this write must survive instead of being overwritten with RUNNING.
+  const claimed = await prisma.videoJob.updateMany({
+    where: { id: job.id, status: { in: ["QUEUED", "FAILED", "RUNNING"] } },
+    data: { status: "RUNNING", startedAt: new Date(), progressPct: 0, error: null, finishedAt: null },
   });
+  if (claimed.count === 0) {
+    log.info("video job changed status before this attempt could start — abandoning it", { videoJobId });
+    return;
+  }
 
   const controller = new AbortController();
   // A cancellation issued while FFmpeg runs must actually stop it.
@@ -489,6 +566,79 @@ export async function runVideoJob(videoJobId: string): Promise<void> {
   } finally {
     clearInterval(cancelWatch);
   }
+}
+
+/**
+ * Fail video jobs whose runner is gone.
+ *
+ * recoverStaleJobs reconciles the queue's own rows when a worker is killed, but
+ * nothing reconciles the VideoJob behind them: once the queue entry is
+ * COMPLETED, dead-lettered or cleaned away, a row left at QUEUED or RUNNING
+ * would sit there forever and the editor would show a progress bar that never
+ * moves. Meant for the periodic maintenance sweep.
+ *
+ * The timestamp only narrows the scan — whether the job is really abandoned is
+ * decided by the queue entry, so a render that legitimately takes an hour is
+ * never touched.
+ */
+export async function reconcileStalledVideoJobs(staleAfterMs = 15 * 60_000): Promise<number> {
+  const cutoff = new Date(Date.now() - Math.max(60_000, staleAfterMs));
+  const candidates = await prisma.videoJob.findMany({
+    where: { status: { in: ["QUEUED", "RUNNING"] }, updatedAt: { lt: cutoff } },
+    select: { id: true, status: true, queueJobId: true },
+    take: 200,
+  });
+  if (candidates.length === 0) return 0;
+
+  const queueJobIds = candidates.map((c) => c.queueJobId).filter((id): id is string => Boolean(id));
+  const queueJobs = queueJobIds.length
+    ? await prisma.job.findMany({
+        where: { id: { in: queueJobIds } },
+        select: { id: true, status: true, attempts: true, maxAttempts: true, lockedAt: true, leaseExpiresAt: true },
+      })
+    : [];
+
+  const now = Date.now();
+  // Same signal recoverStaleJobs uses, including its 5-minute fallback for rows
+  // claimed before leases existed.
+  const leaseHeld = (j: { lockedAt: Date | null; leaseExpiresAt: Date | null }): boolean =>
+    (j.leaseExpiresAt?.getTime() ?? (j.lockedAt ? j.lockedAt.getTime() + 5 * 60_000 : 0)) > now;
+
+  // Live means something will still run this: a waiting entry, a retry the queue
+  // has left (claimNextJob takes FAILED rows back until attempts run out), or an
+  // attempt whose worker still holds the lease. The one combination nothing can
+  // revive is a claim whose lease lapsed with no attempts left — recovery
+  // dead-letters that — so the VideoJob behind it really is abandoned.
+  const live = new Set(
+    queueJobs
+      .filter(
+        (j) =>
+          j.status === "PENDING" ||
+          (j.status === "FAILED" && j.attempts < j.maxAttempts) ||
+          (j.status === "RUNNING" && (leaseHeld(j) || j.attempts < j.maxAttempts)),
+      )
+      .map((j) => j.id),
+  );
+
+  let failed = 0;
+  for (const candidate of candidates) {
+    if (candidate.queueJobId && live.has(candidate.queueJobId)) continue;
+    const res = await prisma.videoJob.updateMany({
+      where: { id: candidate.id, status: candidate.status },
+      data: {
+        status: "FAILED",
+        error:
+          candidate.status === "RUNNING"
+            ? "The worker stopped before this job finished, and the queue is no longer retrying it. Start it again."
+            : "Nothing is left in the queue to run this job. Start it again.",
+        finishedAt: new Date(),
+      },
+    });
+    failed += res.count;
+  }
+
+  if (failed > 0) log.warn("failed video jobs whose queue entry is gone", { count: failed });
+  return failed;
 }
 
 function extOf(filename: string): string {

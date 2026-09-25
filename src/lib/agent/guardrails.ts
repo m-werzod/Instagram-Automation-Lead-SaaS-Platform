@@ -107,11 +107,22 @@ export function looksLikePromptLeak(reply: string, systemPrompt: string, window 
   if (/\b(system prompt|my instructions are|you are configured|i was instructed to)\b/i.test(reply)) return true;
   const hay = normalize(reply);
   const src = normalize(systemPrompt);
-  if (hay.length < window || src.length < window) return false;
+  if (hay.length === 0 || src.length === 0) return false;
+  if (src.length < window) {
+    // A prompt shorter than the window can be quoted IN FULL without ever
+    // filling that window — a complete leak the sliding check below would miss
+    // entirely. (Under ~25 characters a "prompt" is too generic for a match to
+    // mean anything, so that stays unflagged.)
+    return src.length >= 25 && hay.includes(src);
+  }
+  if (hay.length < window) return false;
   for (let i = 0; i + window <= src.length; i += 20) {
     if (hay.includes(src.slice(i, i + window))) return true;
   }
-  return false;
+  // The final window is only visited by the loop when the length happens to
+  // line up with the stride, so a reply quoting just the END of the prompt
+  // would otherwise slip through. Check that last window explicitly.
+  return hay.includes(src.slice(src.length - window));
 }
 
 function normalize(s: string): string {

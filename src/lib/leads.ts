@@ -58,7 +58,10 @@ export function normalizeLeadTags(tags: string[]): string[] {
   const normalized: string[] = [];
   const seen = new Set<string>();
   for (const raw of tags) {
-    const tag = raw.trim().replace(/\s+/g, " ").slice(0, MAX_LEAD_TAG_LENGTH);
+    // The second trim matters: slicing mid-word can leave a trailing space, and
+    // "vip " would then be stored as a tag distinct from "vip" — two board
+    // columns' worth of near-duplicates from one truncation.
+    const tag = raw.trim().replace(/\s+/g, " ").slice(0, MAX_LEAD_TAG_LENGTH).trim();
     if (!tag) continue;
     const key = tag.toLowerCase();
     if (seen.has(key)) continue;

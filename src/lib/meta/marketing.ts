@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { AppError, metaUnsupported } from "@/lib/errors";
 import { createLogger, errorFields } from "@/lib/logger";
 import { coreEnv } from "@/lib/env";
+import { cityRadiusBounds } from "@/lib/validation/campaign";
 import { graphCall, MetaApiError } from "./client";
 import { resolveAdsAccess } from "./tokens";
 import { Prisma } from "@prisma/client";
@@ -102,8 +103,13 @@ export function targetingProblem(t: CampaignTargeting | null | undefined): strin
   if (t.ageMin !== undefined && t.ageMax !== undefined && t.ageMin > t.ageMax) return "Minimum age is above maximum age";
   for (const c of t.cities ?? []) {
     if (c.radius !== undefined) {
-      const km = c.distanceUnit === "mile" ? c.radius * 1.609 : c.radius;
-      if (km < 17 || km > 80) return "City radius must be 17–80 km (10–50 miles)";
+      // Meta's limits are stated per unit — 10–50 miles OR 17–80 km — and those
+      // are not the same window (50 mi = 80.45 km). The radius is sent to Meta
+      // in the unit it was given, so the bound has to be checked in that unit:
+      // converting first rejected both of Meta's own documented mile bounds.
+      // Shared with the input schema so the two layers cannot drift apart.
+      const { min, max, unit } = cityRadiusBounds(c.distanceUnit);
+      if (c.radius < min || c.radius > max) return `City radius must be ${min}–${max} ${unit} (Meta allows 17–80 km / 10–50 miles)`;
     }
   }
   return null;
@@ -292,6 +298,17 @@ export async function createCampaignInMeta(account: InstagramAccount, campaign: 
   }
   if (config.needsPage && !account.fbPageId) {
     throw metaUnsupported("This campaign objective", "It requires a linked Facebook Page.", "Reconnect via Facebook Login.");
+  }
+  // Anything that is not a boost of an existing Instagram post is published as
+  // an object_story_spec, which Meta requires a page_id on. Checked HERE, before
+  // the first Graph call, because failing at the creative step would leave a real
+  // campaign and ad set behind in Ads Manager with nothing pointing at them.
+  if (!campaign.contentId && !account.fbPageId) {
+    throw metaUnsupported(
+      "This campaign",
+      "Its ad creative is published by a Facebook Page, and no Page is linked to this Instagram account.",
+      "Connect Facebook (for ads) including a Page, or pick an existing Instagram post to boost instead.",
+    );
   }
   if (!campaign.dailyBudgetCents && !campaign.lifetimeBudgetCents) {
     throw new AppError("VALIDATION", "Campaign needs a daily or lifetime budget");

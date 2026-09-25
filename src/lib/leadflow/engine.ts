@@ -506,15 +506,45 @@ async function completeSession(sessionId: string): Promise<StepOutcome> {
   };
 }
 
+/**
+ * Pure (unit-tested): does this message contain the trigger keyword?
+ *
+ * A trigger keyword is a CODE WORD ("START", "NARX"), which the UI says in so
+ * many words, so the match has to BEGIN at a word boundary. A plain substring
+ * test fires the whole question flow at someone who wrote "I restarted my
+ * phone", and the shorter the keyword the worse it gets — Uzbek "ha" (yes)
+ * sits inside "rahmat", "shahar", "muhandis". The END is deliberately NOT
+ * anchored: Uzbek and Russian glue suffixes onto the stem, so "narx" has to
+ * keep matching "narxi" and "narxlari".
+ *
+ * JavaScript's \b cannot be used for this. It is defined over [A-Za-z0-9_], so
+ * /\bнарх/ never matches Cyrillic at all and every non-Latin keyword would
+ * silently stop working; the boundary is tested against Unicode letters and
+ * digits instead.
+ */
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+export function keywordMatches(text: string, keyword: string): boolean {
+  const needle = keyword.trim().toLowerCase();
+  if (!needle) return false;
+  const haystack = text.toLowerCase();
+  for (let from = 0; ; ) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return false;
+    const before = at > 0 ? haystack[at - 1] : undefined;
+    if (before === undefined || !WORD_CHAR.test(before)) return true;
+    from = at + 1; // buried inside a longer word — keep looking for a real one
+  }
+}
+
 /** Find a flow whose trigger keywords match an inbound message. */
 export async function findFlowByKeyword(accountId: string, text: string): Promise<string | null> {
   const flows = await prisma.leadFlow.findMany({
     where: { accountId, enabled: true },
     select: { id: true, triggerKeywords: true },
   });
-  const lower = text.toLowerCase();
   for (const flow of flows) {
-    if (flow.triggerKeywords.some((k) => k && lower.includes(k.toLowerCase()))) return flow.id;
+    if (flow.triggerKeywords.some((k) => keywordMatches(text, k))) return flow.id;
   }
   return null;
 }

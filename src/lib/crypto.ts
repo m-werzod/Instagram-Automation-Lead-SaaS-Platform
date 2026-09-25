@@ -21,7 +21,10 @@ export function encryptSecret(plaintext: string): string {
 
 export function decryptSecret(blob: string): string {
   const raw = Buffer.from(blob, "base64");
-  if (raw.length < 29) throw new Error("Corrupt encrypted blob");
+  // 12-byte iv + 16-byte tag = 28; the ciphertext of an empty string is empty,
+  // so 28 is a perfectly valid blob. Demanding 29 made encryptSecret("") produce
+  // something decryptSecret refused — an un-decryptable value at rest.
+  if (raw.length < 28) throw new Error("Corrupt encrypted blob");
   const iv = raw.subarray(0, 12);
   const tag = raw.subarray(12, 28);
   const data = raw.subarray(28);

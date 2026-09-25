@@ -38,9 +38,21 @@ const PUBLIC_PREFIXES = [
 
 const SESSION_COOKIE = "ig_admin_session";
 
-/** Pure (unit-tested): does this pathname skip the session-cookie gate? */
+/**
+ * Pure (unit-tested): does this pathname skip the session-cookie gate?
+ *
+ * Matching is on whole path SEGMENTS, never a bare string prefix. An entry that
+ * already ends in "/" is a sub-tree ("/r/" covers "/r/file.pdf"); one that does
+ * not must match exactly or be followed by "/". Bare `startsWith` let an entry
+ * shadow a sibling that merely begins with the same letters — "/api/leads/public"
+ * also matched "/api/leads/publicXYZ", which Next.js routes to /api/leads/[id],
+ * so an unauthenticated request to a CRM lead skipped this gate (the route's own
+ * requireAdmin() still refused it, but the outer gate is supposed to hold).
+ */
 export function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
+  return PUBLIC_PREFIXES.some((p) =>
+    p.endsWith("/") ? pathname.startsWith(p) : pathname === p || pathname.startsWith(`${p}/`),
+  );
 }
 
 export function middleware(req: NextRequest) {

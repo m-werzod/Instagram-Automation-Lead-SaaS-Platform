@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { emailEnv, isEmailConfigured } from "@/lib/env";
 import { createLogger, errorFields } from "@/lib/logger";
 import { enqueue } from "@/lib/queue";
+import { normalizeLeadAnswers } from "@/lib/telegram";
 
 const log = createLogger("email");
 
@@ -86,6 +87,10 @@ function emailEnvSafe() {
 }
 
 export function renderLeadNotification(p: LeadNotificationPayload): { text: string; html: string } {
+  // Stored payloads are JSON written by several pipelines; normalize before
+  // rendering so a lead-ad shape (or a stray non-string value) cannot empty the
+  // Answers section or throw halfway through an SMTP send.
+  const answers = normalizeLeadAnswers(p.answers);
   const lines = [
     "New Instagram Lead",
     "",
@@ -97,7 +102,7 @@ export function renderLeadNotification(p: LeadNotificationPayload): { text: stri
     `Content: ${p.contentCaption ?? "—"}`,
     "",
     "Answers:",
-    ...p.answers.map((a) => `  ${a.question} → ${a.answer}`),
+    ...answers.map((a) => `  ${a.question} → ${a.answer}`),
     "",
     `Source: ${p.source}`,
     `Timestamp: ${p.submittedAt}`,
@@ -119,10 +124,10 @@ export function renderLeadNotification(p: LeadNotificationPayload): { text: stri
       ${rows("Timestamp", p.submittedAt)}
     </table>
     ${
-      p.answers.length > 0
+      answers.length > 0
         ? `<h3 style="margin:16px 0 8px">Answers</h3>
     <table style="border-collapse:collapse;font-size:14px">
-      ${p.answers.map((a) => rows(a.question, a.answer)).join("\n")}
+      ${answers.map((a) => rows(a.question, a.answer)).join("\n")}
     </table>`
         : ""
     }
@@ -215,7 +220,10 @@ export async function notifyLeadSubmitted(lead: Lead, account: InstagramAccount)
     lead.campaignId ? prisma.campaign.findUnique({ where: { id: lead.campaignId } }) : null,
     lead.contentId ? prisma.contentItem.findUnique({ where: { id: lead.contentId } }) : null,
   ]);
-  const answers = Array.isArray(lead.answers) ? (lead.answers as Array<{ question: string; answer: string }>) : [];
+  // Lead.answers holds a plain array (flow / landing page) OR { leadgenId, items }
+  // (lead ads). Reading only the array form silently dropped every Instant Form
+  // answer from the email notification.
+  const answers = normalizeLeadAnswers(lead.answers);
   await queueLeadNotification({
     leadId: lead.id,
     accountUsername: account.username,

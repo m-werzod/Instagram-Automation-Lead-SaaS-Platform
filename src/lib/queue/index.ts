@@ -74,12 +74,20 @@ const TIMEOUT_MS_BY_LANE: Record<JobLane, number> = {
   video: 60 * 60_000,
 };
 
+/**
+ * Guarded like the lease lookups above, and for the same reason: `lane` is a
+ * plain string column read back from the database and cast, so a row written by
+ * another deploy can name a lane this build does not know. Unguarded, the lookup
+ * returned undefined, setTimeout(undefined) fired on the next tick, and EVERY
+ * such job was instantly declared over budget — abandoned on its lease, and for
+ * publish.run re-queued and abandoned again forever without ever reaching Meta.
+ */
 export function jobTimeoutMs(lane: JobLane): number {
   if (lane === "video") {
     const n = Number(process.env.VIDEO_JOB_TIMEOUT_MS);
     if (Number.isFinite(n) && n >= 60_000) return Math.min(n, 6 * 3600_000);
   }
-  return TIMEOUT_MS_BY_LANE[lane];
+  return TIMEOUT_MS_BY_LANE[lane] ?? TIMEOUT_MS_BY_LANE.default;
 }
 
 /** Renew the lock this often while a handler runs. */

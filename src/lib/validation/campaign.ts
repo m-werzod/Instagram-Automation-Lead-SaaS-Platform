@@ -18,15 +18,44 @@ export const interestSchema = z.object({
   name: z.string().max(120).optional(),
 });
 
-export const targetingSchema = z.object({
-  countries: z.array(z.string().length(2).toUpperCase()).max(25).optional(),
-  cities: z.array(citySchema).max(25).optional(),
-  ageMin: z.number().int().min(18).max(65).optional(),
-  ageMax: z.number().int().min(18).max(65).optional(),
-  genders: z.array(z.number().int().min(1).max(2)).max(2).optional(),
-  interests: z.array(interestSchema).max(25).optional(),
-  instagramPositions: z.array(z.enum(["stream", "story", "explore", "reels"])).optional(),
-});
+/** Meta's radius window, stated per unit (50 mi = 80.45 km, so these differ). */
+export function cityRadiusBounds(distanceUnit?: "kilometer" | "mile"): { min: number; max: number; unit: string } {
+  return distanceUnit === "mile" ? { min: 10, max: 50, unit: "miles" } : { min: 17, max: 80, unit: "km" };
+}
+
+/**
+ * Cross-field rules live here as well as in marketing.ts's targetingProblem, so
+ * an impossible audience is refused when the campaign is SAVED rather than at
+ * "Create in Meta" — which happens only after the platform fee has been paid.
+ * (The location requirement deliberately stays out: a half-filled draft is
+ * legitimate, and createCampaignInMeta still refuses one with no location.)
+ */
+export const targetingSchema = z
+  .object({
+    countries: z.array(z.string().length(2).toUpperCase()).max(25).optional(),
+    cities: z.array(citySchema).max(25).optional(),
+    ageMin: z.number().int().min(18).max(65).optional(),
+    ageMax: z.number().int().min(18).max(65).optional(),
+    genders: z.array(z.number().int().min(1).max(2)).max(2).optional(),
+    interests: z.array(interestSchema).max(25).optional(),
+    instagramPositions: z.array(z.enum(["stream", "story", "explore", "reels"])).optional(),
+  })
+  .superRefine((t, ctx) => {
+    if (t.ageMin !== undefined && t.ageMax !== undefined && t.ageMin > t.ageMax) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["ageMax"], message: "Minimum age is above maximum age" });
+    }
+    (t.cities ?? []).forEach((c, i) => {
+      if (c.radius === undefined) return;
+      const { min, max, unit } = cityRadiusBounds(c.distanceUnit);
+      if (c.radius < min || c.radius > max) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["cities", i, "radius"],
+          message: `City radius must be ${min}–${max} ${unit} (Meta allows 17–80 km / 10–50 miles)`,
+        });
+      }
+    });
+  });
 
 export type TargetingInput = z.infer<typeof targetingSchema>;
 

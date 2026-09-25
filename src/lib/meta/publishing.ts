@@ -215,13 +215,21 @@ export function retryDelayForPublishError(err: unknown): number | null {
   return null;
 }
 
-/** A friendly, admin-facing line for a failed job — technical detail stays in logs. */
+/**
+ * A friendly, admin-facing line for a failed job — technical detail stays in logs.
+ *
+ * The `fix` line is the whole point of the sentence for the failures an admin
+ * can actually act on, and the most common one of those — an expired or revoked
+ * token (AppError, not MetaApiError: resolveAccess throws before any Graph call)
+ * — was losing it, so the failed post said what went wrong and never said that
+ * reconnecting the account in Settings fixes it. MetaApiError extends AppError,
+ * so one branch covers both.
+ */
 export function describePublishError(err: unknown): string {
-  if (err instanceof MetaApiError) {
+  if (err instanceof AppError) {
     const base = err.reason ? `${err.message} — ${err.reason}` : err.message;
     return err.fix ? `${base}. ${err.fix}` : base;
   }
-  if (err instanceof AppError) return err.reason ? `${err.message} — ${err.reason}` : err.message;
   return err instanceof Error ? err.message : String(err);
 }
 

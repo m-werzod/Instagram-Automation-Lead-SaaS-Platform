@@ -127,14 +127,35 @@ export interface WebhookPayload {
   entry?: WebhookEntry[];
 }
 
+/**
+ * Meta mixes units inside ONE delivery: a messaging `timestamp` is in
+ * milliseconds, while `entry.time` and a change's `created_time` are in
+ * seconds. Every normalized event therefore states its time in milliseconds,
+ * because that is what the consumer does with it — `new Date(ev.timestamp)`
+ * becomes Conversation.lastUserMessageAt, the ONLY anchor of the 24-hour
+ * messaging window. A seconds value there lands in January 1970, which closes
+ * the window on a customer who has just written and makes every automated
+ * reply fail with "outside the 24-hour messaging window".
+ *
+ * The split is by magnitude rather than by field, so a field that changes unit
+ * (or an entry.time Meta sends in ms) is still read correctly: 1e12 ms is
+ * 2001-09-09, and no webhook can legitimately be older than that, while the
+ * same number read as seconds would be the year 33658.
+ */
+const MIN_EPOCH_MS = 1e12;
+
+function toMillis(value: number): number {
+  return value < MIN_EPOCH_MS ? Math.round(value * 1000) : value;
+}
+
 export function parseWebhookPayload(payload: WebhookPayload): NormalizedEvent[] {
   const events: NormalizedEvent[] = [];
   for (const entry of payload.entry ?? []) {
     const entryId = String(entry.id ?? "");
-    const entryTime = entry.time ?? Date.now();
+    const entryTime = entry.time === undefined ? Date.now() : toMillis(entry.time);
 
     for (const m of entry.messaging ?? []) {
-      const ts = m.timestamp ?? entryTime;
+      const ts = m.timestamp === undefined ? entryTime : toMillis(m.timestamp);
       if (m.message) {
         events.push({
           type: "message",
@@ -164,7 +185,7 @@ export function parseWebhookPayload(payload: WebhookPayload): NormalizedEvent[] 
     }
 
     for (const c of entry.changes ?? []) {
-      const ts = (c.value?.created_time ?? entryTime) * (c.value?.created_time ? 1000 : 1);
+      const ts = c.value?.created_time === undefined ? entryTime : toMillis(c.value.created_time);
       if (c.field === "comments" && c.value?.id) {
         events.push({
           type: "comment",

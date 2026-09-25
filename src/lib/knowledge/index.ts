@@ -54,8 +54,11 @@ export interface ChunkOptions {
 
 /** Paragraph-aware sliding window chunker. */
 export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
-  const maxChars = opts.maxChars ?? 1400;
-  const overlap = opts.overlapChars ?? 200;
+  const maxChars = Math.max(1, opts.maxChars ?? 1400);
+  // An overlap at or above the window would give the hard-split loop below a
+  // step of <= 0 — it would then allocate the same slice forever and take the
+  // process down with it. Cap it so the window always advances.
+  const overlap = Math.min(Math.max(0, opts.overlapChars ?? 200), maxChars - 1);
   const clean = text.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
   if (!clean) return [];
   if (clean.length <= maxChars) return [clean];
@@ -99,7 +102,16 @@ export function embeddingToBuffer(vec: number[]): Uint8Array<ArrayBuffer> {
 }
 
 export function bufferToEmbedding(buf: Uint8Array): Float32Array {
-  return new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+  const count = Math.floor(buf.byteLength / 4);
+  // A Bytes column can arrive as a view that does not start on a 4-byte
+  // boundary (a pooled or sliced Buffer). Float32Array refuses such an offset
+  // with a RangeError, which would abort retrieval for the whole account — so
+  // an unaligned view is copied into a fresh, aligned one instead.
+  if (buf.byteOffset % 4 !== 0) {
+    const aligned = new Uint8Array(buf.subarray(0, count * 4));
+    return new Float32Array(aligned.buffer, 0, count);
+  }
+  return new Float32Array(buf.buffer, buf.byteOffset, count);
 }
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {

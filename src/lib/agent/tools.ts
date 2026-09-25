@@ -1,6 +1,6 @@
 import type { AIAgent, Conversation, InstagramAccount } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { retrieveKnowledge } from "@/lib/knowledge";
+import { frameRetrievedChunks, retrieveKnowledge } from "@/lib/knowledge";
 import { startFlowSession } from "@/lib/leadflow/engine";
 import { createLogger } from "@/lib/logger";
 import type { ToolDef } from "@/lib/ai";
@@ -82,9 +82,11 @@ export const AGENT_TOOLS: AgentTool[] = [
             "No knowledge found for this query. Tell the user honestly that you don't have that information and offer to connect them with a human.",
         };
       }
-      return {
-        output: chunks.map((c, i) => `[${i + 1}] (${c.documentTitle})\n${c.text}`).join("\n\n"),
-      };
+      // Retrieved text reaches the model here exactly as it does through the
+      // system prompt, so it is quoted in the same untrusted-data envelope.
+      // Pasting it raw let anyone who can upload a file write instructions
+      // straight into the model's context.
+      return { output: frameRetrievedChunks(chunks)! };
     },
   },
   {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "crypto";
 import { NextRequest } from "next/server";
 import type { InstagramAccount, LeadFlowQuestion } from "@prisma/client";
@@ -21,10 +21,20 @@ import {
   clampTextBytes,
   isWithinMessagingWindow,
   sendInstagramText,
+  sendPrivateReplyToComment,
 } from "@/lib/meta/messaging";
-import { buildState, verifyState } from "@/lib/meta/oauth";
+import {
+  buildState,
+  fbExchangeCode,
+  fbExchangeLongLived,
+  igExchangeCode,
+  igExchangeLongLived,
+  igLoginScopes,
+  igRefreshLongLived,
+  verifyState,
+} from "@/lib/meta/oauth";
 import { capabilityMap, detectCapabilities, type AccountWithAuth } from "@/lib/meta/capabilities";
-import { conditionMatches, isWithinCooldown, runAutomations } from "@/lib/automation/engine";
+import { allConditionsMatch, conditionMatches, isWithinCooldown, runAutomations } from "@/lib/automation/engine";
 import {
   CANCEL_KEYWORDS,
   SESSION_EXPIRY_MS,
@@ -35,7 +45,7 @@ import {
   keywordMatches,
   startFlowSession,
 } from "@/lib/leadflow/engine";
-import { _resetRateLimiter, LIMITS } from "@/lib/rate-limit";
+import { _resetRateLimiter, LIMITS, rateLimit } from "@/lib/rate-limit";
 
 /* ------------------------------------------------------------------ *
  * In-memory Prisma stand-in (pattern: tests/video-render.test.ts).
@@ -322,7 +332,7 @@ vi.mock("next/server", async (importOriginal) => {
   return { ...mod, after: (fn: () => unknown) => void fn };
 });
 
-const { POST: WEBHOOK_POST } = await import("@/app/api/webhooks/instagram/route");
+const { POST: WEBHOOK_POST, GET: WEBHOOK_GET } = await import("@/app/api/webhooks/instagram/route");
 
 const ENV_IG_SECRET = "test-ig-app-secret";
 const ENV_FB_SECRET = "test-fb-app-secret";
@@ -772,23 +782,33 @@ describe("sendInstagramText enforces the window before Meta is called", () => {
   });
 
   it("clamps the text to Meta's 1000-byte limit before sending", async () => {
-    await sendInstagramText(account(), "cust", "ў".repeat(900), { lastUserMessageAt: new Date() });
+    const original = "ў".repeat(900); // 1800 bytes
+    await sendInstagramText(account(), "cust", original, { lastUserMessageAt: new Date() });
     const text = (graphMock.mock.calls[0]![0]!.body as GraphBody).message!.text!;
-    expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    const bytes = new TextEncoder().encode(text).length;
+    expect(bytes).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    // An upper bound alone is satisfied by a clamp that throws the message away:
+    // "…" is 3 bytes and under every limit. The clamp must FILL the budget.
+    expect(bytes).toBeGreaterThan(MAX_TEXT_BYTES - 4);
     expect(text.endsWith("…")).toBe(true);
+    // and what survives must be the START of what the admin wrote, unaltered.
+    expect(original.startsWith(text.slice(0, -1))).toBe(true);
   });
 
   it("clamps quick replies to 13 buttons of 20 characters", async () => {
-    await sendInstagramText(account(), "cust", "tanlang", {
-      lastUserMessageAt: new Date(),
-      quickReplies: Array.from({ length: 20 }, (_, i) => ({ title: `Juda uzun variant nomi ${i}`, payload: `p${i}` })),
-    });
+    const asked = Array.from({ length: 20 }, (_, i) => ({ title: `Juda uzun variant nomi ${i}`, payload: `p${i}` }));
+    await sendInstagramText(account(), "cust", "tanlang", { lastUserMessageAt: new Date(), quickReplies: asked });
     const qrs = (graphMock.mock.calls[0]![0]!.body as GraphBody).message!.quick_replies!;
     expect(qrs).toHaveLength(MAX_QUICK_REPLIES);
-    for (const qr of qrs) {
+    qrs.forEach((qr, i) => {
       expect(qr.content_type).toBe("text");
-      expect(qr.title!.length).toBeLessThanOrEqual(MAX_QUICK_REPLY_TITLE);
-    }
+      // The FIRST 13 in the order the flow offered them — not an arbitrary 13,
+      // and not empty titles, both of which a bare length check would accept.
+      expect(qr.title).toBe(asked[i]!.title.slice(0, MAX_QUICK_REPLY_TITLE));
+      expect(qr.title!.length).toBe(MAX_QUICK_REPLY_TITLE);
+      // the payload is what maps the tap back to an option — it must survive whole
+      expect(qr.payload).toBe(`p${i}`);
+    });
   });
 
   it("a demo account never reaches Meta at all", async () => {
@@ -1899,8 +1919,42 @@ describe("lead flow completion builds the lead", () => {
 
   it("falls back to a default thank-you when the flow has only whitespace", async () => {
     store.leadFlow[0]!.completionMessage = "   ";
-    await answerAll();
+    await handleFlowAnswer(activeSessionRow() as never, "Aziz");
+    await handleFlowAnswer(activeSessionRow() as never, "+998901234567");
+    const last = await handleFlowAnswer(activeSessionRow() as never, "1");
+
     expect(store.leadFlowSession[0]!.status).toBe("COMPLETED");
+    // The customer must actually be thanked. Asserting only "COMPLETED" would
+    // pass while the flow answered with "   " or with nothing at all.
+    expect(last.messages).toHaveLength(1);
+    expect(last.messages[0]!.text.trim().length).toBeGreaterThan(10);
+    expect(last.messages[0]!.text).toMatch(/thank you/i);
+  });
+
+  /**
+   * completeSession() sorts the answers by their QUESTION's order before it
+   * builds Lead.answers. Answering 1-2-3 in sequence cannot tell that sort from
+   * plain insertion order, so the rows are physically reordered here — a
+   * database returns them in no guaranteed order — and the JSON must still read
+   * the way the admin designed the form.
+   */
+  it("orders Lead.answers by the question order, not by the order rows come back in", async () => {
+    await answerAll();
+    expect(store.lead).toHaveLength(1);
+    const inOrder = (store.lead[0]!.answers as Array<{ question: string }>).map((a) => a.question);
+    expect(inOrder).toEqual(["Ism", "Telefon", "Shahar"]);
+
+    // same session, answers handed back reversed
+    store.lead.length = 0;
+    store.leadEvent.length = 0;
+    store.leadAnswer.reverse();
+    store.leadFlowSession[0]!.status = "ACTIVE";
+    const again = store.leadFlowSession[0]!;
+    again.currentQuestionId = "q_city";
+    await handleFlowAnswer(again as never, "1");
+
+    const reordered = (store.lead[0]!.answers as Array<{ question: string }>).map((a) => a.question);
+    expect(reordered).toEqual(["Ism", "Telefon", "Shahar"]);
   });
 
   it("falls back to the Instagram username when no question maps to a name", async () => {
@@ -2084,5 +2138,935 @@ describe("normalised event model", () => {
     const prefixes = kinds.map((k) => dedupeKeyForEvent(k).split(":")[0]);
     expect(prefixes).toEqual(["msg", "pb", "cmt", "lead", "oth"]);
     expect(new Set(prefixes).size).toBe(prefixes.length);
+  });
+});
+
+/* ================================================================== *
+ * OAuth token exchanges (Mode A + Mode B)
+ *
+ * Nothing in the repo covered these five functions. They are the only
+ * path by which an account ever gets a token, and the ONLY thing between
+ * Meta's answer and `new Date(Date.now() + expiresInSec * 1000)` being
+ * written to InstagramAccount.expiresAt (src/lib/meta/accounts.ts:45,
+ * :164, :441). fetch is stubbed; Meta is never called.
+ * ================================================================== */
+
+type FetchCall = { url: string; init?: RequestInit };
+type FetchAnswer = { ok?: boolean; status?: number; body: unknown };
+
+/** Stub global fetch with a queue of canned Meta answers; records every call. */
+function stubFetch(...answers: FetchAnswer[]) {
+  const calls: FetchCall[] = [];
+  let i = 0;
+  const fn = vi.fn(async (input: unknown, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    // The last answer repeats, so a retrying caller keeps getting it.
+    const a: FetchAnswer = answers[Math.min(i++, answers.length - 1)] ?? { body: {} };
+    return {
+      ok: a.ok ?? true,
+      status: a.status ?? (a.ok === false ? 400 : 200),
+      json: async () => a.body,
+    } as unknown as Response;
+  });
+  vi.stubGlobal("fetch", fn);
+  return { calls, fn };
+}
+
+/** The form body postForm() sent, decoded back into a plain object. */
+function formOf(call: FetchCall): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(String(call.init?.body ?? "")));
+}
+
+describe("Instagram Login token exchange (Mode A)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the code to api.instagram.com with the INSTAGRAM app credentials, never the Facebook ones", async () => {
+    const { calls } = stubFetch({ body: { access_token: "short_1", user_id: 17841400000000000 } });
+    const out = await igExchangeCode("the-code");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.instagram.com/oauth/access_token");
+    expect(calls[0]!.init?.method).toBe("POST");
+
+    const form = formOf(calls[0]!);
+    // vitest.config.ts sets these deliberately different so a mix-up is visible.
+    expect(form.client_id).toBe("test-ig-app-id");
+    expect(form.client_secret).toBe("test-ig-app-secret");
+    expect(form.client_id).not.toBe(process.env.META_APP_ID);
+    expect(form.client_secret).not.toBe(process.env.META_APP_SECRET);
+    expect(form.grant_type).toBe("authorization_code");
+    expect(form.code).toBe("the-code");
+    expect(form.redirect_uri).toBe(process.env.META_REDIRECT_URI);
+
+    expect(out).toEqual({ accessToken: "short_1", igUserId: "17841400000000000", permissions: [] });
+  });
+
+  it("accepts the {data:[{...}]} shape Meta also ships", async () => {
+    stubFetch({ body: { data: [{ access_token: "short_2", user_id: "991", permissions: ["a", "b"] }] } });
+    await expect(igExchangeCode("c")).resolves.toEqual({
+      accessToken: "short_2",
+      igUserId: "991",
+      permissions: ["a", "b"],
+    });
+  });
+
+  it("splits a comma-separated permissions string and trims it", async () => {
+    stubFetch({ body: { access_token: "t", user_id: 5, permissions: "instagram_business_basic, instagram_business_manage_messages ,," } });
+    const out = await igExchangeCode("c");
+    expect(out.permissions).toEqual(["instagram_business_basic", "instagram_business_manage_messages"]);
+  });
+
+  it("refuses a 200 that carries no access_token instead of returning undefined", async () => {
+    stubFetch({ body: { user_id: 5 } });
+    await expect(igExchangeCode("c")).rejects.toMatchObject({ code: "META_AUTH_FAILED" });
+  });
+
+  it("surfaces Instagram's error_message (api.instagram.com does not use the graph error object)", async () => {
+    stubFetch({ ok: false, status: 400, body: { error_type: "OAuthException", code: 400, error_message: "Invalid authorization code" } });
+    await expect(igExchangeCode("stale")).rejects.toThrow(/Invalid authorization code/);
+  });
+
+  it("exchanges short -> long-lived on graph.instagram.com with ig_exchange_token", async () => {
+    const { calls } = stubFetch({ body: { access_token: "long_1", expires_in: 5184000 } });
+    const out = await igExchangeLongLived("short_1");
+
+    const url = new URL(calls[0]!.url);
+    expect(url.origin + url.pathname).toBe("https://graph.instagram.com/access_token");
+    expect(url.searchParams.get("grant_type")).toBe("ig_exchange_token");
+    expect(url.searchParams.get("client_secret")).toBe("test-ig-app-secret");
+    expect(url.searchParams.get("access_token")).toBe("short_1");
+    expect(out).toEqual({ accessToken: "long_1", expiresInSec: 5184000 });
+  });
+
+  it("refreshes a long-lived token WITHOUT sending the app secret", async () => {
+    const { calls } = stubFetch({ body: { access_token: "long_2", expires_in: 5184000 } });
+    const out = await igRefreshLongLived("long_1");
+
+    const url = new URL(calls[0]!.url);
+    expect(url.origin + url.pathname).toBe("https://graph.instagram.com/refresh_access_token");
+    expect(url.searchParams.get("grant_type")).toBe("ig_refresh_token");
+    // The refresh endpoint authenticates with the token alone; leaking the
+    // secret into a query string would put it in Meta's access logs.
+    expect(url.searchParams.get("client_secret")).toBeNull();
+    expect(out.accessToken).toBe("long_2");
+  });
+
+  it("raises Meta's graph error on a failed refresh rather than returning a blank token", async () => {
+    stubFetch({ ok: false, status: 400, body: { error: { message: "Session has expired", type: "OAuthException", code: 190 } } });
+    // Code 190 is translated into an admin-readable message, but the Meta
+    // code must survive so the reconnect path can recognise a dead token.
+    await expect(igRefreshLongLived("dead")).rejects.toMatchObject({
+      name: "MetaApiError",
+      metaCode: 190,
+      isTokenError: true,
+    });
+  });
+});
+
+describe("Facebook Login token exchange (Mode B)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the FACEBOOK app credentials and the pinned graph version", async () => {
+    const { calls } = stubFetch({ body: { access_token: "fb_short", expires_in: 3600 } });
+    const out = await fbExchangeCode("code-b");
+
+    const url = new URL(calls[0]!.url);
+    expect(url.origin).toBe("https://graph.facebook.com");
+    expect(url.pathname).toBe("/" + process.env.META_GRAPH_VERSION + "/oauth/access_token");
+    expect(url.searchParams.get("client_id")).toBe("test-fb-app-id");
+    expect(url.searchParams.get("client_secret")).toBe("test-fb-app-secret");
+    expect(url.searchParams.get("code")).toBe("code-b");
+    expect(out).toEqual({ accessToken: "fb_short", expiresInSec: 3600 });
+  });
+
+  it("exchanges the short user token for a long-lived one", async () => {
+    const { calls } = stubFetch({ body: { access_token: "fb_long", expires_in: 5184000 } });
+    const out = await fbExchangeLongLived("fb_short");
+
+    const url = new URL(calls[0]!.url);
+    expect(url.searchParams.get("grant_type")).toBe("fb_exchange_token");
+    expect(url.searchParams.get("fb_exchange_token")).toBe("fb_short");
+    expect(out).toEqual({ accessToken: "fb_long", expiresInSec: 5184000 });
+  });
+
+  it("falls back to 60 days when Meta omits expires_in on the long-lived exchange", async () => {
+    stubFetch({ body: { access_token: "fb_long" } });
+    await expect(fbExchangeLongLived("s")).resolves.toEqual({ accessToken: "fb_long", expiresInSec: 60 * 24 * 3600 });
+  });
+});
+
+/**
+ * A 200 is not by itself a token. Every one of these results is fed straight
+ * into `new Date(Date.now() + expiresInSec * 1000)`; an absent access_token or
+ * expires_in used to sail through as undefined and land an Invalid Date on the
+ * account row — and the nightly refresh (accounts.ts:441) does that for every
+ * account it touches.
+ */
+describe("a 200 with a malformed body never becomes a stored token", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const cases: Array<[string, () => Promise<unknown>]> = [
+    ["igExchangeLongLived", () => igExchangeLongLived("s")],
+    ["igRefreshLongLived", () => igRefreshLongLived("s")],
+    ["fbExchangeCode", () => fbExchangeCode("c")],
+    ["fbExchangeLongLived", () => fbExchangeLongLived("s")],
+  ];
+
+  for (const [name, call] of cases) {
+    it(name + " refuses a 200 with no access_token", async () => {
+      stubFetch({ body: { expires_in: 5184000 } });
+      await expect(call()).rejects.toMatchObject({ code: "META_AUTH_FAILED" });
+    });
+  }
+
+  it("igExchangeLongLived never yields a NaN expiry when expires_in is missing", async () => {
+    stubFetch({ body: { access_token: "long" } });
+    const out = await igExchangeLongLived("s");
+    expect(Number.isFinite(out.expiresInSec)).toBe(true);
+    expect(out.expiresInSec).toBeGreaterThan(0);
+    // The value the caller actually computes must be a real date.
+    expect(new Date(Date.now() + out.expiresInSec * 1000).getTime()).not.toBeNaN();
+  });
+
+  it("a non-numeric expires_in is replaced, not multiplied into NaN", async () => {
+    stubFetch({ body: { access_token: "long", expires_in: "soon" } });
+    const out = await igRefreshLongLived("s");
+    expect(Number.isFinite(out.expiresInSec)).toBe(true);
+    expect(new Date(Date.now() + out.expiresInSec * 1000).getTime()).not.toBeNaN();
+  });
+});
+
+describe("Instagram Login scope list", () => {
+  const saved = process.env.META_INSTAGRAM_EXTRA_SCOPES;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.META_INSTAGRAM_EXTRA_SCOPES;
+    else process.env.META_INSTAGRAM_EXTRA_SCOPES = saved;
+  });
+
+  it("requests only the three REQUIRED permissions by default", () => {
+    delete process.env.META_INSTAGRAM_EXTRA_SCOPES;
+    expect(igLoginScopes()).toEqual([
+      "instagram_business_basic",
+      "instagram_business_manage_messages",
+      "instagram_business_manage_comments",
+    ]);
+  });
+
+  it("merges configured extras, trimming blanks and de-duplicating", () => {
+    process.env.META_INSTAGRAM_EXTRA_SCOPES = " instagram_business_content_publish , ,instagram_business_basic ";
+    const scopes = igLoginScopes();
+    expect(scopes).toContain("instagram_business_content_publish");
+    expect(scopes.filter((s) => s === "instagram_business_basic")).toHaveLength(1);
+    expect(scopes).not.toContain("");
+  });
+});
+
+/* ================================================================== *
+ * Private reply to a comment
+ * ================================================================== */
+
+describe("sendPrivateReplyToComment", () => {
+  const account = { id: "acct_1", connectMode: "INSTAGRAM_LOGIN", igUserId: "ig_1", isDemo: false } as unknown as InstagramAccount;
+
+  it("addresses the COMMENT, not the commenter's igsid, and skips the 24h window", async () => {
+    // A private reply is allowed for 7 days after the comment even when the
+    // person has never DM'd us, so no lastUserMessageAt is involved at all.
+    await sendPrivateReplyToComment(account, "cmt_77", "here you go");
+
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    const body = graphMock.mock.calls[0]![0]!.body as GraphBody;
+    expect(body.recipient).toEqual({ comment_id: "cmt_77" });
+    expect(body.recipient?.id).toBeUndefined();
+    expect(body.message?.text).toBe("here you go");
+    expect(body.messaging_type).toBeUndefined();
+  });
+
+  it("clamps an over-long private reply to Meta's byte budget", async () => {
+    await sendPrivateReplyToComment(account, "cmt_1", "x".repeat(MAX_TEXT_BYTES + 250));
+    const body = graphMock.mock.calls[0]![0]!.body as GraphBody;
+    expect(new TextEncoder().encode(body.message?.text ?? "").length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    expect(body.message?.text?.endsWith("…")).toBe(true);
+  });
+});
+
+/* ================================================================== *
+ * AUDIT PASS — paths the first sweep left open.
+ *
+ * Everything below drives the same product code against the same
+ * in-memory Prisma; nothing here asserts a mock against itself.
+ * ================================================================== */
+
+describe("[audit] webhook route: redelivery, handshake, misconfiguration", () => {
+  const URL = "http://localhost:3000/api/webhooks/instagram";
+
+  function post(body: string, signature?: string) {
+    const headers = new Headers({ "content-type": "application/json" });
+    if (signature) headers.set("x-hub-signature-256", signature);
+    return new NextRequest(URL, { method: "POST", headers, body });
+  }
+
+  const delivery = (mids: string[]) =>
+    JSON.stringify({
+      object: "instagram",
+      entry: [
+        {
+          id: "17841400000000000",
+          time: 1700000000,
+          messaging: mids.map((mid) => ({
+            sender: { id: "u1" },
+            recipient: { id: "17841400000000000" },
+            message: { mid, text: "salom" },
+          })),
+        },
+      ],
+    });
+
+  /**
+   * Meta's delivery guarantee is AT LEAST ONCE: an ack that arrives late is a
+   * redelivery. The route's whole dedupe branch (the findUnique before the
+   * create) is what stops the same DM being answered twice, and no test in this
+   * group's file made a second POST at all.
+   */
+  it("stores and enqueues a redelivered, byte-identical delivery exactly once", async () => {
+    const body = delivery(["mid.a", "mid.b"]);
+    const sig = sign(body, ENV_IG_SECRET);
+
+    const first = await WEBHOOK_POST(post(body, sig));
+    const second = await WEBHOOK_POST(post(body, sig));
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ received: true, duplicate: true });
+    expect(store.webhookEvent).toHaveLength(1);
+    expect(queueMock.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The prefix-collision case at the level a customer actually feels it: the
+   * second delivery repeats the first delivery's event and adds one more. A key
+   * built by truncation would call it a duplicate and the new DM would never be
+   * answered.
+   */
+  it("does not mistake a longer delivery that starts with the same events for a redelivery", async () => {
+    const one = delivery(["mid.a"]);
+    const two = delivery(["mid.a", "mid.b"]);
+
+    await WEBHOOK_POST(post(one, sign(one, ENV_IG_SECRET)));
+    const res = await WEBHOOK_POST(post(two, sign(two, ENV_IG_SECRET)));
+
+    expect(await res.json()).toEqual({ received: true });
+    expect(store.webhookEvent).toHaveLength(2);
+    expect(new Set(store.webhookEvent.map((e) => e.dedupeKey)).size).toBe(2);
+    expect(queueMock.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it("stores the payload it verified, whichever app signed it", async () => {
+    const body = delivery(["mid.z"]);
+    await WEBHOOK_POST(post(body, sign(body, ENV_FB_SECRET))); // the OTHER app
+    expect(store.webhookEvent).toHaveLength(1);
+    expect(store.webhookEvent[0]).toMatchObject({ object: "instagram", signatureValid: true, status: "QUEUED" });
+    expect(JSON.parse(JSON.stringify(store.webhookEvent[0]!.payload))).toEqual(JSON.parse(body));
+  });
+
+  /**
+   * The subscription handshake is the first thing an admin hits when wiring the
+   * webhook up in the App Dashboard, and the verify token is a shared secret
+   * compared with safeEqual — a prefix must not be accepted.
+   */
+  it("echoes the challenge for the exact verify token only", async () => {
+    const real = process.env.META_WEBHOOK_VERIFY_TOKEN!;
+    const ok = await WEBHOOK_GET(
+      new NextRequest(`${URL}?hub.mode=subscribe&hub.verify_token=${real}&hub.challenge=echo-me`),
+    );
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe("echo-me");
+
+    for (const bad of [real.slice(0, real.length - 1), `${real}x`, "", "wrong"]) {
+      const res = await WEBHOOK_GET(
+        new NextRequest(`${URL}?hub.mode=subscribe&hub.verify_token=${bad}&hub.challenge=echo-me`),
+      );
+      expect(res.status, `verify_token "${bad}"`).toBe(403);
+    }
+    const wrongMode = await WEBHOOK_GET(
+      new NextRequest(`${URL}?hub.mode=unsubscribe&hub.verify_token=${real}&hub.challenge=echo-me`),
+    );
+    expect(wrongMode.status).toBe(403);
+  });
+
+  it("answers 503, not 403, when the verify token is not configured at all", async () => {
+    const saved = process.env.META_WEBHOOK_VERIFY_TOKEN;
+    delete process.env.META_WEBHOOK_VERIFY_TOKEN;
+    try {
+      const res = await WEBHOOK_GET(
+        new NextRequest(`${URL}?hub.mode=subscribe&hub.verify_token=anything&hub.challenge=x`),
+      );
+      expect(res.status).toBe(503);
+    } finally {
+      process.env.META_WEBHOOK_VERIFY_TOKEN = saved;
+    }
+  });
+
+  /**
+   * A blank-but-present app secret must not become a signing key: HMAC with a
+   * guessable key is a perfectly computable signature, so accepting one would
+   * let anybody forge a delivery. instagramAppCredentials() trims, so a
+   * whitespace-only Instagram secret has to count as "not configured".
+   */
+  it("treats a whitespace-only Instagram app secret as not configured", async () => {
+    const ig = process.env.META_INSTAGRAM_APP_SECRET;
+    const fb = process.env.META_APP_SECRET;
+    process.env.META_INSTAGRAM_APP_SECRET = "   ";
+    delete process.env.META_APP_SECRET;
+    try {
+      const body = delivery(["mid.forged"]);
+      const res = await WEBHOOK_POST(post(body, sign(body, "   ")));
+      expect(res.status).toBe(503);
+      expect(store.webhookEvent).toHaveLength(0);
+    } finally {
+      process.env.META_INSTAGRAM_APP_SECRET = ig;
+      process.env.META_APP_SECRET = fb;
+    }
+  });
+});
+
+describe("[audit] automation actions the first sweep never executed", () => {
+  beforeEach(() => {
+    seedAccount();
+    seedConversation();
+  });
+
+  /**
+   * SEND_PRIVATE_REPLY is one of the five outbound action types the rule editor
+   * offers, and NO test anywhere in the repo ran it — only one asserting that
+   * its name appears in OUTBOUND_ACTIONS. That set membership is what makes the
+   * master switch and the rate limit apply to it, so it is asserted here too.
+   */
+  it("SEND_PRIVATE_REPLY DMs the commenter by comment id, not by igsid", async () => {
+    seedRule({ id: "r_pr", actions: [{ type: "SEND_PRIVATE_REPLY", params: { text: "Narxlar DMda" } }] });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_9", igsid: "cust_1" });
+
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    const call = graphMock.mock.calls[0]![0]!;
+    expect(call.path).toBe("ig_1/messages");
+    const body = call.body as GraphBody;
+    expect(body.recipient).toEqual({ comment_id: "cmt_9" });
+    expect(body.recipient?.id).toBeUndefined();
+    expect(body.message?.text).toBe("Narxlar DMda");
+    // a private reply is a 7-day window, not the 24h one — no messaging_type
+    expect(body.messaging_type).toBeUndefined();
+    expect(lastRun()!.status).toBe("SUCCESS");
+  });
+
+  it("SEND_PRIVATE_REPLY is an OUTBOUND action: the master switch stops it before Meta", async () => {
+    store.globalSettings[0]!.masterAutomationEnabled = false;
+    seedRule({ id: "r_pr", actions: [{ type: "SEND_PRIVATE_REPLY", params: { text: "hi" } }] });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_9" });
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(String(lastRun()!.error)).toMatch(/master automation switch OFF/);
+  });
+
+  it("SEND_PRIVATE_REPLY on a trigger that carries no comment fails with a named reason", async () => {
+    seedRule({
+      id: "r_pr",
+      trigger: "MESSAGE_RECEIVED",
+      actions: [{ type: "SEND_PRIVATE_REPLY", params: { text: "hi" } }],
+    });
+
+    await runAutomations("MESSAGE_RECEIVED", { accountId: "acc_1", conversationId: "conv_1" });
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(String(lastRun()!.error)).toBe("no comment in context");
+  });
+
+  it("SEND_COMMENT_RESOURCE with no resource attached sends the caption as the reply text", async () => {
+    seedRule({
+      id: "r",
+      actions: [{ type: "SEND_COMMENT_RESOURCE", params: { mode: "template", text: "Narx: 500000" } }],
+    });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1" });
+
+    expect(graphMock).toHaveBeenCalledTimes(1);
+    const body = graphMock.mock.calls[0]![0]!.body as GraphBody;
+    expect(body.recipient).toEqual({ comment_id: "cmt_1" });
+    expect(body.message?.text).toBe("Narx: 500000");
+    expect(body.message?.attachment).toBeUndefined();
+    expect(lastRun()!.status).toBe("SUCCESS");
+    // nothing was dropped, so the run line carries no "caption not sent" note
+    expect(lastRun()!.error ?? null).toBeNull();
+  });
+
+  it("SEND_COMMENT_RESOURCE in AI mode refuses to send when no agent is configured", async () => {
+    seedRule({ id: "r", actions: [{ type: "SEND_COMMENT_RESOURCE", params: { mode: "ai", text: "javob ber" } }] });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1", text: "narx?" });
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(String(lastRun()!.error)).toBe("no agent configured for AI mode");
+  });
+
+  /**
+   * The agentId lives in admin-supplied rule JSON, exactly like the lead-flow
+   * flowId that gets an explicit ownership guard. Another account's agent must
+   * not answer this account's customers.
+   */
+  it("SEND_COMMENT_RESOURCE in AI mode will not borrow another account's agent", async () => {
+    store.aIAgent.push({ id: "agent_x", accountId: "acc_other", systemPrompt: "you are helpful" });
+    seedRule({
+      id: "r",
+      actions: [{ type: "SEND_COMMENT_RESOURCE", params: { mode: "ai", text: "javob", agentId: "agent_x" } }],
+    });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1", text: "narx?" });
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(String(lastRun()!.error)).toBe("agent not found");
+  });
+
+  it("an action whose account row has vanished fails loudly instead of sending", async () => {
+    store.instagramAccount.length = 0; // account deleted between trigger and run
+    seedRule({ id: "r", actions: [{ type: "REPLY_COMMENT", params: { text: "hi" } }] });
+
+    await runAutomations("COMMENT_RECEIVED", { accountId: "acc_1", commentId: "cmt_1" });
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(String(lastRun()!.error)).toBe("account not found");
+  });
+
+  it("SEND_MESSAGE against a conversation that no longer exists fails loudly", async () => {
+    seedRule({ id: "r", trigger: "MESSAGE_RECEIVED", actions: [{ type: "SEND_MESSAGE", params: { text: "hi" } }] });
+
+    await runAutomations("MESSAGE_RECEIVED", { accountId: "acc_1", conversationId: "conv_gone" });
+
+    expect(graphMock).not.toHaveBeenCalled();
+    expect(store.message).toHaveLength(0);
+    expect(String(lastRun()!.error)).toBe("conversation not found");
+  });
+
+  it("SET_LEAD_STATUS accepts every CRM status and only those", async () => {
+    for (const status of ["NEW", "CONTACTED", "QUALIFIED", "IN_PROGRESS", "WON", "LOST"]) {
+      resetStore();
+      seedAccount();
+      store.lead.push({ id: "lead_1", accountId: "acc_1", status: "NEW" });
+      seedRule({ id: "r", trigger: "LEAD_SUBMITTED", actions: [{ type: "SET_LEAD_STATUS", params: { status } }] });
+      await runAutomations("LEAD_SUBMITTED", { accountId: "acc_1", leadId: "lead_1" });
+      expect(store.lead[0]!.status, status).toBe(status);
+      expect(lastRun()!.status, status).toBe("SUCCESS");
+    }
+    for (const bad of ["won", "ARCHIVED", ""]) {
+      resetStore();
+      seedAccount();
+      store.lead.push({ id: "lead_1", accountId: "acc_1", status: "NEW" });
+      seedRule({
+        id: "r",
+        trigger: "LEAD_SUBMITTED",
+        actions: [{ type: "SET_LEAD_STATUS", params: { status: bad } }],
+      });
+      await runAutomations("LEAD_SUBMITTED", { accountId: "acc_1", leadId: "lead_1" });
+      expect(store.lead[0]!.status, bad).toBe("NEW");
+      expect(String(lastRun()!.error), bad).toBe("invalid status");
+    }
+  });
+});
+
+describe("[audit] allConditionsMatch, directly", () => {
+  const ctx = { accountId: "a", text: "Kurs narxi qancha", username: "vip_aziz" };
+
+  it("an empty or absent condition list lets every matching trigger through", () => {
+    expect(allConditionsMatch([], ctx)).toBe(true);
+    expect(allConditionsMatch(null, ctx)).toBe(true);
+    expect(allConditionsMatch(undefined, ctx)).toBe(true);
+    expect(allConditionsMatch("not an array", ctx)).toBe(true);
+  });
+
+  it("ANDs the list: every condition must hold", () => {
+    const narx = { field: "text", op: "contains", value: "narx" };
+    const vip = { field: "username", op: "starts_with", value: "vip_" };
+    const refund = { field: "text", op: "contains", value: "refund" };
+    expect(allConditionsMatch([narx, vip], ctx)).toBe(true);
+    expect(allConditionsMatch([narx, refund], ctx)).toBe(false);
+    expect(allConditionsMatch([refund, narx], ctx)).toBe(false); // order must not matter
+  });
+
+  it("a junk entry in the list is ignored rather than crashing the run", () => {
+    const narx = { field: "text", op: "contains", value: "narx" };
+    expect(allConditionsMatch([null, narx], ctx)).toBe(true);
+    expect(allConditionsMatch([{ nonsense: 1 }, narx], ctx)).toBe(true);
+    // ...but it must not neutralise a real condition standing next to it
+    expect(allConditionsMatch([{ nonsense: 1 }, { field: "text", op: "contains", value: "refund" }], ctx)).toBe(false);
+  });
+});
+
+describe("[audit] rate limiter honesty", () => {
+  it("the retry-after it reports is a real wait: at least a second, never longer than the window", () => {
+    const { limit, windowMs } = LIMITS.AUTOMATION_ACCOUNT;
+    for (let i = 0; i < limit; i++) expect(rateLimit("audit:key", limit, windowMs).allowed).toBe(true);
+
+    const blocked = rateLimit("audit:key", limit, windowMs);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.remaining).toBe(0);
+    expect(blocked.retryAfterSec).toBeGreaterThanOrEqual(1);
+    expect(blocked.retryAfterSec).toBeLessThanOrEqual(Math.ceil(windowMs / 1000));
+  });
+
+  it("counts down the remaining budget instead of reporting a constant", () => {
+    const seen = Array.from({ length: 5 }, () => rateLimit("audit:countdown", 5, 60_000).remaining);
+    expect(seen).toEqual([4, 3, 2, 1, 0]);
+  });
+});
+
+describe("[audit] capability gaps", () => {
+  const live = (kind: "user" | "page" | "ads", scopes: string[], expiresAt: Date | null = null) =>
+    ({
+      id: `tk_${kind}_${expiresAt?.getTime() ?? "never"}`,
+      accountId: "a1",
+      kind,
+      encrypted: "x",
+      status: "ACTIVE",
+      scopes,
+      issuedAt: new Date(),
+      expiresAt,
+      lastRefreshAt: null,
+      lastCheckedAt: null,
+    }) as AccountWithAuth["tokens"][number];
+
+  const acct = (over: Partial<AccountWithAuth>): AccountWithAuth =>
+    ({
+      id: "a1",
+      igUserId: "178",
+      username: "biz",
+      connectionMode: "FACEBOOK_LOGIN",
+      fbPageId: "p1",
+      adAccountId: null,
+      status: "CONNECTED",
+      webhookSubscribed: true,
+      isDemo: false,
+      permissions: [],
+      tokens: [],
+      ...over,
+    }) as AccountWithAuth;
+
+  it("an EXPIRED page token puts a Facebook-Login account back to 'reconnect', same as mode A", () => {
+    const caps = capabilityMap(
+      detectCapabilities(acct({ tokens: [live("page", ["instagram_manage_messages"], new Date(Date.now() - 1000))] })),
+    );
+    expect(caps.messaging.available).toBe(false);
+    expect(caps.messaging.reason).toMatch(/expired or revoked/i);
+  });
+
+  /**
+   * A never-connected account has to read as "connect it", never as a half-lit
+   * page: every organic feature off, each with a reason a human can act on.
+   */
+  it("an account with no tokens at all reports every organic capability off, with a reason", () => {
+    const caps = capabilityMap(detectCapabilities(acct({ connectionMode: "INSTAGRAM_LOGIN", fbPageId: null })));
+    for (const key of ["messaging", "publishing", "comments", "insights"] as const) {
+      expect(caps[key].available, key).toBe(false);
+      expect(caps[key].reason, key).toBeTruthy();
+    }
+    expect(caps.ads.available).toBe(false);
+    expect(caps.lead_forms.available).toBe(false);
+  });
+
+  it("detectCapabilities does not reorder the account's own token rows", () => {
+    // adsTokenRow() sorts candidate rows; sorting acc.tokens in place would
+    // silently reshuffle a caller's array — the same object the page renders.
+    const tokens = [live("ads", ["ads_management"]), live("user", ["instagram_business_basic"])];
+    const before = tokens.map((t) => t.id);
+    detectCapabilities(acct({ adAccountId: "act_1", tokens }));
+    expect(tokens.map((t) => t.id)).toEqual(before);
+  });
+});
+
+describe("[audit] the keyword boundary really is Unicode, not \\b", () => {
+  /**
+   * JavaScript's \b is defined over [A-Za-z0-9_]. A \b-based implementation
+   * would not match a Cyrillic keyword AT ALL, so a test that only proves "цен"
+   * matches "цены" is also passed by a plain substring search. Both halves are
+   * needed: the suffix match must work AND the buried one must not.
+   */
+  it("matches a Cyrillic stem with a suffix but not one buried mid-word", () => {
+    expect(keywordMatches("цены низкие", "цен")).toBe(true);
+    expect(keywordMatches("Оценка работы", "цен")).toBe(false);
+    expect(keywordMatches("расценки", "цен")).toBe(false);
+  });
+
+  it("the same for Uzbek Latin, where a digit or underscore is also a word char", () => {
+    expect(keywordMatches("narx1 qancha", "narx")).toBe(true); // keyword starts the word
+    expect(keywordMatches("kurs_narx", "narx")).toBe(false); // underscore glues it on
+    expect(keywordMatches("2narx", "narx")).toBe(false);
+  });
+
+  it("a punctuation-led keyword still matches a bare hashtag", () => {
+    expect(keywordMatches("salom #narx bormi", "#narx")).toBe(true);
+  });
+});
+
+describe("[audit] private reply and token-exchange leftovers", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("a demo account's private reply never reaches Meta", async () => {
+    const demo = {
+      id: "acct_1",
+      connectionMode: "INSTAGRAM_LOGIN",
+      igUserId: "ig_1",
+      isDemo: true,
+    } as unknown as InstagramAccount;
+    const res = await sendPrivateReplyToComment(demo, "cmt_1", "salom");
+    expect(res.messageId).toMatch(/^demo-/);
+    expect(graphMock).not.toHaveBeenCalled();
+  });
+
+  it("fbExchangeCode falls back to one hour when Meta omits expires_in on the short token", async () => {
+    stubFetch({ body: { access_token: "fb_short" } });
+    const out = await fbExchangeCode("c");
+    expect(out).toEqual({ accessToken: "fb_short", expiresInSec: 3600 });
+    expect(new Date(Date.now() + out.expiresInSec * 1000).getTime()).not.toBeNaN();
+  });
+
+  it("a zero or negative expires_in cannot produce an already-expired token", async () => {
+    for (const bogus of [0, -1]) {
+      stubFetch({ body: { access_token: "long", expires_in: bogus } });
+      const out = await igExchangeLongLived("s");
+      expect(out.expiresInSec, String(bogus)).toBeGreaterThan(0);
+      expect(new Date(Date.now() + out.expiresInSec * 1000).getTime(), String(bogus)).toBeGreaterThan(Date.now());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("igExchangeCode refuses a 200 that carries a token but no user id", async () => {
+    stubFetch({ body: { access_token: "short_only" } });
+    await expect(igExchangeCode("c")).rejects.toMatchObject({ code: "META_AUTH_FAILED" });
+  });
+});
+
+/* ================================================================== *
+ * AUDIT PASS 2 — the byte clamp, against the characters Instagram
+ * actually carries.
+ *
+ * The existing clamp tests use "ў": 2 UTF-8 bytes but ONE UTF-16 code
+ * unit, so a clamp that slices UTF-16 units can never be caught by
+ * them. An emoji is one character made of TWO code units, and that is
+ * the case that matters — every second Instagram DM has one.
+ * ================================================================== */
+
+describe("[audit] clampTextBytes against emoji and very long text", () => {
+  /** code units in the surrogate range that are not part of a valid pair */
+  function loneSurrogates(s: string): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) {
+      const u = s.charCodeAt(i);
+      if (u >= 0xd800 && u <= 0xdbff) {
+        const next = s.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) i++;
+        else out.push(u);
+      } else if (u >= 0xdc00 && u <= 0xdfff) {
+        out.push(u);
+      }
+    }
+    return out;
+  }
+
+  it("the helper itself finds a lone surrogate and clears a clean string", () => {
+    expect(loneSurrogates("salom 😀")).toEqual([]);
+    expect(loneSurrogates("salom \ud83d")).toEqual([0xd83d]);
+  });
+
+  /**
+   * The clamp walked BACKWARDS one UTF-16 code unit at a time, so when the byte
+   * budget ran out between the two halves of an emoji it stopped there and
+   * returned a string ending in a lone high surrogate. The "ab" prefix is only
+   * there to line the parity up — any message whose emoji straddles the 1000th
+   * byte does it.
+   */
+  it("never cuts an emoji in half, whatever the byte parity of what precedes it", () => {
+    for (const prefix of ["", "a", "ab", "abc", "салом ", "narx: "]) {
+      const out = clampTextBytes(prefix + "😀".repeat(400));
+      const bytes = new TextEncoder().encode(out);
+      expect(bytes.length, prefix).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+      expect(loneSurrogates(out), `prefix ${JSON.stringify(prefix)}`).toEqual([]);
+      // a split code point survives encode() only as U+FFFD, so the round trip
+      // through UTF-8 is the same assertion from the wire's point of view
+      expect(new TextDecoder("utf-8", { fatal: true }).decode(bytes), prefix).toBe(out);
+    }
+  });
+
+  /**
+   * The concrete consequence: the Send API body is serialised and written as
+   * UTF-8. A lone surrogate does not survive that — it becomes U+FFFD — so the
+   * customer receives a replacement character where the emoji was.
+   */
+  it("the DM that reaches Meta survives being written to the wire as UTF-8", async () => {
+    const acct = {
+      id: "acc_1",
+      igUserId: "ig_1",
+      connectionMode: "INSTAGRAM_LOGIN",
+      isDemo: false,
+    } as unknown as InstagramAccount;
+
+    await sendInstagramText(acct, "cust", "ab" + "😀".repeat(400), { lastUserMessageAt: new Date() });
+
+    const body = graphMock.mock.calls[0]![0]!.body as GraphBody;
+    const json = JSON.stringify(body);
+    expect(Buffer.from(json, "utf8").toString("utf8")).toBe(json);
+    expect(loneSurrogates(body.message!.text!)).toEqual([]);
+  });
+
+  it("a mixed emoji/Cyrillic message is clamped to whole characters and still fills the budget", () => {
+    const out = clampTextBytes("Assalomu alaykum! 😀 Narx 500000 so'm. ".repeat(60));
+    const bytes = new TextEncoder().encode(out);
+    expect(bytes.length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+    expect(bytes.length).toBeGreaterThan(MAX_TEXT_BYTES - 8); // whole-character step, not a giveaway
+    expect(loneSurrogates(out)).toEqual([]);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  /**
+   * The clamp re-encoded the WHOLE remaining string on every step, so the cost
+   * was quadratic in the input: a 200 000-character message (an admin pasting a
+   * document into a rule template, a runaway AI reply) took about two MINUTES
+   * of blocked event loop before a single DM went out.
+   */
+  it(
+    "clamps a very long message in bounded time",
+    () => {
+      const huge = "x".repeat(200_000);
+      const started = Date.now();
+      const out = clampTextBytes(huge);
+      const elapsed = Date.now() - started;
+      expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(MAX_TEXT_BYTES);
+      expect(out.endsWith("…")).toBe(true);
+      expect(elapsed).toBeLessThan(2000);
+    },
+    { timeout: 20_000 },
+  );
+
+  it("still returns short text untouched and never pads it", () => {
+    expect(clampTextBytes("salom 😀")).toBe("salom 😀");
+    expect(clampTextBytes("")).toBe("");
+    // exactly at the budget is inside it
+    const exact = "a".repeat(MAX_TEXT_BYTES);
+    expect(clampTextBytes(exact)).toBe(exact);
+    expect(clampTextBytes("a".repeat(MAX_TEXT_BYTES + 1)).endsWith("…")).toBe(true);
+  });
+
+  /**
+   * buildPrivateReplyMessage hands clampTextBytes a budget that a long
+   * admin-pasted file link can squeeze to nothing. It must never answer with
+   * MORE bytes than it was given — that would be the clamp overshooting the
+   * very limit it exists to enforce.
+   */
+  it("never returns more bytes than the budget it was handed, however small", () => {
+    for (const budget of [1, 2, 3, 4, 5, 10, 50]) {
+      const out = clampTextBytes("narxlar ro'yxati 😀 juda uzun sarlavha", budget);
+      expect(new TextEncoder().encode(out).length, `budget ${budget}`).toBeLessThanOrEqual(budget);
+      expect(loneSurrogates(out), `budget ${budget}`).toEqual([]);
+    }
+  });
+});
+
+/* ================================================================== *
+ * AUDIT PASS 3 — two of the customer's messages in flight at once.
+ *
+ * Every webhook POST ends with after(() => drainNow()), and drainNow
+ * takes no cross-invocation lock. Two messages from the same person
+ * arrive as two deliveries, so two drains run side by side, each
+ * claiming a different job and each reading the SAME lead-flow session
+ * before the other writes. Both then hold a snapshot saying the session
+ * sits on question N. This is what that looks like.
+ * ================================================================== */
+
+describe("[audit] a lead flow session under two concurrent messages", () => {
+  beforeEach(async () => {
+    seedAccount();
+    seedConversation();
+    threeQuestionFlow();
+    await startFlowSession({ flowId: "flow_1", accountId: "acc_1", conversationId: "conv_1" });
+  });
+
+  /** What a second worker holds: the row as it looked before the first worker wrote. */
+  const snapshot = () => ({ ...(store.leadFlowSession.find((s) => s.status === "ACTIVE") as object) }) as never;
+
+  it("does not write the second message as the answer to the question the first one just answered", async () => {
+    const first = snapshot();
+    const second = snapshot(); // same state — both workers read before either wrote
+
+    await handleFlowAnswer(first, "Aziz"); // answers q_name, advances to q_phone
+    await handleFlowAnswer(second, "+998901234567"); // the customer's SECOND message
+
+    const nameAnswer = store.leadAnswer.find((a) => a.questionId === "q_name");
+    // The phone number must never end up filed as the person's NAME.
+    expect(nameAnswer!.value).toBe("Aziz");
+    expect(store.leadAnswer.filter((a) => a.questionId === "q_name")).toHaveLength(1);
+  });
+
+  it("does not rewind the session, so the customer is not asked the same question twice", async () => {
+    const first = snapshot();
+    const second = snapshot();
+
+    const a = await handleFlowAnswer(first, "Aziz");
+    const b = await handleFlowAnswer(second, "Aziza");
+
+    expect(a.messages[0]!.text).toBe("Telefon raqamingiz?");
+    // the second worker must not re-send the question the first already moved past
+    expect(b.messages.map((m) => m.text)).not.toContain("Ismingiz?");
+    expect(activeSessionRow()!.currentQuestionId).toBe("q_phone");
+  });
+
+  /**
+   * The same race on the LAST question is the expensive one: completeSession()
+   * creates a Lead row unconditionally, so a stale snapshot run a second time
+   * puts a duplicate of the same person into the CRM — with a duplicate CREATED
+   * event and the conversation re-pointed at the second one.
+   */
+  it("completes once: a replayed final answer cannot create a second lead", async () => {
+    await handleFlowAnswer(activeSessionRow() as never, "Aziz");
+    await handleFlowAnswer(activeSessionRow() as never, "+998901234567");
+    const beforeLast = snapshot(); // a second worker's view, still on the last question
+
+    const done = await handleFlowAnswer(activeSessionRow() as never, "1");
+    expect(done.sessionStatus).toBe("COMPLETED");
+    expect(store.lead).toHaveLength(1);
+
+    await handleFlowAnswer(beforeLast, "2"); // the replay
+
+    expect(store.lead).toHaveLength(1);
+    expect(store.leadEvent).toHaveLength(1);
+    expect(store.leadFlowSession.filter((s) => s.status === "COMPLETED")).toHaveLength(1);
+    expect(store.conversation[0]!.leadId).toBe(store.lead[0]!.id);
+  });
+
+  it("a cancelled session cannot be answered back into life", async () => {
+    const stale = snapshot();
+    await handleFlowAnswer(activeSessionRow() as never, "bekor");
+    expect(store.leadFlowSession[0]!.status).toBe("CANCELLED");
+
+    await handleFlowAnswer(stale, "Aziz");
+
+    expect(store.leadFlowSession[0]!.status).toBe("CANCELLED");
+    expect(store.leadAnswer).toHaveLength(0);
+    expect(store.lead).toHaveLength(0);
+  });
+
+  it("the ordinary one-message-at-a-time path is untouched", async () => {
+    const first = await handleFlowAnswer(activeSessionRow() as never, "Aziz");
+    expect(first.messages[0]!.text).toBe("Telefon raqamingiz?");
+    const second = await handleFlowAnswer(activeSessionRow() as never, "+998901234567");
+    expect(second.messages[0]!.text).toContain("Qaysi shahardansiz?");
+    const third = await handleFlowAnswer(activeSessionRow() as never, "1");
+    expect(third.sessionStatus).toBe("COMPLETED");
+    expect(store.lead).toHaveLength(1);
+    expect(store.leadAnswer).toHaveLength(3);
+  });
+
+  it("an invalid answer still re-prompts rather than being treated as a lost race", async () => {
+    await handleFlowAnswer(activeSessionRow() as never, "Aziz");
+    const bad = await handleFlowAnswer(activeSessionRow() as never, "not a phone");
+    expect(bad.sessionStatus).toBe("ACTIVE");
+    expect(bad.messages[0]!.text).toMatch(/valid phone number/i);
+    expect(activeSessionRow()!.currentQuestionId).toBe("q_phone");
   });
 });

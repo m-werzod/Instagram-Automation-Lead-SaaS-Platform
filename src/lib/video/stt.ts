@@ -153,9 +153,25 @@ async function transcribeOpenAiCompatible(audioPath: string, model: string, lang
       .map((w) => ({ start: w.start, end: w.end, text: w.word.trim() })),
   }));
 
-  // Some gateways return only the flat text; make a single cue rather than nothing.
+  /**
+   * Some gateways answer verbose_json with the flat text and no segments at
+   * all. One cue for the whole clip is the right answer — but it needs a real
+   * end: a 0→0 cue is zero-length, and normalizeCues (which the transcribe job
+   * runs before storing) drops it, so the operator got a green job, an empty
+   * subtitle track and no captions, with nothing said. The audio this module
+   * was handed is the clip, so its own length is the cue's length; when that
+   * cannot be read, say so rather than store nothing.
+   */
   if (cues.length === 0 && json.text?.trim()) {
-    cues = [{ start: 0, end: 0, text: json.text.trim() }];
+    const span = wavDurationSec(bytes);
+    if (span === null || span <= 0) {
+      throw new SttUnavailableError(
+        "openai-compatible",
+        "The provider returned a transcript with no timings, so there is nothing to place on the timeline.",
+        "Set STT_MODEL to a model that returns verbose_json segments, or set STT_PROVIDER=google.",
+      );
+    }
+    cues = [{ start: 0, end: span, text: json.text.trim() }];
   }
 
   return {
@@ -165,6 +181,38 @@ async function transcribeOpenAiCompatible(audioPath: string, model: string, lang
     model,
     hasWordTimings: words.length > 0,
   };
+}
+
+/**
+ * Length of a RIFF/WAVE file, read from its own header.
+ *
+ * The audio handed to a transcription provider is produced by
+ * buildAudioExtractArgs — 16 kHz mono PCM in a WAV container — so the header is
+ * there to be read rather than guessed at. Returns null for anything that is
+ * not a PCM WAV; a caller must then refuse rather than invent a duration.
+ */
+function wavDurationSec(bytes: Buffer): number | null {
+  if (bytes.byteLength < 44) return null;
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE") return null;
+
+  let offset = 12;
+  let byteRate = 0;
+  while (offset + 8 <= bytes.byteLength) {
+    const id = bytes.toString("ascii", offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    const body = offset + 8;
+    if (id === "fmt " && body + 16 <= bytes.byteLength) {
+      byteRate = bytes.readUInt32LE(body + 8);
+    } else if (id === "data") {
+      if (byteRate <= 0) return null;
+      // A streamed WAV can carry a placeholder size; fall back to what is here.
+      const actual = Math.min(size || bytes.byteLength - body, bytes.byteLength - body);
+      return actual > 0 ? actual / byteRate : null;
+    }
+    // Chunks are word-aligned, and an odd size is followed by a pad byte.
+    offset = body + size + (size % 2);
+  }
+  return null;
 }
 
 // ---- Google Gemini ----

@@ -162,11 +162,30 @@ export type ReachEstimate =
   | { available: true; usersLowerBound: number; usersUpperBound: number; fetchedAt: string }
   | { available: false; reason: string };
 
+/**
+ * Read one of Meta's bounds, or null when Meta did not actually give a number.
+ * Bare Number() is too generous to ask with: Number(null), Number(""),
+ * Number(" ") and Number([]) are all 0, and Number(true) is 1. A zero reach
+ * estimate is a real answer this product renders as such, so coercing "Meta
+ * said nothing" into it invents an audience size and shows it as fact — the
+ * same failure mode as rendering the -1 sentinel. (parseCampaignInsights' own
+ * `opt()` draws this line for the metrics; this is the same rule for bounds.)
+ */
+function reachBound(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 export function parseReachEstimate(json: Record<string, unknown>): ReachEstimate {
   const node = (Array.isArray(json.data) ? json.data[0] : json.data) as Record<string, unknown> | undefined;
-  const lower = Number(node?.users_lower_bound);
-  const upper = Number(node?.users_upper_bound);
-  if (!node || node.estimate_ready === false || !Number.isFinite(lower) || !Number.isFinite(upper) || lower < 0 || upper < 0) {
+  const lower = node ? reachBound(node.users_lower_bound) : null;
+  const upper = node ? reachBound(node.users_upper_bound) : null;
+  // lower/upper < 0 is Meta's -1 "cannot tell you" sentinel.
+  if (!node || node.estimate_ready === false || lower === null || upper === null || lower < 0 || upper < 0) {
     return { available: false, reason: "Estimate unavailable until Meta processes this audience." };
   }
   return { available: true, usersLowerBound: lower, usersUpperBound: upper, fetchedAt: new Date().toISOString() };

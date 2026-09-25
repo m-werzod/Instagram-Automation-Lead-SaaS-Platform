@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Campaign, InstagramAccount } from "@prisma/client";
 
 /**
@@ -140,6 +140,10 @@ const {
       if (args?.include?.customer) {
         const cust = rowsOf("paymentCustomer").find((c) => c.id === row.customerId);
         out.customer = cust ? { ...cust } : null;
+      }
+      if (args?.include?.account) {
+        const acc = rowsOf("instagramAccount").find((a) => a.id === row.accountId);
+        out.account = acc ? { ...acc } : null;
       }
       if (args?.select) {
         const keys = Object.entries(args.select).filter(([, v]) => v).map(([k]) => k);
@@ -309,6 +313,7 @@ const {
     ctaConfig: table("ctaConfig"),
     contentItem: table("contentItem"),
     auditLog: table("auditLog"),
+    instagramAccount: table("instagramAccount", { defaults: { isDemo: false } }),
   };
 
   const graphMock = vi.fn(async (opts: { host: string; method?: string; path: string; body?: Row; params?: Row }) => {
@@ -465,6 +470,7 @@ import {
   stopCampaignInMeta,
   parseCampaignInsights,
   parseReachEstimate,
+  syncCampaignFromMeta,
   targetingProblem,
 } from "@/lib/meta/marketing";
 import {
@@ -475,9 +481,24 @@ import {
   chargeIdempotencyKey,
   DEFAULT_PRICING,
   nextBillingDate,
+  canReplayCharge,
+  IDEMPOTENCY_WINDOW_MS,
+  inFlightPaymentAction,
+  invoiceNumber,
+  nextRetryAt as computeNextRetryAt,
+  paymentStatusFromIntent,
+  RETRY_DELAYS_DAYS,
   type Pricing,
 } from "@/lib/billing/pricing";
-import { verifyStripeSignature, summarizeRefund } from "@/lib/billing/stripe";
+import {
+  verifyStripeSignature,
+  summarizeRefund,
+  cardFromPaymentMethod,
+  formEncode,
+  PaymentProviderError,
+  StripeClient,
+  summarizeIntent,
+} from "@/lib/billing/stripe";
 import { hmacSha256 } from "@/lib/crypto";
 import {
   applyIntent,
@@ -487,14 +508,21 @@ import {
   collectPayment,
   createCampaignFeePayment,
   createPayment,
+  ensureCustomer,
   ensurePlanSchedule,
+  findCustomer,
+  getPricing,
   recordAndProcessEvent,
   reconcileStuckPayments,
   refreshPaymentMethods,
+  removeMethod,
   replayFailedBillingEvents,
   retryFailedPayments,
   runDueSchedules,
   setAutoPay,
+  setDefaultMethod,
+  syncPaymentFromProvider,
+  toPricing,
 } from "@/lib/billing/service";
 
 // ---------------------------------------------------------------- helpers
@@ -1266,9 +1294,32 @@ describe("the currency guard on percentage fees", () => {
       expect(e.reason).toMatch(/EUR/);
       expect(e.reason).toMatch(/USD/);
       expect(e.reason).toMatch(/converts no currencies/);
-      expect(e.fix).toMatch(/flat campaign fee|Billing/);
+      expect(e.fix).toMatch(/flat campaign fee/);
       expect(e.details).toMatchObject({ campaignCurrency: "EUR", pricingCurrency: "USD", campaignFeePercent: 10 });
     }
+  });
+
+  /**
+   * The "fix" is an instruction the owner will follow. Every amount in this
+   * system is an integer of 1/100th of a unit, which is only true for a
+   * 2-decimal currency — telling them to set the pricing currency to UZS (or
+   * any zero-decimal one) would turn every later charge into a 100x overcharge.
+   */
+  it("only ever advises switching to a currency this platform can actually bill in", () => {
+    const fixFor = (currency: string): string => {
+      try {
+        computeCampaignQuote({ lifetimeBudgetCents: 20000, currency }, pricing);
+        return expect.unreachable(`${currency} must be refused`) as never;
+      } catch (err) {
+        return String((err as { fix?: string }).fix);
+      }
+    };
+    // EUR is billable here, so naming it is safe advice
+    expect(fixFor("EUR")).toMatch(/Set the pricing currency to EUR/);
+    // UZS is not — the advice must NOT be "set the pricing currency to UZS"
+    expect(fixFor("UZS")).not.toMatch(/pricing currency to UZS/);
+    expect(fixFor("UZS")).toMatch(/USD, EUR, GBP/);
+    expect(fixFor("JPY")).not.toMatch(/pricing currency to JPY/);
   });
 
   it("prices normally when the currencies agree, whatever the casing", () => {
@@ -1687,7 +1738,31 @@ describe("provider webhook events", () => {
     expect(row.status).toBe("SUCCEEDED");
     expect(row.providerPaymentIntentId).toBe("pi_cs");
     expect(row.providerCheckoutSessionId).toBe("cs_1");
-    expect(customer.id).toBe("cust1");
+    expect(row.receiptUrl).toBe("https://r");
+    // the session's customer is ours, so the card it saved is mirrored too
+    expect(store.stripe.calls.some((c) => c.method === "listCards" && c.args === customer.providerCustomerId)).toBe(true);
+    expect(rowsIn("invoice")).toHaveLength(1);
+  });
+
+  /**
+   * Checkout puts our paymentId in the session metadata, but a PaymentIntent
+   * webhook can arrive for an intent this row has not been stamped with yet
+   * (the two race). The metadata fallback is what stops that becoming an
+   * "unknown payment, ignored" and a paid customer left PENDING for ever.
+   */
+  it("finds the payment by metadata when the intent id is not on the row yet", async () => {
+    seedCustomer();
+    const payment = seedPayment({ status: "PENDING", providerPaymentIntentId: null });
+    store.stripe.intents.set("pi_meta", { id: "pi_meta", status: "succeeded", chargeId: "ch_meta", receiptUrl: null, failureCode: null, failureMessage: null, amount: 1500, currency: "USD" });
+
+    const res = await recordAndProcessEvent({
+      id: "evt_meta",
+      type: "payment_intent.succeeded",
+      data: { object: { id: "pi_meta", metadata: { paymentId: String(payment.id) } } },
+    });
+    expect(res).toBe("processed");
+    expect(rowsIn("payment")[0]!.status).toBe("SUCCEEDED");
+    expect(rowsIn("payment")[0]!.providerPaymentIntentId).toBe("pi_meta");
   });
 });
 
@@ -1773,8 +1848,11 @@ describe("recurring schedules", () => {
     expect(out).toMatchObject({ charged: 0, pendingCreated: 1 });
     expect(rowsIn("payment")[0]!.status).toBe("PENDING");
     expect(alertMock.mock.calls.some(([s]) => /Payment due/.test(String(s)))).toBe(true);
-    // the period must not be re-created on the next run
-    expect((schedule.nextBillingAt as Date).getTime()).toBeGreaterThan(BASE_TIME);
+    // the period must not be re-created on the next run — it steps exactly one interval
+    expect((schedule.nextBillingAt as Date).getTime()).toBe(BASE_TIME + 30 * 86400_000);
+    // …and a second run of the scheduler finds nothing due, so no second payment is minted
+    expect(await runDueSchedules(new Date(BASE_TIME + 2000))).toMatchObject({ charged: 0, pendingCreated: 0, skipped: 0 });
+    expect(rowsIn("payment")).toHaveLength(1);
   });
 
   it("does not stall for ever on a period whose payment was cancelled", async () => {
@@ -1910,5 +1988,1311 @@ describe("payment methods", () => {
     const updated = await setAutoPay(customer as never, true, "admin1");
     expect(updated.autoPay).toBe(true);
     expect(rowsIn("auditLog").map((a) => a.action)).toContain("ENABLED_AUTOMATIC_PAYMENTS");
+  });
+});
+
+// ================================================================
+// 12. REACH ESTIMATE — READING META'S NUMBERS STRICTLY
+// ================================================================
+
+/**
+ * The -1 sentinel is not the only way Meta can decline to give a number, and
+ * `Number()` is a lossy way to ask: Number(null), Number(""), Number(" ") and
+ * Number([]) are all 0. A bound that arrives as any of those is "Meta told us
+ * nothing", but a 0 reach estimate is a real, meaningful answer this product
+ * deliberately renders (see the zero-reach test above) — so coercing one into
+ * the other invents an audience size and shows it with full confidence.
+ * parseCampaignInsights' own `opt()` already draws exactly this line.
+ */
+describe("reach estimate — a bound Meta did not actually give is never read as a number", () => {
+  const blankBounds: Array<[string, unknown]> = [
+    ["null", null],
+    ["empty string", ""],
+    ["whitespace", "   "],
+    ["empty array", []],
+    ["boolean", true],
+    ["object", {}],
+  ];
+
+  it.each(blankBounds)("treats a %s bound as unavailable rather than as zero people", (_label, value) => {
+    const both = parseReachEstimate({ data: { users_lower_bound: value, users_upper_bound: value } });
+    expect(both.available).toBe(false);
+    expect(Object.keys(both)).toEqual(["available", "reason"]);
+
+    // and the same when only ONE bound is junk — a half-known range is not a range
+    const lowerOnly = parseReachEstimate({ data: { users_lower_bound: value, users_upper_bound: 50_000 } });
+    expect(lowerOnly.available).toBe(false);
+    const upperOnly = parseReachEstimate({ data: { users_lower_bound: 1_000, users_upper_bound: value } });
+    expect(upperOnly.available).toBe(false);
+  });
+
+  it("still accepts the numeric strings Meta legitimately sends", () => {
+    expect(parseReachEstimate({ data: { users_lower_bound: "1200", users_upper_bound: "3400" } })).toMatchObject({
+      available: true,
+      usersLowerBound: 1200,
+      usersUpperBound: 3400,
+    });
+    // and a genuine zero is still a genuine zero, not collateral damage from the fix
+    expect(parseReachEstimate({ data: { users_lower_bound: 0, users_upper_bound: 0 } })).toMatchObject({ available: true, usersLowerBound: 0 });
+    expect(parseReachEstimate({ data: { users_lower_bound: "0", users_upper_bound: "0" } })).toMatchObject({ available: true, usersLowerBound: 0 });
+  });
+
+  it("never lets a non-number reach the caller as usersLowerBound/usersUpperBound", () => {
+    for (const v of [null, "", "   ", [], {}, true, "abc", NaN, Infinity, undefined]) {
+      const r = parseReachEstimate({ data: { users_lower_bound: v, users_upper_bound: v } });
+      if (r.available) {
+        expect.unreachable(`a ${JSON.stringify(v)} bound must not be reported as available`);
+      }
+    }
+  });
+});
+
+// ================================================================
+// 13. THE REAL STRIPE WIRE FORMAT
+// ================================================================
+
+/**
+ * Everything above this point drives billing through FakeStripeProvider, which
+ * is right for testing what the SERVICE decides. It leaves the code that
+ * actually talks to Stripe — the form encoder, the auth/idempotency headers,
+ * the HTTP error mapping and the response parsers — completely unexercised.
+ * These tests drive the REAL StripeClient/StripeProvider against a stubbed
+ * global fetch: nothing leaves the process, but the bytes that would have gone
+ * to Stripe are asserted exactly.
+ */
+
+interface FetchCall {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string | undefined;
+  hasAbortSignal: boolean;
+}
+type StripeReply = { status?: number; json?: unknown; text?: string; throws?: unknown };
+
+function stubStripeFetch(reply: StripeReply | ((call: FetchCall) => StripeReply)): FetchCall[] {
+  const calls: FetchCall[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: unknown, init?: Record<string, unknown>) => {
+      const call: FetchCall = {
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        headers: { ...((init?.headers ?? {}) as Record<string, string>) },
+        body: init?.body as string | undefined,
+        hasAbortSignal: (init?.signal as unknown) instanceof AbortSignal,
+      };
+      calls.push(call);
+      const r = typeof reply === "function" ? reply(call) : reply;
+      if (r.throws !== undefined) throw r.throws;
+      return new Response(r.text ?? JSON.stringify(r.json ?? {}), {
+        status: r.status ?? 200,
+        headers: { "content-type": "application/json" },
+      });
+    }),
+  );
+  return calls;
+}
+
+/** The form body Stripe would have received, as key/value pairs. */
+function sentParams(call: FetchCall): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(call.body ?? ""));
+}
+
+/** Never leave a stubbed global fetch behind for whatever runs next. */
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("Stripe form encoding — the shape Stripe actually requires", () => {
+  const entries = (o: Record<string, unknown>) => Array.from(formEncode(o).entries());
+
+  it("flattens nested objects into a[b] and arrays into a[0]", () => {
+    expect(entries({ amount: 1500, currency: "usd" })).toEqual([
+      ["amount", "1500"],
+      ["currency", "usd"],
+    ]);
+    expect(entries({ metadata: { adminId: "a1", campaignId: "c1" } })).toEqual([
+      ["metadata[adminId]", "a1"],
+      ["metadata[campaignId]", "c1"],
+    ]);
+    expect(entries({ payment_method_types: ["card"] })).toEqual([["payment_method_types[0]", "card"]]);
+  });
+
+  it("encodes an array of objects the way line_items needs", () => {
+    expect(entries({ line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: 1350 } }] })).toEqual([
+      ["line_items[0][quantity]", "1"],
+      ["line_items[0][price_data][currency]", "usd"],
+      ["line_items[0][price_data][unit_amount]", "1350"],
+    ]);
+  });
+
+  it("sends booleans as Stripe's literal true/false", () => {
+    expect(entries({ off_session: true, confirm: false })).toEqual([
+      ["off_session", "true"],
+      ["confirm", "false"],
+    ]);
+  });
+
+  /** A dropped key is absent; a stringified "null" would be a value Stripe stores. */
+  it("omits null and undefined entirely instead of sending the word 'null'", () => {
+    const out = formEncode({ a: 1, b: null, c: undefined, nested: { keep: "y", drop: null } });
+    expect(Array.from(out.entries())).toEqual([
+      ["a", "1"],
+      ["nested[keep]", "y"],
+    ]);
+    expect(out.toString()).not.toContain("null");
+    expect(out.toString()).not.toContain("undefined");
+  });
+});
+
+describe("StripeClient — headers, transport and error mapping", () => {
+  const client = new StripeClient("sk_test_wire");
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs a form-encoded body with auth, pinned API version and an idempotency key", async () => {
+    const calls = stubStripeFetch({ json: { id: "pi_1" } });
+    await client.request("POST", "/payment_intents", { amount: 500, currency: "usd" }, { idempotencyKey: "key-1" });
+
+    expect(calls).toHaveLength(1);
+    const c = calls[0]!;
+    expect(c.url).toBe("https://api.stripe.com/v1/payment_intents");
+    expect(c.method).toBe("POST");
+    expect(c.headers.Authorization).toBe("Bearer sk_test_wire");
+    expect(c.headers["Stripe-Version"]).toBe("2024-06-20");
+    expect(c.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    expect(c.headers["Idempotency-Key"]).toBe("key-1");
+    expect(sentParams(c)).toEqual({ amount: "500", currency: "usd" });
+    // the timeout can only fire if a signal was actually wired to the request
+    expect(c.hasAbortSignal).toBe(true);
+  });
+
+  it("omits the Idempotency-Key header when none was asked for", async () => {
+    const calls = stubStripeFetch({ json: {} });
+    await client.request("POST", "/customers", { email: "a@b.c" });
+    expect(calls[0]!.headers["Idempotency-Key"]).toBeUndefined();
+  });
+
+  it("puts GET params in the query string and sends no body", async () => {
+    const calls = stubStripeFetch({ json: { data: [] } });
+    await client.request("GET", "/payment_methods", { customer: "cus_1", type: "card", limit: 20 });
+    const c = calls[0]!;
+    expect(c.method).toBe("GET");
+    expect(c.body).toBeUndefined();
+    const q = new URL(c.url).searchParams;
+    expect(q.get("customer")).toBe("cus_1");
+    expect(q.get("type")).toBe("card");
+    expect(q.get("limit")).toBe("20");
+  });
+
+  it("maps a card decline onto PaymentProviderError with its codes intact", async () => {
+    stubStripeFetch({
+      status: 402,
+      json: { error: { type: "card_error", code: "card_declined", decline_code: "insufficient_funds", message: "Your card has insufficient funds." } },
+    });
+    const err = await client.request("POST", "/payment_intents", { amount: 1 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaymentProviderError);
+    const e = err as PaymentProviderError;
+    expect(e.code).toBe("PAYMENT_PROVIDER_ERROR");
+    expect(e.status).toBe(402);
+    expect(e.isCardDeclined).toBe(true);
+    expect(e.providerCode).toBe("card_declined");
+    expect(e.declineCode).toBe("insufficient_funds");
+    expect(e.message).toBe("Your card has insufficient funds.");
+    expect(e.fix).toMatch(/declined/i);
+  });
+
+  it("points a 401 at the secret key rather than telling the admin to retry", async () => {
+    stubStripeFetch({ status: 401, json: { error: { type: "invalid_request_error", message: "Invalid API Key provided" } } });
+    const e = (await client.request("GET", "/customers").catch((x: unknown) => x)) as PaymentProviderError;
+    expect(e.status).toBe(401);
+    expect(e.isCardDeclined).toBe(false);
+    expect(e.fix).toMatch(/PAYMENT_SECRET_KEY/);
+  });
+
+  /** An HTML 502 from a proxy must not surface as a raw SyntaxError from JSON.parse. */
+  it("turns a non-JSON response into a payment error, not a parser crash", async () => {
+    stubStripeFetch({ status: 502, text: "<html><body>Bad Gateway</body></html>" });
+    const e = (await client.request("GET", "/customers").catch((x: unknown) => x)) as PaymentProviderError;
+    expect(e).toBeInstanceOf(PaymentProviderError);
+    expect(e).not.toBeInstanceOf(SyntaxError);
+    expect(e.message).toMatch(/non-JSON/);
+    expect(e.status).toBe(502);
+  });
+
+  it("treats an empty 200 body as an empty object", async () => {
+    stubStripeFetch({ status: 200, text: "" });
+    await expect(client.request("POST", "/payment_methods/pm_1/detach")).resolves.toEqual({});
+  });
+
+  it("reports a network failure and an abort as 'could not reach', never as a success", async () => {
+    stubStripeFetch({ throws: new TypeError("fetch failed") });
+    const net = (await client.request("GET", "/customers").catch((x: unknown) => x)) as PaymentProviderError;
+    expect(net).toBeInstanceOf(PaymentProviderError);
+    expect(net.status).toBe(503);
+    expect(net.message).toMatch(/Could not reach/);
+
+    const abort = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+    stubStripeFetch({ throws: abort });
+    const timedOut = (await client.request("POST", "/payment_intents", { amount: 1 }).catch((x: unknown) => x)) as PaymentProviderError;
+    expect(timedOut).toBeInstanceOf(PaymentProviderError);
+    expect(timedOut.status).toBe(503);
+  });
+
+  /** A transport-level status outside 4xx/5xx must not become an HTTP status we return. */
+  it("clamps an implausible provider status to 502", () => {
+    expect(new PaymentProviderError("x", { status: 600 }).status).toBe(502);
+    expect(new PaymentProviderError("x", { status: 0 }).status).toBe(502);
+    expect(new PaymentProviderError("x").status).toBe(502);
+    expect(new PaymentProviderError("x", { status: 429 }).status).toBe(429);
+  });
+});
+
+/** The real provider, not the fake: what would have gone over the wire to Stripe. */
+const realStripe = await vi.importActual<typeof import("@/lib/billing/stripe")>("@/lib/billing/stripe");
+
+describe("StripeProvider — the requests that move money", () => {
+  const provider = new realStripe.StripeProvider("sk_test_wire");
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("charges a saved card off-session under a key derived from the attempt", async () => {
+    const calls = stubStripeFetch({ json: { id: "pi_9", status: "succeeded", amount: 1350, currency: "usd", latest_charge: { id: "ch_9", receipt_url: "https://receipt" } } });
+    const out = await provider.chargeOffSession({
+      customerId: "cus_1",
+      paymentMethodId: "pm_1",
+      amountCents: 1350,
+      currency: "USD",
+      description: "Campaign fee",
+      metadata: { paymentId: "pay1" },
+      idempotencyKey: chargeIdempotencyKey("k-1", 1),
+    });
+
+    const c = calls[0]!;
+    expect(c.url).toBe("https://api.stripe.com/v1/payment_intents");
+    // the same attempt replays rather than double-charging only because the key is stable
+    expect(c.headers["Idempotency-Key"]).toBe("pi:k-1:1");
+    expect(sentParams(c)).toMatchObject({
+      amount: "1350",
+      currency: "usd", // Stripe rejects an uppercase currency
+      customer: "cus_1",
+      payment_method: "pm_1",
+      off_session: "true",
+      confirm: "true",
+      description: "Campaign fee",
+      "metadata[paymentId]": "pay1",
+      "expand[]": "latest_charge",
+    });
+    expect(out).toMatchObject({ id: "pi_9", status: "succeeded", chargeId: "ch_9", receiptUrl: "https://receipt", amount: 1350, currency: "USD" });
+  });
+
+  /** A decline is an outcome to record, not a transport failure to blow up on. */
+  it("returns a declined card as a failed summary instead of throwing", async () => {
+    stubStripeFetch({
+      status: 402,
+      json: { error: { type: "card_error", code: "card_declined", decline_code: "do_not_honor", message: "Your card was declined." } },
+    });
+    const out = await provider.chargeOffSession({
+      customerId: "cus_1",
+      paymentMethodId: "pm_1",
+      amountCents: 900,
+      currency: "EUR",
+      description: "d",
+      metadata: {},
+      idempotencyKey: "k:1",
+    });
+    expect(out.status).toBe("requires_payment_method");
+    expect(paymentStatusFromIntent(out.status)).toBe("FAILED");
+    expect(out.failureCode).toBe("do_not_honor");
+    expect(out.failureMessage).toMatch(/declined/i);
+    expect(out.amount).toBe(900);
+    expect(out.currency).toBe("EUR");
+    expect(out.chargeId).toBeNull();
+  });
+
+  /** An API outage is NOT a decline: swallowing it would mark a payment failed and start the retry clock. */
+  it("still throws when the failure is not a card error", async () => {
+    stubStripeFetch({ status: 500, json: { error: { type: "api_error", message: "Stripe is down" } } });
+    await expect(
+      provider.chargeOffSession({ customerId: "c", paymentMethodId: "p", amountCents: 1, currency: "USD", description: "d", metadata: {}, idempotencyKey: "k:1" }),
+    ).rejects.toBeInstanceOf(PaymentProviderError);
+  });
+
+  it("builds a hosted Checkout that charges once and saves the card for later", async () => {
+    const calls = stubStripeFetch({ json: { id: "cs_1", url: "https://checkout", payment_intent: "pi_1" } });
+    const out = await provider.createPaymentSession({
+      customerId: "cus_1",
+      amountCents: 1512,
+      currency: "USD",
+      description: "Platform plan",
+      successUrl: "https://app/ok",
+      cancelUrl: "https://app/no",
+      metadata: { paymentId: "pay1" },
+      idempotencyKey: "k-1:1",
+    });
+    const p = sentParams(calls[0]!);
+    expect(calls[0]!.url).toBe("https://api.stripe.com/v1/checkout/sessions");
+    expect(calls[0]!.headers["Idempotency-Key"]).toBe("cs:k-1:1");
+    expect(p).toMatchObject({
+      mode: "payment",
+      customer: "cus_1",
+      "line_items[0][quantity]": "1",
+      "line_items[0][price_data][currency]": "usd",
+      "line_items[0][price_data][unit_amount]": "1512",
+      "line_items[0][price_data][product_data][name]": "Platform plan",
+      "payment_intent_data[setup_future_usage]": "off_session",
+      success_url: "https://app/ok",
+      cancel_url: "https://app/no",
+    });
+    expect(out).toEqual({ id: "cs_1", url: "https://checkout", paymentIntentId: "pi_1" });
+  });
+
+  /** Saving a card must not be able to take money: no amount may appear anywhere in the body. */
+  it("creates a setup session that charges nothing", async () => {
+    const calls = stubStripeFetch({ json: { id: "cs_2", url: "https://setup" } });
+    await provider.createSetupSession({ customerId: "cus_1", successUrl: "https://ok", cancelUrl: "https://no", metadata: { adminId: "a1" } });
+    const p = sentParams(calls[0]!);
+    expect(p.mode).toBe("setup");
+    expect(Object.keys(p).join(",")).not.toMatch(/amount|line_items|price_data/);
+  });
+
+  it("refunds against the payment intent under its own idempotency key", async () => {
+    const calls = stubStripeFetch({ json: { id: "re_1", status: "succeeded" } });
+    const out = await provider.refund("pi_1", "k-1");
+    expect(calls[0]!.url).toBe("https://api.stripe.com/v1/refunds");
+    expect(calls[0]!.headers["Idempotency-Key"]).toBe("re:k-1");
+    expect(sentParams(calls[0]!)).toEqual({ payment_intent: "pi_1" });
+    expect(out).toEqual({ id: "re_1", status: "succeeded" });
+  });
+
+  it("lists cards and URL-encodes ids on the detach and default-card paths", async () => {
+    const listCalls = stubStripeFetch({ json: { data: [{ id: "pm_1", card: { brand: "visa", last4: "4242", exp_month: 4, exp_year: 2030 } }] } });
+    expect(await provider.listCards("cus_1")).toEqual([{ id: "pm_1", brand: "visa", last4: "4242", expMonth: 4, expYear: 2030 }]);
+    expect(new URL(listCalls[0]!.url).searchParams.get("type")).toBe("card");
+
+    const detachCalls = stubStripeFetch({ json: {} });
+    await provider.detachCard("pm/../evil");
+    expect(detachCalls[0]!.url).toBe("https://api.stripe.com/v1/payment_methods/pm%2F..%2Fevil/detach");
+
+    const defaultCalls = stubStripeFetch({ json: {} });
+    await provider.setDefaultCard("cus_1", "pm_1");
+    expect(sentParams(defaultCalls[0]!)).toEqual({ "invoice_settings[default_payment_method]": "pm_1" });
+  });
+
+  /** The portal is optional (it must be switched on in the dashboard); its absence must not break Billing. */
+  it("returns null rather than throwing when the billing portal is not enabled", async () => {
+    stubStripeFetch({ status: 400, json: { error: { type: "invalid_request_error", message: "No configuration provided" } } });
+    await expect(provider.portalUrl("cus_1", "https://back")).resolves.toBeNull();
+  });
+});
+
+describe("Stripe response parsing", () => {
+  it("reads an expanded charge and a bare charge id the same way", () => {
+    expect(summarizeIntent({ id: "pi_1", status: "succeeded", amount: 100, currency: "eur", latest_charge: { id: "ch_1", receipt_url: "https://r" } })).toEqual({
+      id: "pi_1",
+      status: "succeeded",
+      chargeId: "ch_1",
+      receiptUrl: "https://r",
+      failureCode: null,
+      failureMessage: null,
+      amount: 100,
+      currency: "EUR",
+    });
+    const bare = summarizeIntent({ id: "pi_2", status: "processing", latest_charge: "ch_2" });
+    expect(bare.chargeId).toBe("ch_2");
+    expect(bare.receiptUrl).toBeNull();
+    expect(bare.amount).toBe(0);
+    expect(bare.currency).toBe("USD");
+  });
+
+  it("prefers the decline code over the generic error code", () => {
+    const s = summarizeIntent({ id: "pi_3", status: "requires_payment_method", last_payment_error: { code: "card_declined", decline_code: "lost_card", message: "Declined" } });
+    expect(s.failureCode).toBe("lost_card");
+    expect(summarizeIntent({ id: "pi_4", status: "x", last_payment_error: { code: "expired_card", message: "m" } }).failureCode).toBe("expired_card");
+    expect(summarizeIntent({ id: "pi_5" }).status).toBe("unknown");
+  });
+
+  it("reads a payment method with no card block without inventing details", () => {
+    expect(cardFromPaymentMethod({ id: "pm_1" })).toEqual({ id: "pm_1", brand: null, last4: null, expMonth: null, expYear: null });
+    expect(cardFromPaymentMethod({ id: "pm_2", card: { brand: "amex", last4: "0005" } })).toMatchObject({ brand: "amex", last4: "0005", expMonth: null });
+  });
+});
+
+// ================================================================
+// 14. THE SMALL PURE RULES THE MONEY PATH RESTS ON
+// ================================================================
+
+describe("payment status mapping and helpers", () => {
+  it("maps every Stripe intent status this product acts on", () => {
+    expect(
+      Object.fromEntries(
+        ["succeeded", "processing", "requires_action", "requires_confirmation", "canceled", "requires_payment_method"].map((s) => [s, paymentStatusFromIntent(s)]),
+      ),
+    ).toEqual({
+      succeeded: "SUCCEEDED",
+      processing: "PROCESSING",
+      requires_action: "REQUIRES_ACTION",
+      requires_confirmation: "REQUIRES_ACTION",
+      canceled: "CANCELED",
+      requires_payment_method: "FAILED",
+    });
+  });
+
+  /** An unrecognised status must never be optimistically read as SUCCEEDED. */
+  it("falls back to PENDING for a status it does not know", () => {
+    for (const s of ["requires_capture", "", "totally_new_status"]) {
+      expect(paymentStatusFromIntent(s)).toBe("PENDING");
+    }
+  });
+
+  it("numbers invoices per year, zero-padded, without truncating a big sequence", () => {
+    expect(invoiceNumber(2026, 1)).toBe("INV-2026-00001");
+    expect(invoiceNumber(2026, 99999)).toBe("INV-2026-99999");
+    expect(invoiceNumber(2026, 100000)).toBe("INV-2026-100000");
+  });
+
+  /**
+   * Past Stripe's 24h idempotency window a "replay" is a second charge. The
+   * boundary has to be exclusive, or a payment exactly 24h old is re-sent under
+   * a key Stripe has already forgotten.
+   */
+  it("allows a replay only inside Stripe's 24-hour idempotency window", () => {
+    const sent = new Date(BASE_TIME);
+    expect(canReplayCharge(sent, new Date(BASE_TIME + 1000))).toBe(true);
+    expect(canReplayCharge(sent, new Date(BASE_TIME + IDEMPOTENCY_WINDOW_MS - 1))).toBe(true);
+    expect(canReplayCharge(sent, new Date(BASE_TIME + IDEMPOTENCY_WINDOW_MS))).toBe(false);
+    expect(canReplayCharge(sent, new Date(BASE_TIME + IDEMPOTENCY_WINDOW_MS + 1))).toBe(false);
+  });
+
+  /**
+   * "Replay" re-sends the charge. It is only safe when the provider never gave
+   * us a reference for this attempt AND we can charge off-session — anything
+   * else must be READ, or a Checkout payment gets charged a second time under a
+   * different key.
+   */
+  it("only re-sends a charge that the provider left no trace of", () => {
+    const none = { providerPaymentIntentId: null, providerCheckoutSessionId: null };
+    expect(inFlightPaymentAction(none, true)).toBe("replay");
+    expect(inFlightPaymentAction(none, false)).toBe("read");
+    expect(inFlightPaymentAction({ providerPaymentIntentId: "pi_1", providerCheckoutSessionId: null }, true)).toBe("read");
+    expect(inFlightPaymentAction({ providerPaymentIntentId: null, providerCheckoutSessionId: "cs_1" }, true)).toBe("read");
+    expect(inFlightPaymentAction({ providerPaymentIntentId: "pi_1", providerCheckoutSessionId: "cs_1" }, true)).toBe("read");
+  });
+
+  it("backs off 1, 3 then 7 days and then gives up for good", () => {
+    const failedAt = new Date(BASE_TIME);
+    const days = (d: Date | null) => (d === null ? null : Math.round((d.getTime() - BASE_TIME) / 86400_000));
+    expect([1, 2, 3].map((a) => days(computeNextRetryAt(a, failedAt)))).toEqual([...RETRY_DELAYS_DAYS]);
+    expect(computeNextRetryAt(4, failedAt)).toBeNull();
+    expect(computeNextRetryAt(99, failedAt)).toBeNull();
+    // attempt 0 has not happened yet — there is nothing to schedule
+    expect(computeNextRetryAt(0, failedAt)).toBeNull();
+  });
+});
+
+// ================================================================
+// 15. AUDIT PASS — paths a user reaches that nothing above exercised
+// ================================================================
+
+/**
+ * The campaign fee's idempotency key contains the quoted amount, and a quote at
+ * a price that is no longer current is CANCELED. Change a price and change it
+ * back — which is exactly what an owner trying out pricing does — and the key
+ * for the original price points at a row that was cancelled on the way past.
+ * `POST /api/billing/payments` hands whatever comes back straight to
+ * collectPayment, and a cancelled payment cannot be collected.
+ */
+describe("a campaign fee after a price change is reverted", () => {
+  async function priceTrip(): Promise<{ customer: Row; first: Row; back: Row }> {
+    setPricing({ campaignFeeCents: 1000 });
+    const customer = seedCustomer();
+    seed("campaign", { id: "c1", name: "Autumn", dailyBudgetCents: 500, currency: "USD" });
+
+    const first = (await createCampaignFeePayment(customer as never, "c1")).payment! as unknown as Row;
+    setPricing({ campaignFeeCents: 2500 });
+    await createCampaignFeePayment(customer as never, "c1");
+    setPricing({ campaignFeeCents: 1000 }); // the owner changes their mind back
+    const back = (await createCampaignFeePayment(customer as never, "c1")).payment! as unknown as Row;
+    return { customer, first, back };
+  }
+
+  it("hands back a payment the admin can actually pay, not a cancelled one", async () => {
+    const { customer, first, back } = await priceTrip();
+    // same key -> necessarily the same row; it must have been re-opened, not left dead
+    expect(back.id).toBe(first.id);
+    expect(back.amountCents).toBe(1000);
+    expect(back.status).toBe("PENDING");
+    expect(back.canceledAt).toBeNull();
+
+    // this is precisely what the pay route does next with it
+    const out = await collectPayment(back as never, customer as never, { allowOffSession: true, returnPath: "/campaigns" });
+    expect(out.checkoutUrl).toMatch(/^https:\/\/checkout\.stripe\.test\//);
+  });
+
+  it("opens the Create-in-Meta gate once that revived fee is paid", async () => {
+    const { back } = await priceTrip();
+    const payer = rowsIn("paymentCustomer")[0]!;
+    payer.autoPay = true;
+    payer.defaultPaymentMethodId = "pm_local_1";
+    seedCardFor("cust1");
+
+    const paid = await collectPayment(back as never, payer as never, { allowOffSession: true });
+    expect(paid.payment.status).toBe("SUCCEEDED");
+    expect(paid.payment.amountCents).toBe(1000);
+
+    // the gate must see the fee that was paid, not the stale cancelled quote
+    const status = await campaignFeeStatus("c1");
+    expect(status).toMatchObject({ required: true, paid: true });
+    expect(() => assertCampaignFeePaid(status)).not.toThrow();
+  });
+
+  it("still refuses when the price moved on and the new quote is unpaid", async () => {
+    setPricing({ campaignFeeCents: 1000 });
+    const customer = seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    seed("campaign", { id: "c1", name: "Autumn", dailyBudgetCents: 500, currency: "USD" });
+
+    const cheap = (await createCampaignFeePayment(customer as never, "c1")).payment!;
+    await collectPayment(cheap as never, customer as never, { allowOffSession: true });
+    expect((await campaignFeeStatus("c1")).paid).toBe(true);
+
+    setPricing({ campaignFeeCents: 2500 });
+    await createCampaignFeePayment(customer as never, "c1");
+    const status = await campaignFeeStatus("c1");
+    expect(status).toMatchObject({ required: true, paid: false });
+    expect(status.quote.totalCents).toBe(2500);
+    expect(() => assertCampaignFeePaid(status)).toThrow(/has not been paid/);
+  });
+});
+
+/**
+ * The staged race earlier proves the LOSER backs off. This runs both collectors
+ * for real, concurrently, on one payment — the manual "Pay now" button and the
+ * hourly retry job landing together — and counts the charges Stripe saw.
+ */
+describe("two collectors racing for real", () => {
+  it("takes exactly one charge, mints one attempt and one invoice", async () => {
+    const customer = seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    const payment = seedPayment();
+
+    const [a, b] = await Promise.all([
+      collectPayment({ ...payment } as never, customer as never, { allowOffSession: true }),
+      collectPayment({ ...payment } as never, customer as never, { allowOffSession: true }),
+    ]);
+
+    expect(store.stripe.calls.filter((c) => c.method === "chargeOffSession")).toHaveLength(1);
+    expect(store.stripe.charges.size).toBe(1);
+    expect([...store.stripe.charges.keys()]).toEqual([chargeIdempotencyKey("idem-1", 1)]);
+    expect(rowsIn("payment")[0]!.attempts).toBe(1);
+    expect(rowsIn("payment")[0]!.status).toBe("SUCCEEDED");
+    expect(rowsIn("invoice")).toHaveLength(1);
+    // both callers are told the truth; neither is handed a half-finished row
+    expect([a.payment.status, b.payment.status]).toContain("SUCCEEDED");
+    expect(a.payment.attempts).toBe(1);
+    expect(b.payment.attempts).toBe(1);
+  });
+});
+
+/**
+ * Stripe answers `requires_action` for a saved card that wants 3-D Secure —
+ * routine for European cards on an off-session charge. The money is NOT taken,
+ * and the intent stays open and confirmable.
+ */
+describe("an off-session charge the cardholder has to authenticate", () => {
+  function authCustomer(): Row {
+    const customer = seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    return customer;
+  }
+
+  it("records it as REQUIRES_ACTION, takes no money and writes no invoice", async () => {
+    const customer = authCustomer();
+    store.stripe.outcome = "requires_action";
+    const out = await collectPayment(seedPayment() as never, customer as never, { allowOffSession: true });
+    expect(out.payment.status).toBe("REQUIRES_ACTION");
+    expect(out.payment.paidAt).toBeNull();
+    expect(rowsIn("invoice")).toHaveLength(0);
+  });
+
+  /** Neither recovery job looks at REQUIRES_ACTION, so the admin has to be told. */
+  it("tells the admin, because nothing automatic will ever pick it up again", async () => {
+    const customer = authCustomer();
+    store.stripe.outcome = "requires_action";
+    await collectPayment(seedPayment() as never, customer as never, { allowOffSession: true });
+
+    const day = new Date(Date.now() + 86400_000);
+    expect(await reconcileStuckPayments(day)).toBe(0);
+    expect(await retryFailedPayments(day)).toMatchObject({ retried: 0, succeeded: 0 });
+    expect(rowsIn("payment")[0]!.status).toBe("REQUIRES_ACTION");
+
+    const alerted = alertMock.mock.calls.map(([subject, text]) => `${String(subject)} ${String(text)}`).join("\n");
+    expect(alerted).toMatch(/authenticat/i);
+    expect(rowsIn("auditLog").map((a) => a.action)).toContain("PAYMENT_REQUIRES_ACTION");
+  });
+
+  /**
+   * Charging it off-session again cannot satisfy 3-D Secure — it just opens a
+   * SECOND intent for the same money, and if the customer then authenticates
+   * the first one they are charged twice. Paying again must read the existing
+   * intent and otherwise hand them hosted Checkout, where authentication can
+   * actually happen.
+   */
+  it("never answers 'pay again' with a second off-session charge", async () => {
+    const customer = authCustomer();
+    store.stripe.outcome = "requires_action";
+    const first = await collectPayment(seedPayment() as never, customer as never, { allowOffSession: true });
+    expect(store.stripe.charges.size).toBe(1);
+    expect(first.payment.providerPaymentIntentId).toBeTruthy();
+
+    const row = rowsIn("payment")[0]!;
+    const again = await collectPayment(row as never, customer as never, { allowOffSession: true, returnPath: "/billing" });
+
+    // no new PaymentIntent was created behind the cardholder's back
+    expect(store.stripe.charges.size).toBe(1);
+    expect(again.checkoutUrl).toMatch(/^https:\/\/checkout\.stripe\.test\//);
+  });
+
+  it("settles instead of re-charging when the customer authenticated it elsewhere", async () => {
+    const customer = authCustomer();
+    store.stripe.outcome = "requires_action";
+    await collectPayment(seedPayment() as never, customer as never, { allowOffSession: true });
+    const row = rowsIn("payment")[0]!;
+    const intentId = String(row.providerPaymentIntentId);
+
+    // the customer completed 3-D Secure in Stripe's own flow
+    store.stripe.intents.set(intentId, { id: intentId, status: "succeeded", chargeId: "ch_3ds", receiptUrl: "https://r/3ds", failureCode: null, failureMessage: null, amount: 1500, currency: "USD" });
+
+    const out = await collectPayment(row as never, customer as never, { allowOffSession: true });
+    expect(out.payment.status).toBe("SUCCEEDED");
+    expect(out.checkoutUrl).toBeNull();
+    expect(store.stripe.charges.size).toBe(1);
+    expect(rowsIn("invoice")).toHaveLength(1);
+  });
+});
+
+describe("settling a stuck payment the provider DID answer once", () => {
+  it("reads it rather than re-sending the charge", async () => {
+    seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    store.stripe.intents.set("pi_ref", { id: "pi_ref", status: "succeeded", chargeId: "ch_ref", receiptUrl: "https://r", failureCode: null, failureMessage: null, amount: 1500, currency: "USD" });
+    const p = seedPayment({ status: "PROCESSING", attempts: 1, providerPaymentIntentId: "pi_ref" });
+    p.updatedAt = new Date(Date.now() - 20 * 60_000);
+
+    expect(await reconcileStuckPayments(new Date())).toBe(1);
+    expect(rowsIn("payment")[0]!.status).toBe("SUCCEEDED");
+    expect(store.stripe.charges.size).toBe(0);
+    expect(store.stripe.calls.filter((c) => c.method === "chargeOffSession")).toHaveLength(0);
+  });
+
+  it("learns the intent id from the Checkout session before reading it", async () => {
+    seedCustomer();
+    store.stripe.sessions.set("cs_open", { id: "cs_open", mode: "payment", status: "complete", payment_status: "paid", payment_intent: "pi_from_cs", customer: "cus_seed_1" });
+    store.stripe.intents.set("pi_from_cs", { id: "pi_from_cs", status: "succeeded", chargeId: "ch_cs2", receiptUrl: null, failureCode: null, failureMessage: null, amount: 1500, currency: "USD" });
+    const p = seedPayment({ status: "PROCESSING", attempts: 1, providerCheckoutSessionId: "cs_open" });
+
+    const out = await syncPaymentFromProvider(p as never);
+    expect(out.status).toBe("SUCCEEDED");
+    expect(rowsIn("payment")[0]!.providerPaymentIntentId).toBe("pi_from_cs");
+  });
+
+  it("leaves a payment with nothing to ask about exactly as it was", async () => {
+    seedCustomer();
+    const p = seedPayment({ status: "PROCESSING", attempts: 1 });
+    expect((await syncPaymentFromProvider(p as never)).status).toBe("PROCESSING");
+    expect(store.stripe.calls).toHaveLength(0);
+  });
+});
+
+/** Saving a card is a hosted-Checkout round trip that comes back as a webhook. */
+describe("saving a card", () => {
+  it("mirrors the new card in when setup-mode Checkout completes", async () => {
+    seedCustomer({ providerCustomerId: "cus_A" });
+    store.stripe.cards = [{ id: "pm_new", brand: "visa", last4: "1111", expMonth: 6, expYear: 2031 }];
+
+    const res = await recordAndProcessEvent({
+      id: "evt_setup",
+      type: "checkout.session.completed",
+      data: { object: { id: "cs_setup_1", mode: "setup", customer: "cus_A" } },
+    });
+    expect(res).toBe("processed");
+    const cards = rowsIn("paymentMethod");
+    expect(cards.map((m) => m.providerMethodId)).toEqual(["pm_new"]);
+    expect(cards[0]!.last4).toBe("1111");
+    // the first card becomes the default, so automatic payments can be switched on
+    expect(rowsIn("paymentCustomer")[0]!.defaultPaymentMethodId).toBe(cards[0]!.id);
+    // a setup session must never have settled a payment
+    expect(rowsIn("payment")).toHaveLength(0);
+  });
+
+  it("re-reads the cards when Stripe reports one attached, updated or detached", async () => {
+    seedCustomer({ providerCustomerId: "cus_A" });
+    store.stripe.cards = [{ id: "pm_x", brand: "amex", last4: "0005", expMonth: 3, expYear: 2029 }];
+    expect(await recordAndProcessEvent({ id: "evt_att", type: "payment_method.attached", data: { object: { id: "pm_x", customer: "cus_A" } } })).toBe("processed");
+    expect(rowsIn("paymentMethod")).toHaveLength(1);
+
+    store.stripe.cards = [];
+    expect(await recordAndProcessEvent({ id: "evt_det", type: "payment_method.detached", data: { object: { id: "pm_x", customer: "cus_A" } } })).toBe("processed");
+    expect(rowsIn("paymentMethod")[0]!.removedAt).toBeInstanceOf(Date);
+  });
+
+  it("ignores a card event for a Stripe customer that is not ours", async () => {
+    seedCustomer({ providerCustomerId: "cus_A" });
+    expect(await recordAndProcessEvent({ id: "evt_alien", type: "payment_method.attached", data: { object: { id: "pm_y", customer: "cus_SOMEONE_ELSE" } } })).toBe("ignored");
+    expect(store.stripe.calls.filter((c) => c.method === "listCards")).toHaveLength(0);
+  });
+});
+
+describe("the billing customer and their cards", () => {
+  it("creates the Stripe customer once and reuses it afterwards", async () => {
+    const admin = { id: "admin1", email: "owner@test.local", name: "Owner" };
+    const first = await ensureCustomer(admin);
+    const second = await ensureCustomer(admin);
+    expect(second.id).toBe(first.id);
+    expect(rowsIn("paymentCustomer")).toHaveLength(1);
+    expect(store.stripe.calls.filter((c) => c.method === "createCustomer")).toHaveLength(1);
+    expect(first.providerCustomerId).toMatch(/^cus_/);
+    // the customer is billed in the platform's pricing currency
+    expect(first.currency).toBe("USD");
+    expect((await findCustomer("admin1"))!.id).toBe(first.id);
+    expect(await findCustomer("nobody")).toBeNull();
+  });
+
+  it("switches the default card at Stripe as well as here, and refuses an unknown one", async () => {
+    const customer = seedCustomer();
+    store.stripe.cards = [
+      { id: "pm_a", brand: "visa", last4: "4242", expMonth: 1, expYear: 2031 },
+      { id: "pm_b", brand: "mastercard", last4: "4444", expMonth: 2, expYear: 2032 },
+    ];
+    const methods = await refreshPaymentMethods(customer as never);
+    const fresh = rowsIn("paymentCustomer")[0]!;
+
+    await setDefaultMethod(fresh as never, String(methods[1]!.id));
+    expect(rowsIn("paymentCustomer")[0]!.defaultPaymentMethodId).toBe(methods[1]!.id);
+    expect(store.stripe.calls.some((c) => c.method === "setDefaultCard" && (c.args as Row).paymentMethodId === "pm_b")).toBe(true);
+
+    await expect(setDefaultMethod(fresh as never, "pm_not_mine")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("detaches a removed card at Stripe and turns automatic payments off with the last one", async () => {
+    const customer = seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    store.stripe.cards = [{ id: "pm_stripe_1", brand: "visa", last4: "4242", expMonth: 12, expYear: 2030 }];
+
+    await removeMethod(customer as never, "pm_local_1");
+    expect(store.stripe.calls.some((c) => c.method === "detachCard" && c.args === "pm_stripe_1")).toBe(true);
+    expect(rowsIn("paymentMethod")[0]!.removedAt).toBeInstanceOf(Date);
+    const row = rowsIn("paymentCustomer")[0]!;
+    expect(row.defaultPaymentMethodId).toBeNull();
+    expect(row.autoPay).toBe(false);
+    // and a card that is no longer on file is never detached at Stripe twice
+    await expect(removeMethod(row as never, "pm_local_1")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("reads pricing from the stored row and falls back to the defaults", async () => {
+    setPricing({ currency: "EUR", campaignFeeCents: 1500, campaignFeePercent: 7.5, planName: "Pro", planAmountCents: 4900, planIntervalDays: 7, taxPercent: 20 });
+    expect(await getPricing()).toEqual({
+      currency: "EUR",
+      campaignFeeCents: 1500,
+      campaignFeePercent: 7.5,
+      planName: "Pro",
+      planAmountCents: 4900,
+      planIntervalDays: 7,
+      taxPercent: 20,
+    });
+    expect(toPricing(null)).toEqual(DEFAULT_PRICING);
+
+    // an installation that has never saved pricing charges nothing rather than guessing
+    (store.tables.pricingConfig ??= []).length = 0;
+    expect(await getPricing()).toEqual(DEFAULT_PRICING);
+  });
+});
+
+// ================================================================
+// 16. SYNCING A LIVE CAMPAIGN BACK FROM META
+// ================================================================
+
+describe("syncCampaignFromMeta", () => {
+  const liveRow = (over: Row = {}): Row => ({
+    id: "camp1",
+    accountId: "acc1",
+    name: "Autumn promo",
+    objective: "OUTCOME_TRAFFIC",
+    status: "ACTIVE",
+    currency: "USD",
+    metaCampaignId: "c_1",
+    metaAdSetId: "s_1",
+    metaCreativeId: "cr_1",
+    metaAdId: "a_1",
+    stoppedAt: null,
+    ...over,
+  });
+
+  function metaAnswers(over: { effective_status?: string; insights?: unknown; review?: Row; failInsights?: boolean } = {}): void {
+    store.graph = async ({ path }) => {
+      if (path === "c_1/insights") {
+        if (over.failInsights) throw new Error("(#100) insights not available");
+        return over.insights ?? { data: [{ spend: "9.50", impressions: "1000", reach: "800", clicks: "40", cpc: "0.24", ctr: "4", actions: [{ action_type: "link_click", value: "37" }] }] };
+      }
+      if (path === "c_1") return { status: "ACTIVE", effective_status: over.effective_status ?? "ACTIVE" };
+      if (path === "a_1") return over.review ?? { effective_status: "DISAPPROVED", issues_info: [{ level: "AD", error_code: 1815869, error_summary: "Ad not approved", error_message: "Policy" }] };
+      return {};
+    };
+  }
+
+  it("stores Meta's numbers, Meta's review verdict and Meta's status", async () => {
+    const row = seed("campaign", liveRow());
+    metaAnswers({ effective_status: "PAUSED" });
+    const out = await syncCampaignFromMeta(ACCOUNT, row as never);
+
+    expect(out.status).toEqual({ status: "ACTIVE", effectiveStatus: "PAUSED" });
+    expect(out.insights!.spend).toBeCloseTo(9.5);
+    expect(out.insights!.results).toBe(37);
+    expect(out.review).toEqual({ status: "DISAPPROVED", issues: [{ level: "AD", code: 1815869, summary: "Ad not approved", message: "Policy" }] });
+
+    const saved = rowsIn("campaign")[0]!;
+    expect(saved.status).toBe("PAUSED"); // Meta's own answer wins over the stale local one
+    expect(saved.reviewStatus).toBe("DISAPPROVED");
+    expect((saved.insightsSnapshot as Row).impressions).toBe(1000);
+    expect(saved.insightsSyncedAt).toBeInstanceOf(Date);
+  });
+
+  /** Archiving is the admin's decision; Meta reporting ACTIVE must not undo it. */
+  it("never resurrects a campaign that was archived here", async () => {
+    const row = seed("campaign", liveRow({ status: "ARCHIVED" }));
+    metaAnswers({ effective_status: "ACTIVE" });
+    await syncCampaignFromMeta(ACCOUNT, row as never);
+    expect(rowsIn("campaign")[0]!.status).toBe("ARCHIVED");
+  });
+
+  it("leaves a local draft alone even if some Meta object answers", async () => {
+    for (const status of ["DRAFT", "READY", "ERROR"]) {
+      (store.tables.campaign ??= []).length = 0;
+      const row = seed("campaign", liveRow({ status }));
+      metaAnswers({ effective_status: "ACTIVE" });
+      await syncCampaignFromMeta(ACCOUNT, row as never);
+      expect(rowsIn("campaign")[0]!.status).toBe(status);
+    }
+  });
+
+  it("stamps stoppedAt the first time Meta says the campaign is archived", async () => {
+    const row = seed("campaign", liveRow({ status: "ACTIVE", stoppedAt: null }));
+    metaAnswers({ effective_status: "ARCHIVED" });
+    await syncCampaignFromMeta(ACCOUNT, row as never);
+    const saved = rowsIn("campaign")[0]!;
+    expect(saved.status).toBe("ARCHIVED");
+    expect(saved.stoppedAt).toBeInstanceOf(Date);
+  });
+
+  /** A spend figure Meta would not give must not wipe the last one it did. */
+  it("keeps going — and keeps the old snapshot — when insights fail", async () => {
+    const row = seed("campaign", liveRow({ insightsSnapshot: { spend: 4.2 } }));
+    metaAnswers({ failInsights: true, effective_status: "ACTIVE" });
+    const out = await syncCampaignFromMeta(ACCOUNT, row as never);
+    expect(out.insights).toBeNull();
+    expect(out.review!.status).toBe("DISAPPROVED"); // the rest of the sync still ran
+    expect((rowsIn("campaign")[0]!.insightsSnapshot as Row).spend).toBe(4.2);
+  });
+
+  it("does not ask Meta about a campaign that was never built there", async () => {
+    const row = seed("campaign", liveRow({ metaCampaignId: null, metaAdId: null }));
+    metaAnswers();
+    const out = await syncCampaignFromMeta(ACCOUNT, row as never);
+    expect(out).toMatchObject({ status: { status: null, effectiveStatus: null }, insights: null, review: null });
+    expect(store.graphCalls).toHaveLength(0);
+    expect(rowsIn("campaign")[0]!.status).toBe("ACTIVE"); // unchanged
+  });
+});
+
+// ================================================================
+// 17. THE WEBHOOK ENDPOINT ITSELF — the one unauthenticated door
+// ================================================================
+
+/**
+ * Everything above tests recordAndProcessEvent, which trusts its caller. The
+ * only caller is an endpoint the whole internet can POST to, and the single
+ * thing standing between a stranger and "this payment SUCCEEDED" is the
+ * signature check inside the route. So the route is driven here as HTTP:
+ * a real Request in, a real Response out.
+ */
+vi.mock("next/server", async (importOriginal) => ({ ...(await importOriginal<object>()), after: vi.fn() }));
+
+const { NextRequest: RealNextRequest } = await vi.importActual<typeof import("next/server")>("next/server");
+const { POST: stripeWebhookRoute } = await import("@/app/api/webhooks/stripe/route");
+
+const WEBHOOK_SECRET = "whsec_qa_campaigns_billing";
+
+function webhookRequest(body: string, header: string | null): Request {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (header !== null) headers["stripe-signature"] = header;
+  return new RealNextRequest("http://localhost:3000/api/webhooks/stripe", { method: "POST", headers, body }) as unknown as Request;
+}
+
+function signedHeader(body: string, opts: { secret?: string; atMs?: number } = {}): string {
+  const t = Math.floor((opts.atMs ?? Date.now()) / 1000);
+  return `t=${t},v1=${hmacSha256(opts.secret ?? WEBHOOK_SECRET, `${t}.${body}`)}`;
+}
+
+describe("POST /api/webhooks/stripe", () => {
+  const succeeded = JSON.stringify({ id: "evt_http_1", type: "payment_intent.succeeded", data: { object: { id: "pi_http", metadata: {} } } });
+
+  function seedUnpaid(): void {
+    seedCustomer();
+    seedPayment({ providerPaymentIntentId: "pi_http", status: "PROCESSING" });
+    store.stripe.intents.set("pi_http", { id: "pi_http", status: "succeeded", chargeId: "ch_http", receiptUrl: null, failureCode: null, failureMessage: null, amount: 1500, currency: "USD" });
+  }
+
+  it("settles the payment for a correctly signed event", async () => {
+    seedUnpaid();
+    const res = await stripeWebhookRoute(webhookRequest(succeeded, signedHeader(succeeded)) as never);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ received: true, outcome: "processed" });
+    expect(rowsIn("payment")[0]!.status).toBe("SUCCEEDED");
+  });
+
+  /** The whole point of the endpoint's security: a forged "you were paid". */
+  it("refuses an UNSIGNED event and changes nothing", async () => {
+    seedUnpaid();
+    const res = await stripeWebhookRoute(webhookRequest(succeeded, null) as never);
+    expect(res.status).toBe(400);
+    expect(rowsIn("payment")[0]!.status).toBe("PROCESSING");
+    expect(rowsIn("billingEvent")).toHaveLength(0);
+    expect(rowsIn("invoice")).toHaveLength(0);
+  });
+
+  it("refuses an event signed with the wrong secret", async () => {
+    seedUnpaid();
+    const res = await stripeWebhookRoute(webhookRequest(succeeded, signedHeader(succeeded, { secret: "whsec_attacker" })) as never);
+    expect(res.status).toBe(400);
+    expect(rowsIn("payment")[0]!.status).toBe("PROCESSING");
+    expect(rowsIn("billingEvent")).toHaveLength(0);
+  });
+
+  /** A signature is for one exact body — swapping the payload under it must fail. */
+  it("refuses a body that was edited after it was signed", async () => {
+    seedUnpaid();
+    const header = signedHeader(succeeded);
+    const tampered = succeeded.replace("evt_http_1", "evt_http_2");
+    const res = await stripeWebhookRoute(webhookRequest(tampered, header) as never);
+    expect(res.status).toBe(400);
+    expect(rowsIn("payment")[0]!.status).toBe("PROCESSING");
+  });
+
+  /** A signed event captured off the wire must not still work an hour later. */
+  it("refuses a replay from outside the timestamp tolerance", async () => {
+    seedUnpaid();
+    const stale = signedHeader(succeeded, { atMs: Date.now() - 3600_000 });
+    const res = await stripeWebhookRoute(webhookRequest(succeeded, stale) as never);
+    expect(res.status).toBe(400);
+    expect(rowsIn("payment")[0]!.status).toBe("PROCESSING");
+  });
+
+  it("refuses a correctly signed body that is not an event", async () => {
+    seedUnpaid();
+    for (const body of ["not json at all", JSON.stringify({ id: "evt_x" }), JSON.stringify({ id: "evt_x", type: "payment_intent.succeeded" })]) {
+      const res = await stripeWebhookRoute(webhookRequest(body, signedHeader(body)) as never);
+      expect(res.status).toBe(400);
+    }
+    expect(rowsIn("billingEvent")).toHaveLength(0);
+    expect(rowsIn("payment")[0]!.status).toBe("PROCESSING");
+  });
+
+  /**
+   * Stripe retries a non-2xx, and eventually disables an endpoint that keeps
+   * failing. A handler bug must therefore still ACK — the event is stored and
+   * replayed on this side instead.
+   */
+  it("still answers 200 when the handler itself fails, so Stripe does not disable the endpoint", async () => {
+    seedUnpaid();
+    store.stripe.failNextRetrieveIntent = true;
+    const res = await stripeWebhookRoute(webhookRequest(succeeded, signedHeader(succeeded)) as never);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ received: true, outcome: "failed" });
+    // the ACK is only honest because the event is kept for our own replay pass
+    expect(rowsIn("billingEvent")[0]!.status).toBe("FAILED");
+    expect(await replayFailedBillingEvents(new Date(Date.now() + 6 * 60_000))).toMatchObject({ recovered: 1 });
+    expect(rowsIn("payment")[0]!.status).toBe("SUCCEEDED");
+  });
+
+  it("acknowledges a Stripe redelivery without settling anything twice", async () => {
+    seedUnpaid();
+    await stripeWebhookRoute(webhookRequest(succeeded, signedHeader(succeeded)) as never);
+    const res = await stripeWebhookRoute(webhookRequest(succeeded, signedHeader(succeeded)) as never);
+    expect(await res.json()).toEqual({ received: true, outcome: "duplicate" });
+    expect(rowsIn("invoice")).toHaveLength(1);
+    expect(rowsIn("billingEvent")).toHaveLength(1);
+  });
+
+  /** With no webhook secret configured the endpoint must refuse, not accept blindly. */
+  it("refuses every event when PAYMENT_WEBHOOK_SECRET is not configured", async () => {
+    seedUnpaid();
+    const saved = process.env.PAYMENT_WEBHOOK_SECRET;
+    process.env.PAYMENT_WEBHOOK_SECRET = "";
+    try {
+      const res = await stripeWebhookRoute(webhookRequest(succeeded, signedHeader(succeeded)) as never);
+      expect(res.status).toBe(503);
+      expect(rowsIn("payment")[0]!.status).toBe("PROCESSING");
+    } finally {
+      process.env.PAYMENT_WEBHOOK_SECRET = saved;
+    }
+  });
+});
+
+// ================================================================
+// 18. CAVEATS IN THE SCHEDULER, PINNED AS TESTS
+// ================================================================
+
+describe("what the scheduler does when the card keeps failing", () => {
+  function dueSchedule(): Row {
+    seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    return seed("billingSchedule", {
+      id: "sch1", customerId: "cust1", name: "Platform plan", amountCents: 2900, currency: "USD",
+      intervalDays: 30, nextBillingAt: new Date(BASE_TIME), lastBilledAt: null, status: "ACTIVE", campaignId: null, canceledAt: null,
+    });
+  }
+
+  /** "charged" is read as income in the ops log, so a decline must not land in it. */
+  it("reports a DECLINED charge as declined, not as charged", async () => {
+    const schedule = dueSchedule();
+    store.stripe.outcome = "requires_payment_method";
+    const out = await runDueSchedules(new Date(BASE_TIME + 1000));
+    expect(out).toEqual({ charged: 0, declined: 1, pendingCreated: 0, skipped: 0 });
+    // the payment itself is honest about what happened
+    expect(rowsIn("payment")[0]!.status).toBe("FAILED");
+    expect(rowsIn("payment")[0]!.nextRetryAt).toBeInstanceOf(Date);
+    // and the period has NOT moved on — only a successful charge steps it
+    expect((schedule.nextBillingAt as Date).getTime()).toBe(BASE_TIME);
+  });
+
+  /**
+   * CAVEAT: once the 1/3/7-day ladder is exhausted the failed occurrence keeps
+   * the schedule standing on its own period for ever — every later run finds
+   * the same FAILED row under the same key and skips. The subscription stops
+   * billing silently; recovering it needs the admin to cancel that payment
+   * (which steps the series) or pay it.
+   */
+  it("stalls the whole series on one exhausted occurrence until a human acts", async () => {
+    const schedule = dueSchedule();
+    store.stripe.outcome = "requires_payment_method";
+    await runDueSchedules(new Date(BASE_TIME + 1000));
+
+    // the ladder runs out
+    rowsIn("payment")[0]!.attempts = 4;
+    rowsIn("payment")[0]!.nextRetryAt = null;
+    expect(await retryFailedPayments(new Date(BASE_TIME + 400 * 86400_000))).toMatchObject({ retried: 0 });
+
+    // a year of scheduler runs mints nothing and moves nothing
+    const later = await runDueSchedules(new Date(BASE_TIME + 400 * 86400_000));
+    expect(later).toMatchObject({ charged: 0, pendingCreated: 0, skipped: 1 });
+    expect(rowsIn("payment")).toHaveLength(1);
+    expect((schedule.nextBillingAt as Date).getTime()).toBe(BASE_TIME);
+
+    // cancelling the dead occurrence is what hands the series back to the scheduler
+    await cancelPayment(rowsIn("payment")[0]! as never, "admin1");
+    expect((schedule.nextBillingAt as Date).getTime()).toBe(BASE_TIME + 30 * 86400_000);
+    store.stripe.outcome = "succeeded";
+    expect(await runDueSchedules(new Date(BASE_TIME + 400 * 86400_000))).toMatchObject({ charged: 1 });
+  });
+
+  it("charges nothing at all while payments are not configured", async () => {
+    dueSchedule();
+    const saved = process.env.PAYMENT_SECRET_KEY;
+    process.env.PAYMENT_SECRET_KEY = "";
+    try {
+      expect(await runDueSchedules(new Date(BASE_TIME + 1000))).toEqual({ charged: 0, declined: 0, pendingCreated: 0, skipped: 0 });
+      expect(await retryFailedPayments(new Date(BASE_TIME + 1000))).toEqual({ retried: 0, succeeded: 0, reconciled: 0 });
+      expect(await reconcileStuckPayments(new Date(BASE_TIME + 1000))).toBe(0);
+      expect(rowsIn("payment")).toHaveLength(0);
+      expect(store.stripe.calls).toHaveLength(0);
+    } finally {
+      process.env.PAYMENT_SECRET_KEY = saved;
+    }
+  });
+});
+
+// ================================================================
+// 19. POST /api/campaigns/[id]/create-in-meta — the fee gate in place
+// ================================================================
+
+/**
+ * assertCampaignFeePaid throwing proves nothing on its own: what matters is
+ * that the ROUTE calls it, and calls it BEFORE the first Graph request. This
+ * drives the real handler — same origin check, same fee gate, same Meta chain —
+ * and counts what reached Meta.
+ */
+vi.mock("@/lib/auth/guard", () => ({
+  requireAdmin: async () => ({ admin: { id: "admin1", email: "owner@test.local", name: "Owner", role: "OWNER" } }),
+}));
+vi.mock("@/lib/auth/access", () => ({ assertAccountAccess: async () => undefined }));
+
+const { POST: createInMetaRoute } = await import("@/app/api/campaigns/[id]/create-in-meta/route");
+
+function routeRequest(): Request {
+  return new RealNextRequest("http://localhost:3000/api/campaigns/c1/create-in-meta", {
+    method: "POST",
+    headers: { origin: "http://localhost:3000" },
+  }) as unknown as Request;
+}
+
+async function callCreateInMeta(id = "c1"): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await createInMetaRoute(routeRequest() as never, { params: Promise.resolve({ id }) } as never);
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+}
+
+describe("POST /api/campaigns/[id]/create-in-meta", () => {
+  function seedReadyCampaign(over: Row = {}, accountOver: Row = {}): Row {
+    seed("instagramAccount", { id: "acc1", adAccountId: "act_123456", fbPageId: "page_777", igUserId: "ig_999", isDemo: false, ...accountOver });
+    return seed("campaign", {
+      id: "c1",
+      accountId: "acc1",
+      name: "Autumn promo",
+      objective: "OUTCOME_TRAFFIC",
+      status: "READY",
+      currency: "USD",
+      dailyBudgetCents: 500,
+      lifetimeBudgetCents: null,
+      startTime: null,
+      endTime: null,
+      targeting: { countries: ["UZ"], ageMin: 25, ageMax: 45 },
+      ctaType: "LEARN_MORE",
+      destinationType: "WEBSITE",
+      destinationUrl: "https://example.test/landing",
+      contentId: null,
+      ctaConfigId: null,
+      metaCampaignId: null,
+      metaAdSetId: null,
+      metaCreativeId: null,
+      metaAdId: null,
+      metaFormId: null,
+      platformFeeCents: null,
+      lastError: null,
+      ...over,
+    });
+  }
+
+  it("builds the chain and marks the campaign CREATED when no fee is configured", async () => {
+    seedReadyCampaign();
+    const out = await callCreateInMeta();
+    expect(out.status).toBe(200);
+    expect(store.graphCalls.map((c) => c.path)).toEqual(["act_123456/campaigns", "act_123456/adsets", "act_123456/adcreatives", "act_123456/ads"]);
+    const row = rowsIn("campaign")[0]!;
+    expect(row.status).toBe("CREATED");
+    expect(row.metaAdId).toBe("120_ad");
+    expect(rowsIn("auditLog").map((a) => a.action)).toContain("CREATED_CAMPAIGN_IN_META");
+  });
+
+  /** The money gate: an unpaid fee must stop the request before Meta hears about it. */
+  it("refuses — with NO Graph call at all — while the platform fee is unpaid", async () => {
+    setPricing({ campaignFeeCents: 2000 });
+    const customer = seedCustomer();
+    seedReadyCampaign();
+    await createCampaignFeePayment(customer as never, "c1");
+
+    const out = await callCreateInMeta();
+    expect(out.status).toBe(402);
+    expect(out.body).toMatchObject({ ok: false, error: { code: "REQUIRES_PAYMENT" } });
+    expect(store.graphCalls).toHaveLength(0);
+    expect(rowsIn("campaign")[0]!.status).toBe("READY");
+    expect(rowsIn("campaign")[0]!.metaCampaignId).toBeNull();
+  });
+
+  it("goes through the moment that fee is paid", async () => {
+    setPricing({ campaignFeeCents: 2000 });
+    const customer = seedCustomer({ autoPay: true, defaultPaymentMethodId: "pm_local_1" });
+    seedCardFor("cust1");
+    seedReadyCampaign();
+    const { payment } = await createCampaignFeePayment(customer as never, "c1");
+    await collectPayment(payment! as never, customer as never, { allowOffSession: true });
+
+    const out = await callCreateInMeta();
+    expect(out.status).toBe(200);
+    expect(rowsIn("campaign")[0]!.status).toBe("CREATED");
+    expect(store.graphCalls).toHaveLength(4);
+  });
+
+  /** A fee that cannot be collected must not be waved through as "nothing to pay". */
+  it("refuses when a fee is configured but payments are not set up", async () => {
+    setPricing({ campaignFeeCents: 2000 });
+    seedReadyCampaign();
+    const saved = process.env.PAYMENT_SECRET_KEY;
+    process.env.PAYMENT_SECRET_KEY = "";
+    try {
+      const out = await callCreateInMeta();
+      expect(out.status).toBe(400);
+      expect(JSON.stringify(out.body)).toMatch(/payments are not set up/i);
+      expect(store.graphCalls).toHaveLength(0);
+    } finally {
+      process.env.PAYMENT_SECRET_KEY = saved;
+    }
+  });
+
+  it("never lets a demo account create a real Meta campaign", async () => {
+    seedReadyCampaign({}, { isDemo: true });
+    const out = await callCreateInMeta();
+    expect(out.status).toBe(422);
+    expect(JSON.stringify(out.body)).toMatch(/Demo/i);
+    expect(store.graphCalls).toHaveLength(0);
+  });
+
+  it("refuses a campaign that is already in Meta rather than building a second one", async () => {
+    seedReadyCampaign({ status: "CREATED", metaCampaignId: "120_camp" });
+    const out = await callCreateInMeta();
+    expect(out.status).toBe(400);
+    expect(store.graphCalls).toHaveLength(0);
+  });
+
+  it("404s for a campaign that does not exist", async () => {
+    expect((await callCreateInMeta("nope")).status).toBe(404);
+  });
+
+  /**
+   * Meta has no transaction across the four calls. When it rejects the ad set,
+   * the campaign it already made is real — the row has to keep that id (so the
+   * retry resumes instead of orphaning it) and record why it stopped.
+   */
+  it("records the failure, keeps the ids Meta already gave, and resumes on the retry", async () => {
+    seedReadyCampaign();
+    store.graph = async ({ path }) => {
+      if (path.endsWith("/campaigns")) return { id: "120_camp" };
+      throw new Error("Meta rejected the ad set");
+    };
+    const failed = await callCreateInMeta();
+    expect(failed.status).toBeGreaterThanOrEqual(400);
+    const row = rowsIn("campaign")[0]!;
+    expect(row.status).toBe("ERROR");
+    expect(String(row.lastError)).toMatch(/rejected the ad set/);
+    expect(row.metaCampaignId).toBe("120_camp");
+    expect(rowsIn("auditLog").map((a) => a.action)).toContain("META_API_FAILURE");
+
+    // ERROR is a retryable state, and the retry starts from the ad set
+    store.graphCalls = [];
+    store.graph = async ({ path }) => {
+      if (path.endsWith("/adsets")) return { id: "120_adset" };
+      if (path.endsWith("/adcreatives")) return { id: "120_creative" };
+      if (path.endsWith("/ads")) return { id: "120_ad" };
+      return {};
+    };
+    const retried = await callCreateInMeta();
+    expect(retried.status).toBe(200);
+    expect(store.graphCalls.map((c) => c.path)).toEqual(["act_123456/adsets", "act_123456/adcreatives", "act_123456/ads"]);
+    expect(rowsIn("campaign")[0]!.status).toBe("CREATED");
+    expect(rowsIn("campaign")[0]!.lastError).toBeNull();
+  });
+
+  it("rejects a cross-origin POST before doing anything", async () => {
+    seedReadyCampaign();
+    const res = await createInMetaRoute(
+      new RealNextRequest("http://localhost:3000/api/campaigns/c1/create-in-meta", { method: "POST", headers: { origin: "https://evil.example" } }) as never,
+      { params: Promise.resolve({ id: "c1" }) } as never,
+    );
+    expect(res.status).toBe(403);
+    expect(store.graphCalls).toHaveLength(0);
+    expect(rowsIn("campaign")[0]!.status).toBe("READY");
   });
 });

@@ -95,21 +95,39 @@ export function handleApiError(err: unknown): NextResponse {
 /** Hosts explicitly accepted for state-changing requests. */
 export function trustedHosts(): Set<string> {
   const hosts = new Set<string>();
+  for (const { host } of trustedOrigins()) hosts.add(host);
+  return hosts;
+}
+
+/**
+ * Trusted entries with the scheme they were written with.
+ *
+ * Comparing hosts alone let `http://app.example` submit to an `https://app.example`
+ * installation, which is exactly the downgrade an attacker on the network wants:
+ * the cookie is Secure, but the CSRF check was the only thing reading the scheme.
+ * An entry written WITH a scheme therefore binds to it; the documented bare
+ * `host:port` form stays scheme-agnostic so existing configurations keep working.
+ */
+export function trustedOrigins(): Array<{ host: string; protocol: string | null }> {
+  const out: Array<{ host: string; protocol: string | null }> = [];
   try {
-    hosts.add(new URL(coreEnv().APP_URL).host);
+    const appUrl = new URL(coreEnv().APP_URL);
+    out.push({ host: appUrl.host, protocol: appUrl.protocol });
   } catch {
     /* APP_URL validated elsewhere */
   }
   for (const entry of (process.env.TRUSTED_ORIGINS ?? "").split(",")) {
     const value = entry.trim();
     if (!value) continue;
+    const explicit = value.includes("://");
     try {
-      hosts.add(new URL(value.includes("://") ? value : `http://${value}`).host);
+      const url = new URL(explicit ? value : `http://${value}`);
+      out.push({ host: url.host, protocol: explicit ? url.protocol : null });
     } catch {
       /* ignore malformed entries */
     }
   }
-  return hosts;
+  return out;
 }
 
 /**
@@ -151,7 +169,9 @@ export function assertSameOrigin(req: NextRequest): void {
       });
     }
 
-    if (trustedHosts().has(url.host)) return;
+    // Scheme-bound entries must match the scheme too; a bare host:port entry
+    // matches either, and a local address in development is always allowed.
+    if (trustedOrigins().some((t) => t.host === url.host && (t.protocol === null || t.protocol === url.protocol))) return;
     if (!isProd() && isLocalHostname(url.hostname)) return;
 
     log.warn("cross-origin request rejected", { origin: url.origin, expected: [...trustedHosts()] });
@@ -223,7 +243,15 @@ function normalizeIp(raw: string | null | undefined): string | null {
 export function clientIp(req: NextRequest): string {
   const trusted = trustedIpHeader();
   if (trusted) {
-    const platform = normalizeIp(req.headers.get(trusted)?.split(",")[0]);
+    // Read from the RIGHT here too. A single-valued platform header (Vercel's,
+    // Cloudflare's, nginx's X-Real-IP) has exactly one entry, so this is the
+    // same value — but TRUSTED_IP_HEADER may legitimately name an APPENDING
+    // header (`x-forwarded-for` behind a proxy that rewrites it, say), and
+    // taking the left-most entry there would return whatever the caller
+    // prepended, handing them a fresh identity per request and voiding every
+    // IP-keyed limit. The last entry is the one the edge itself wrote.
+    const entries = (req.headers.get(trusted) ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+    const platform = normalizeIp(entries[entries.length - 1]);
     if (platform) return platform;
   }
 

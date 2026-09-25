@@ -189,6 +189,41 @@ export function kindFromUrl(url: string): PublishItemKind {
 }
 
 /**
+ * Can Meta's servers actually reach this URL?
+ *
+ * Meta downloads the media itself, from the public internet, so an address that
+ * only resolves inside this network is a post that fails minutes later with an
+ * opaque Instagram error. The check used to be a substring match on the whole
+ * URL (`/localhost|127\.0\.0\.1|\.local(\/|$)/`), which was wrong in both
+ * directions: it refused a perfectly public link whose PATH happened to contain
+ * the word ("https://cdn.example.com/localhost-demo.jpg"), and it let every
+ * private LAN address through — 192.168.x.x, 10.x.x.x, 172.16–31.x.x, [::1],
+ * 0.0.0.0 — which is how a self-hosted install on a home server produced posts
+ * that simply never appeared. Matching on the parsed HOSTNAME fixes both.
+ */
+export function isLocalMediaUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false; // not a URL at all — validatePublishInput refuses it first
+  }
+  // URL keeps IPv6 literals in brackets
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (bare === "localhost" || bare.endsWith(".localhost") || bare === "::1" || bare === "0.0.0.0" || bare === "::") return true;
+  if (bare === "local" || bare.endsWith(".local") || bare.endsWith(".internal") || bare.endsWith(".home.arpa")) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127 || a === 10 || a === 0) return true; // loopback, private, "this host"
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 169 && b === 254) return true; // link-local
+  }
+  return false;
+}
+
+/**
  * Kind of a pasted media URL. Only one kind is legal for a Reel or a photo post,
  * so the chosen media type fills in for a link that names no format — that is
  * what makes an extension-less signed CDN link publishable at all. A link that

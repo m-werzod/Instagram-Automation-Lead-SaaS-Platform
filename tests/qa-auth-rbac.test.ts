@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { z } from "zod";
 
 /**
  * QA sweep: authentication, sessions, RBAC and request security.
@@ -22,6 +23,10 @@ const { store, prismaMock, cookieJar } = vi.hoisted(() => {
     sessions: [] as Row[],
     accountAccess: [] as Row[],
     auditLogs: [] as Row[],
+    instagramAccounts: [] as Row[],
+    leads: [] as Row[],
+    campaigns: [] as Row[],
+    agents: [] as Row[],
     seq: 0,
     /** every table call, so a test can prove a code path never touched the database */
     calls: [] as string[],
@@ -88,6 +93,8 @@ const { store, prismaMock, cookieJar } = vi.hoisted(() => {
   interface TableOpts {
     defaults?: () => Row;
     hydrate?: (row: Row, args: Row) => Row;
+    /** nested writes (`accountAccess: { create: [...] }`) the real client performs in one statement */
+    onCreate?: (row: Row) => void;
   }
 
   const table = (name: string, rows: Row[], opts: TableOpts = {}) => {
@@ -121,6 +128,7 @@ const { store, prismaMock, cookieJar } = vi.hoisted(() => {
       create: async (args: { data: Row }) => {
         store.calls.push(`${name}.create`);
         const row: Row = { id: `${name}_${++store.seq}`, createdAt: new Date(), ...(opts.defaults?.() ?? {}), ...args.data };
+        opts.onCreate?.(row);
         rows.push(row);
         return shape(row, args as unknown as Row);
       },
@@ -184,8 +192,62 @@ const { store, prismaMock, cookieJar } = vi.hoisted(() => {
 
   const auditTable = table("auditLog", store.auditLogs, { defaults: () => ({ success: true, ip: null, after: null, adminId: null }) });
 
+  /** `accountAccess: { select: { account: { select: … } } }` on an Admin read */
+  const hydrateGrants = (row: Row, args: Row): Row => {
+    const spec = ((args.select as Row | undefined)?.accountAccess ?? (args.include as Row | undefined)?.accountAccess) as
+      | Row
+      | undefined;
+    if (!spec) return row;
+    const inner = spec.select as Row | undefined;
+    row.accountAccess = store.accountAccess
+      .filter((g) => g.adminId === row.id)
+      .map((g) => {
+        if (!inner) return { ...g };
+        const out: Row = {};
+        for (const [k, v] of Object.entries(inner)) {
+          if (!v) continue;
+          if (k !== "account") {
+            out[k] = g[k];
+            continue;
+          }
+          const acc = store.instagramAccounts.find((a) => a.id === g.accountId);
+          const accSel = (v as Row).select as Row | undefined;
+          if (!acc) {
+            out.account = null;
+          } else if (!accSel) {
+            out.account = { ...acc };
+          } else {
+            const picked: Row = {};
+            for (const [ak, av] of Object.entries(accSel)) if (av) picked[ak] = acc[ak];
+            out.account = picked;
+          }
+        }
+        return out;
+      });
+    return row;
+  };
+
   const prismaMock = {
-    admin: table("admin", store.admins, { defaults: () => ({ isActive: true, role: "ADMIN", lastLoginAt: null }) }),
+    admin: table("admin", store.admins, {
+      defaults: () => ({ isActive: true, role: "ADMIN", lastLoginAt: null, email: null }),
+      hydrate: hydrateGrants,
+      onCreate: (row) => {
+        // `accountAccess: { create: [...] }` — the nested write the create route uses
+        const nested = row.accountAccess as { create?: Row[] } | undefined;
+        delete row.accountAccess;
+        for (const g of nested?.create ?? []) {
+          store.accountAccess.push({ id: `accountAccess_${++store.seq}`, adminId: row.id, createdAt: new Date(), ...g });
+        }
+      },
+    }),
+    instagramAccount: table("instagramAccount", store.instagramAccounts),
+    lead: table("lead", store.leads),
+    campaign: table("campaign", store.campaigns),
+    aIAgent: table("aIAgent", store.agents),
+    $transaction: async (ops: unknown[]) => {
+      store.calls.push("$transaction");
+      return Promise.all(ops as Promise<unknown>[]);
+    },
     session: table("session", store.sessions, {
       defaults: () => ({ lastSeenAt: new Date(), revokedAt: null }),
       hydrate: (row, args) => {
@@ -260,7 +322,7 @@ import {
   whereFromFilter,
   wouldLeaveUserWithoutAccounts,
 } from "@/lib/auth/access";
-import { assertSameOrigin, clientIp, enforceRateLimit, isLocalHostname, ok, route, trustedHosts } from "@/lib/api";
+import { assertSameOrigin, clientIp, enforceRateLimit, isLocalHostname, ok, pathParam, route, trustedHosts } from "@/lib/api";
 import {
   LIMITS,
   LOGIN_LOCKOUT,
@@ -271,12 +333,18 @@ import {
   _resetRateLimiter,
 } from "@/lib/rate-limit";
 import { decryptSecret, encryptSecret, hashSessionToken, randomToken, safeEqual, sha256Hex } from "@/lib/crypto";
-import { isPublicPath, middleware } from "@/middleware";
-import { _resetCoreEnvCache } from "@/lib/env";
+import { config, isPublicPath, middleware } from "@/middleware";
+import { ConfigError, _resetCoreEnvCache } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { POST as loginRoute } from "@/app/api/auth/login/route";
 import { POST as logoutRoute } from "@/app/api/auth/logout/route";
 import { GET as meRoute } from "@/app/api/auth/me/route";
+import { GET as adminsList, POST as createAdmin } from "@/app/api/admin/admins/route";
+import {
+  DELETE as deleteAdmin,
+  GET as adminDetail,
+  PATCH as patchAdmin,
+} from "@/app/api/admin/admins/[id]/route";
 
 /**
  * bcrypt at cost 12 is deliberately slow (~250 ms a call) and several tests here
@@ -380,6 +448,10 @@ beforeEach(() => {
   store.sessions.length = 0;
   store.accountAccess.length = 0;
   store.auditLogs.length = 0;
+  store.instagramAccounts.length = 0;
+  store.leads.length = 0;
+  store.campaigns.length = 0;
+  store.agents.length = 0;
   store.calls.length = 0;
   store.seq = 0;
   store.failNextAuditFind = false;
@@ -1020,6 +1092,35 @@ describe("clientIp", () => {
     expect(clientIp(withHeaders(headers))).toBe("203.0.113.7");
   });
 
+  /**
+   * DEFECT (fixed): the trusted-platform-header branch read `split(",")[0]` —
+   * the LEFT-most entry. TRUSTED_IP_HEADER may legitimately name an appending
+   * header (`x-forwarded-for` behind a proxy that rewrites rather than replaces
+   * it), and there the left-most entry is whatever the caller prepended. Naming
+   * that header therefore silently turned the spoof protection OFF: every
+   * request could mint a fresh identity, voiding the login IP limit, the durable
+   * IP-scope lockout and the audited address — the exact failure the fallback
+   * branch two lines below was written to prevent.
+   */
+  it("reads the trusted platform header from the right as well, so naming an appending header is safe", () => {
+    process.env.TRUSTED_IP_HEADER = "x-forwarded-for";
+    expect(clientIp(withHeaders({ "x-forwarded-for": "203.0.113.7" }))).toBe("203.0.113.7");
+    expect(clientIp(withHeaders({ "x-forwarded-for": "1.1.1.1, 203.0.113.7" }))).toBe("203.0.113.7");
+    // three differently-forged requests still land in one bucket
+    const seen = new Set(
+      ["9.9.9.1", "9.9.9.2", "9.9.9.3"].map((forged) => clientIp(withHeaders({ "x-forwarded-for": `${forged}, 203.0.113.7` }))),
+    );
+    expect([...seen]).toEqual(["203.0.113.7"]);
+  });
+
+  it("still honours a single-valued platform header and falls back when it is empty", () => {
+    process.env.TRUSTED_IP_HEADER = "cf-connecting-ip";
+    expect(clientIp(withHeaders({ "cf-connecting-ip": "198.51.100.9", "x-forwarded-for": "203.0.113.7" }))).toBe("198.51.100.9");
+    // a present-but-empty platform header must not swallow the request into "unknown"
+    expect(clientIp(withHeaders({ "cf-connecting-ip": "  ,  ", "x-forwarded-for": "203.0.113.7" }))).toBe("203.0.113.7");
+    expect(clientIp(withHeaders({ "cf-connecting-ip": "198.51.100.9:443" }))).toBe("198.51.100.9");
+  });
+
   it("normalizes ports and IPv6 and admits when it knows nothing", () => {
     expect(clientIp(withHeaders({ "x-forwarded-for": "203.0.113.7:51234" }))).toBe("203.0.113.7");
     expect(clientIp(withHeaders({ "x-forwarded-for": "[2001:DB8::1]:443" }))).toBe("2001:db8::1");
@@ -1457,7 +1558,12 @@ describe("/api/auth/me and /api/auth/logout", () => {
     const { row } = await signIn(admin.id as string);
     const res = await logoutRoute(mutating("POST", { origin: "http://localhost:3000" }), ROUTE_CTX);
     expect(res.status).toBe(200);
-    expect(res.headers.get("set-cookie") ?? "").toMatch(/ig_admin_session=;?/);
+    // `/ig_admin_session=;?/` would also match a cookie that still HAS a value —
+    // the clearing has to be asserted on the value and the expiry, not the name.
+    const cleared = res.headers.get("set-cookie") ?? "";
+    expect(tokenFromSetCookie(res)).toBe("");
+    expect(cleared).toMatch(/Max-Age=0/i);
+    expect(cleared).toMatch(/Path=\//);
     expect(row.revokedAt).toBeInstanceOf(Date);
     // the stolen cookie is dead even if the browser kept it
     expect(await getAuth()).toBeNull();
@@ -1810,5 +1916,903 @@ describe("token hashing helpers", () => {
     expect(safeEqual("abc", "abd")).toBe(false);
     expect(safeEqual("abc", "abcd")).toBe(false);
     expect(safeEqual("", "")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Audit pass — gaps found while reviewing sections 1-8
+//
+// Everything below was added by a second engineer auditing the suite above:
+// claims made without a test behind them, product paths a user reaches that
+// nothing exercised, and two defects the existing tests stepped around.
+// ---------------------------------------------------------------------------
+
+describe("route() write-limit options (audit: claimed but untested above)", () => {
+  const write = (cookie: string, method = "POST") => {
+    const headers = new Headers();
+    if (cookie) headers.set("cookie", `ig_admin_session=${cookie}`);
+    return new NextRequest("http://localhost:3000/api/anything", { method, headers });
+  };
+
+  it("honours a per-route override tighter than API_WRITE", async () => {
+    const strict = route(async () => ok({ done: true }), { writeLimit: { limit: 2, windowMs: 60_000 } });
+    expect((await strict(write("tok-strict"), ROUTE_CTX)).status).toBe(200);
+    expect((await strict(write("tok-strict"), ROUTE_CTX)).status).toBe(200);
+    const blocked = await strict(write("tok-strict"), ROUTE_CTX);
+    expect(blocked.status).toBe(429);
+    expect((await envelope(blocked)).error?.code).toBe("RATE_LIMITED");
+    // the override replaced API_WRITE rather than stacking under it
+    expect(LIMITS.API_WRITE.limit).toBeGreaterThan(2);
+  });
+
+  it("writeLimit:false opts a route out entirely", async () => {
+    const unlimited = route(async () => ok({ done: true }), { writeLimit: false });
+    for (let i = 0; i < LIMITS.API_WRITE.limit + 5; i++) {
+      expect((await unlimited(write("tok-unlimited"), ROUTE_CTX)).status).toBe(200);
+    }
+  });
+
+  it("refuses the request BEFORE the handler runs — a throttled call must have no side effects", async () => {
+    let ran = 0;
+    const counted = route(
+      async () => {
+        ran++;
+        return ok({ ran });
+      },
+      { writeLimit: { limit: 1, windowMs: 60_000 } },
+    );
+    expect((await counted(write("tok-count"), ROUTE_CTX)).status).toBe(200);
+    expect((await counted(write("tok-count"), ROUTE_CTX)).status).toBe(429);
+    expect(ran).toBe(1);
+  });
+});
+
+describe("handleApiError mapping a user actually meets (audit: untested above)", () => {
+  const post = () => new NextRequest("http://localhost:3000/api/anything", { method: "POST" });
+
+  it("reports an unreachable database as 503 with a recovery hint, not a generic 500", async () => {
+    const handler = route(async () => {
+      throw Object.assign(new Error("Can't reach database server at localhost:5432"), { code: "P1001" });
+    });
+    const res = await handler(post(), ROUTE_CTX);
+    expect(res.status).toBe(503);
+    const body = await envelope(res);
+    expect(body.ok).toBe(false);
+    expect(body.error?.message).toMatch(/database/i);
+    // the whole point of the 503 branch: say it is NOT a credentials problem
+    expect(body.error?.reason).toMatch(/not a credentials problem/i);
+    expect(body.error?.fix).toMatch(/DATABASE_URL|db:dev/);
+  });
+
+  it("recognises the initialization error by name as well as by code", async () => {
+    const handler = route(async () => {
+      throw Object.assign(new Error("boom"), { name: "PrismaClientInitializationError" });
+    });
+    expect((await handler(post(), ROUTE_CTX)).status).toBe(503);
+  });
+
+  it("does not mistake an ordinary Prisma error (P2025) for an outage", async () => {
+    const handler = route(async () => {
+      throw Object.assign(new Error("record not found"), { code: "P2025" });
+    });
+    expect((await handler(post(), ROUTE_CTX)).status).toBe(500);
+  });
+
+  it("turns a missing-configuration error into CONFIG_MISSING rather than a 500", async () => {
+    const handler = route(async () => {
+      throw new ConfigError("Meta integration", "META_APP_ID missing");
+    });
+    const res = await handler(post(), ROUTE_CTX);
+    const body = await envelope(res);
+    expect(body.error?.code).toBe("CONFIG_MISSING");
+    expect(body.error?.message).toContain("META_APP_ID missing");
+    expect(body.error?.fix).toMatch(/\.env\.example/);
+  });
+
+  it("turns a zod failure into a 400 that names the offending field", async () => {
+    const handler = route(async () => {
+      z.object({ name: z.string() }).parse({ name: 42 });
+      return ok(null);
+    });
+    const res = await handler(post(), ROUTE_CTX);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: { code: string; details?: { path: string }[] } };
+    expect(body.error?.code).toBe("VALIDATION");
+    expect(body.error?.details?.[0]?.path).toBe("name");
+  });
+
+  it("pathParam yields the value and 404s on a missing one", async () => {
+    await expect(pathParam({ params: Promise.resolve({ id: "abc" }) }, "id")).resolves.toBe("abc");
+    await expect(pathParam({ params: Promise.resolve({}) }, "id")).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+  });
+});
+
+describe("assertSameOrigin in production (audit: completing the dev/prod claim)", () => {
+  it("refuses the development fallback port once NODE_ENV is production", () => {
+    setNodeEnv("production");
+    expect(allows(mutating("POST", { origin: "http://localhost:3001" }))).toBe(false);
+    expect(allows(mutating("POST", { origin: "http://app.localhost:3000" }))).toBe(false);
+    expect(allows(mutating("POST", { origin: "http://localhost:3000" }))).toBe(true);
+  });
+
+  it("still requires an Origin from a cookie-bearing browser in production", () => {
+    setNodeEnv("production");
+    expect(allows(mutating("POST", { cookie: true }))).toBe(false);
+  });
+});
+
+describe("session and role freshness (audit: untested above)", () => {
+  it("a role change lands on the very next request — the session carries no cached role", async () => {
+    const admin = await signInAs("OWNER");
+    expect(await statusOf(requireOwner)).toBe("ok");
+
+    admin.role = "USER"; // the OWNER demotes them while their session is still live
+    expect((await getAuth())!.admin.role).toBe("USER");
+    expect(await statusOf(requireOwner)).toBe(403);
+    expect(await statusOf(requireStaff)).toBe(403);
+    expect(await statusOf(requireAdmin)).toBe("ok");
+  });
+
+  it("revoking an already-revoked session keeps it revoked", async () => {
+    const admin = seedAdmin();
+    const { row } = await signIn(admin.id as string);
+    await revokeSession(row.id as string);
+    await revokeSession(row.id as string);
+    expect(row.revokedAt).toBeInstanceOf(Date);
+    expect(await getAuth()).toBeNull();
+  });
+
+  it("a renamed/edited admin is reflected immediately, straight from the Admin row", async () => {
+    const admin = seedAdmin({ name: "Before", email: null });
+    await signIn(admin.id as string);
+    admin.name = "After";
+    admin.email = "after@x.dev";
+    const auth = await getAuth();
+    expect(auth!.admin).toMatchObject({ name: "After", email: "after@x.dev" });
+  });
+});
+
+describe("POST /api/auth/login — audit findings", () => {
+  let hash = "";
+  beforeAll(async () => {
+    hash = await hashPassword("RightPassword1");
+  });
+
+  /**
+   * DEFECT: the response envelopes for "unknown login", "bad password" and
+   * "disabled account" are identical (section 6 proves that), but the TIME they
+   * take was not. `admin && admin.isActive && await verifyPassword(...)`
+   * short-circuits, so a login that does not exist (or is disabled) skipped
+   * bcrypt entirely and answered in a couple of milliseconds while a real login
+   * spent ~350 ms. That difference is a reliable account-enumeration oracle over
+   * the network — the identical body buys nothing when the clock gives it away.
+   */
+  it("spends the same bcrypt work on an unknown or disabled login as on a real one", async () => {
+    seedAdmin({ login: "real", passwordHash: hash });
+    seedAdmin({ login: "off", passwordHash: hash, isActive: false });
+
+    const timed = async (login: string): Promise<number> => {
+      const started = performance.now();
+      const res = await attemptLogin(login, "WrongPassword1", "203.0.113.90");
+      expect(res.status).toBe(401);
+      expect(res.headers.get("set-cookie")).toBeNull();
+      return performance.now() - started;
+    };
+
+    const known = await timed("real"); // bcrypt definitely runs here
+    const unknown = await timed("nobody-at-all");
+    const disabled = await timed("off");
+
+    // bcrypt at cost 12 is ~350 ms on this machine; the short-circuit path was ~2 ms.
+    expect(known).toBeGreaterThan(50);
+    expect(unknown).toBeGreaterThan(50);
+    expect(disabled).toBeGreaterThan(50);
+    expect(unknown).toBeGreaterThan(known * 0.5);
+    expect(disabled).toBeGreaterThan(known * 0.5);
+  });
+
+  /**
+   * DEFECT: the in-process limiter is explicitly reset by a correct password
+   * ("an admin cannot lock themselves out"), but the DURABLE counter read the
+   * raw LOGIN_FAILED rows and ignored the fact that the account had since
+   * authenticated successfully. An admin who mistyped nine times, signed in
+   * correctly, then mistyped once more crossed the threshold and was refused
+   * for the rest of the 15-minute window — with the CORRECT password, from
+   * their own machine. Failures settled by a successful sign-in must not count.
+   */
+  it("a successful sign-in settles the durable per-login failure count", async () => {
+    seedAdmin({ login: "boss", passwordHash: hash });
+    for (let i = 0; i < LOGIN_LOCKOUT.perLogin - 1; i++) {
+      auditRow({ ip: `203.0.113.${i + 1}`, after: { login: "boss" }, createdAt: new Date(Date.now() - (i + 1) * 1_000) });
+    }
+
+    expect((await attemptLogin("boss", "RightPassword1", "203.0.113.99")).status).toBe(200);
+    // one more mistype after signing in — on its own, nowhere near the threshold
+    expect((await attemptLogin("boss", "nope", "203.0.113.99")).status).toBe(401);
+    // …so the correct password must still work
+    const again = await attemptLogin("boss", "RightPassword1", "203.0.113.99");
+    expect(again.status).toBe(200);
+  });
+
+  it("a success clears only that login — an address spraying others is still counted", async () => {
+    seedAdmin({ login: "boss", passwordHash: hash });
+    const sprayIp = "198.51.100.42";
+    for (let i = 0; i < LOGIN_LOCKOUT.perIp; i++) {
+      auditRow({ ip: sprayIp, after: { login: `victim${i}` }, createdAt: new Date(Date.now() - i * 1_000) });
+    }
+    // the attacker owns one valid account; signing into it must not wipe the ip scope
+    expect((await attemptLogin("boss", "RightPassword1", "203.0.113.98")).status).toBe(200);
+    const res = await attemptLogin("victim999", "x", sprayIp);
+    expect(res.status).toBe(429);
+    expect((await envelope(res)).error?.reason).toMatch(/address has failed/i);
+  });
+
+  it("records the edge-observed address in the audit row, not the caller's forged left-hand entry", async () => {
+    await attemptLogin("ghost", "x", "1.1.1.1, 203.0.113.7");
+    const row = store.auditLogs.find((r) => r.action === "LOGIN_FAILED");
+    expect(row?.ip).toBe("203.0.113.7");
+  });
+
+  it("stores the session's ip and user agent from the signed-in request", async () => {
+    const admin = seedAdmin({ login: "real", passwordHash: hash });
+    const req = loginRequest({ login: "real", password: "RightPassword1" }, { ip: "203.0.113.31", ua: "Vitest/1.0" });
+    expect((await loginRoute(req, ROUTE_CTX)).status).toBe(200);
+    expect(store.sessions[0]).toMatchObject({ adminId: admin.id, ip: "203.0.113.31", userAgent: "Vitest/1.0" });
+  });
+});
+
+describe("/api/auth/logout — audit findings", () => {
+  it("is a safe no-op for a caller with no session at all", async () => {
+    const res = await logoutRoute(mutating("POST", { origin: "http://localhost:3000" }), ROUTE_CTX);
+    expect(res.status).toBe(200);
+    expect(tokenFromSetCookie(res)).toBe("");
+    expect(res.headers.get("set-cookie") ?? "").toMatch(/Max-Age=0/i);
+    expect(store.auditLogs).toHaveLength(0);
+  });
+
+  it("revokes only the session that was used, leaving the admin's other devices signed in", async () => {
+    const admin = seedAdmin();
+    const other = await createSession(admin.id as string);
+    const { row } = await signIn(admin.id as string);
+
+    await logoutRoute(mutating("POST", { origin: "http://localhost:3000" }), ROUTE_CTX);
+
+    expect(row.revokedAt).toBeInstanceOf(Date);
+    cookieJar.value = other.token;
+    expect(await getAuth()).not.toBeNull();
+  });
+});
+
+describe("middleware allowlist (audit: the list itself is the security boundary)", () => {
+  /**
+   * isPublicPath is only as good as the list behind it, and nothing above would
+   * notice a new entry being added. Every prefix here is a route reachable with
+   * no session at all, so the set is pinned: adding one fails this test until
+   * someone states why the new path authenticates itself.
+   */
+  it("contains exactly the prefixes this suite has reviewed", () => {
+    const src = readFileSync(path.join(process.cwd(), "src", "middleware.ts"), "utf8");
+    const block = /const PUBLIC_PREFIXES = \[([\s\S]*?)\n\];/.exec(src);
+    expect(block, "PUBLIC_PREFIXES not found in src/middleware.ts").not.toBeNull();
+    const entries = [...block![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+    expect(entries.sort()).toEqual(
+      [
+        "/_next",
+        "/api/auth/login",
+        "/api/connect/",
+        "/api/cron",
+        "/api/health",
+        "/api/leads/public",
+        "/api/meta/oauth/callback",
+        "/api/setup-status",
+        "/api/webhooks",
+        "/connect/",
+        "/f/",
+        "/favicon.ico",
+        "/login",
+        "/m/",
+        "/r/",
+        "/v/",
+      ].sort(),
+    );
+    // and each one really is public, through the exported predicate
+    for (const entry of entries) expect(isPublicPath(entry.endsWith("/") ? `${entry}x` : entry), entry).toBe(true);
+  });
+
+  it("gates a sibling route that merely starts with an allowlisted name — the real request, not just the predicate", async () => {
+    const res = middleware(new NextRequest("http://localhost:3000/api/leads/publicXYZ"));
+    expect(res.status).toBe(401);
+    expect((await res.json()).error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("gates /api/auth/logout and /api/auth/me while leaving /api/auth/login open", () => {
+    expect(middleware(new NextRequest("http://localhost:3000/api/auth/logout", { method: "POST" })).status).toBe(401);
+    expect(middleware(new NextRequest("http://localhost:3000/api/auth/me")).status).toBe(401);
+    expect(middleware(new NextRequest("http://localhost:3000/api/auth/login", { method: "POST" })).status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Second audit pass — the admin user-management surface
+//
+// /api/admin/admins and /api/admin/admins/[id] are where roles are handed out,
+// passwords reset, accounts granted and people removed. The suite above tested
+// the pure helper (`wouldLeaveUserWithoutAccounts`) and nothing else here, so
+// every rule those routes enforce was unproven. They are driven for real below,
+// against the same in-memory Prisma stand-in, with real bcrypt.
+// ---------------------------------------------------------------------------
+
+const idCtx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+function apiRequest(method: string, url: string, body?: unknown, origin: string | null = "http://localhost:3000") {
+  const headers = new Headers();
+  if (origin) headers.set("origin", origin);
+  if (body !== undefined) headers.set("content-type", "application/json");
+  return new NextRequest(`http://localhost:3000${url}`, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+const createReq = (body: unknown, origin?: string | null) => apiRequest("POST", "/api/admin/admins", body, origin);
+const patchReq = (id: string, body: unknown, origin?: string | null) =>
+  apiRequest("PATCH", `/api/admin/admins/${id}`, body, origin);
+const deleteReq = (id: string, origin?: string | null) => apiRequest("DELETE", `/api/admin/admins/${id}`, undefined, origin);
+
+function seedAccount(id: string, username = id): Row {
+  const row: Row = { id, username, status: "CONNECTED", isDemo: false, adAccountId: null };
+  store.instagramAccounts.push(row);
+  return row;
+}
+
+/** A valid create body; individual tests override the field under test. */
+const newUserBody = (patch: Row = {}) => ({
+  login: "newbie",
+  name: "New Person",
+  password: "GoodPass1word",
+  role: "USER",
+  accountIds: ["acc_a"],
+  ...patch,
+});
+
+describe("admin user management — who may call it at all", () => {
+  it("is 401 anonymous and 403 for a USER on every verb", async () => {
+    expect((await adminsList(apiRequest("GET", "/api/admin/admins"), ROUTE_CTX)).status).toBe(401);
+
+    await signInAs("USER");
+    const target = seedAdmin({ login: "victim", role: "USER" });
+    expect((await adminsList(apiRequest("GET", "/api/admin/admins"), ROUTE_CTX)).status).toBe(403);
+    expect((await createAdmin(createReq(newUserBody()), ROUTE_CTX)).status).toBe(403);
+    expect((await patchAdmin(patchReq(target.id as string, { name: "x" }), idCtx(target.id as string))).status).toBe(403);
+    expect((await deleteAdmin(deleteReq(target.id as string), idCtx(target.id as string))).status).toBe(403);
+    expect((await adminDetail(apiRequest("GET", `/api/admin/admins/${target.id}`), idCtx(target.id as string))).status).toBe(403);
+    // nothing happened
+    expect(store.admins.map((a) => a.login)).toEqual(["useruser", "victim"]);
+  });
+
+  it("refuses a cross-origin create, update and delete before touching anything", async () => {
+    await signInAs("OWNER");
+    const target = seedAdmin({ login: "victim", role: "USER" });
+    seedAccount("acc_a");
+
+    for (const res of [
+      await createAdmin(createReq(newUserBody(), "https://evil.example"), ROUTE_CTX),
+      await patchAdmin(patchReq(target.id as string, { name: "hacked" }, "https://evil.example"), idCtx(target.id as string)),
+      await deleteAdmin(deleteReq(target.id as string, "https://evil.example"), idCtx(target.id as string)),
+    ]) {
+      expect(res.status).toBe(403);
+    }
+    expect(store.admins).toHaveLength(2);
+    expect(target.name).toBe("Test Admin");
+    expect(store.auditLogs).toHaveLength(0);
+  });
+});
+
+describe("admin user management — creating an account", () => {
+  beforeEach(() => {
+    seedAccount("acc_a");
+    seedAccount("acc_b");
+  });
+
+  it("lets only the OWNER mint another administrator", async () => {
+    await signInAs("ADMIN");
+    const denied = await createAdmin(createReq(newUserBody({ login: "wannabe", role: "ADMIN" })), ROUTE_CTX);
+    expect(denied.status).toBe(403);
+    expect((await envelope(denied)).error?.message).toMatch(/only the owner/i);
+    expect(store.admins.some((a) => a.login === "wannabe")).toBe(false);
+
+    // …the same ADMIN may still onboard a USER
+    expect((await createAdmin(createReq(newUserBody({ login: "worker" })), ROUTE_CTX)).status).toBe(200);
+
+    store.admins.length = 0;
+    store.sessions.length = 0;
+    await signInAs("OWNER");
+    expect((await createAdmin(createReq(newUserBody({ login: "deputy", role: "ADMIN", accountIds: [] })), ROUTE_CTX)).status).toBe(200);
+    expect(store.admins.find((a) => a.login === "deputy")!.role).toBe("ADMIN");
+  });
+
+  it("refuses a USER with no Instagram account, and one pointing at an account that does not exist", async () => {
+    await signInAs("OWNER");
+    const empty = await createAdmin(createReq(newUserBody({ accountIds: [] })), ROUTE_CTX);
+    expect(empty.status).toBe(400);
+    expect((await envelope(empty)).error?.message).toMatch(/at least one Instagram account/i);
+
+    const ghost = await createAdmin(createReq(newUserBody({ accountIds: ["acc_a", "acc_nope"] })), ROUTE_CTX);
+    expect(ghost.status).toBe(400);
+    expect((await envelope(ghost)).error?.message).toMatch(/does not exist/i);
+    expect(store.admins.some((a) => a.login === "newbie")).toBe(false);
+    expect(store.accountAccess).toHaveLength(0);
+  });
+
+  it("applies the password policy and the login format to the created account", async () => {
+    await signInAs("OWNER");
+    const weak = await createAdmin(createReq(newUserBody({ password: "short" })), ROUTE_CTX);
+    expect(weak.status).toBe(400);
+    expect((await envelope(weak)).error?.message).toMatch(/at least 8 characters/i);
+
+    const noDigit = await createAdmin(createReq(newUserBody({ password: "NoDigitsHere" })), ROUTE_CTX);
+    expect((await envelope(noDigit)).error?.message).toMatch(/at least one digit/i);
+
+    const badLogin = await createAdmin(createReq(newUserBody({ login: "has space" })), ROUTE_CTX);
+    expect(badLogin.status).toBe(400);
+    expect((await envelope(badLogin)).error?.message).toMatch(/letters, digits/i);
+
+    expect(store.admins.filter((a) => a.login !== "owneruser")).toHaveLength(0);
+  });
+
+  it("stores a real bcrypt hash, normalizes login and email, and returns neither", async () => {
+    const actor = await signInAs("OWNER");
+    const res = await createAdmin(
+      createReq(newUserBody({ login: "  NewBie  ", email: "Person@Example.COM", password: "GoodPass1word" })),
+      ROUTE_CTX,
+    );
+    expect(res.status).toBe(200);
+
+    const row = store.admins.find((a) => a.login === "newbie")!;
+    expect(row).toBeTruthy();
+    expect(row.email).toBe("person@example.com");
+    expect(row.passwordHash).not.toBe("GoodPass1word");
+    expect(await verifyPassword("GoodPass1word", row.passwordHash as string)).toBe(true);
+    expect(await verifyPassword("goodpass1word", row.passwordHash as string)).toBe(false);
+
+    const body = await envelope(res);
+    expect(JSON.stringify(body)).not.toContain("passwordHash");
+    expect(JSON.stringify(body)).not.toContain("GoodPass1word");
+    expect(body.data).toEqual({
+      admin: { id: row.id, login: "newbie", email: "person@example.com", name: "New Person", role: "USER", isActive: true },
+    });
+
+    // the grants arrive with the account, attributed to whoever granted them
+    expect(store.accountAccess).toEqual([
+      expect.objectContaining({ adminId: row.id, accountId: "acc_a", grantedById: actor.id }),
+    ]);
+    expect(store.auditLogs.some((r) => r.action === "CREATED_ADMIN" && r.resourceId === row.id)).toBe(true);
+
+    // and the account it just created can actually sign in with that password
+    cookieJar.value = null;
+    _resetRateLimiter();
+    const signedIn = await loginRoute(loginRequest({ login: "NEWBIE", password: "GoodPass1word" }), ROUTE_CTX);
+    expect(signedIn.status).toBe(200);
+  });
+
+  it("refuses a login that differs only by case, and survives losing the race to a concurrent create", async () => {
+    await signInAs("OWNER");
+    seedAdmin({ login: "taken", email: "taken@x.dev" });
+
+    const clash = await createAdmin(createReq(newUserBody({ login: "TAKEN" })), ROUTE_CTX);
+    expect(clash.status).toBe(400);
+    expect((await envelope(clash)).error?.message).toMatch(/already exists/i);
+
+    const emailClash = await createAdmin(createReq(newUserBody({ login: "fresh", email: "TAKEN@x.dev" })), ROUTE_CTX);
+    expect(emailClash.status).toBe(400);
+    expect((await envelope(emailClash)).error?.message).toMatch(/already exists/i);
+
+    // the pre-check passed but the database's unique index fired first
+    const spy = vi
+      .spyOn(prismaMock.admin, "create")
+      .mockRejectedValueOnce(Object.assign(new Error("Unique constraint failed"), { code: "P2002" }));
+    const raced = await createAdmin(createReq(newUserBody({ login: "racer" })), ROUTE_CTX);
+    expect(raced.status).toBe(400);
+    expect((await envelope(raced)).error?.message).toMatch(/already exists/i);
+    spy.mockRestore();
+  });
+
+  it("lists users without ever serializing a password hash", async () => {
+    await signInAs("OWNER");
+    const user = seedAdmin({ login: "worker", role: "USER", passwordHash: "$2a$12$secret-digest-value" });
+    store.accountAccess.push({ id: "aa_1", adminId: user.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+
+    const res = await adminsList(apiRequest("GET", "/api/admin/admins"), ROUTE_CTX);
+    expect(res.status).toBe(200);
+    const payload = await envelope(res);
+    const raw = JSON.stringify(payload);
+    expect(raw).not.toContain("passwordHash");
+    expect(raw).not.toContain("secret-digest-value");
+    const { admins } = payload.data as { admins: Array<{ login: string; accounts: Array<{ id: string }> }> };
+    expect(admins.find((a) => a.login === "worker")!.accounts).toEqual([
+      { id: "acc_a", username: "acc_a", status: "CONNECTED" },
+    ]);
+  });
+});
+
+describe("admin user management — role changes", () => {
+  it("an ADMIN can neither edit a staff record nor promote anyone into one", async () => {
+    await signInAs("ADMIN");
+    const owner = seedAdmin({ login: "theowner", role: "OWNER" });
+    const user = seedAdmin({ login: "worker", role: "USER" });
+
+    const touchOwner = await patchAdmin(patchReq(owner.id as string, { name: "renamed" }), idCtx(owner.id as string));
+    expect(touchOwner.status).toBe(403);
+    expect(owner.name).toBe("Test Admin");
+
+    const promote = await patchAdmin(patchReq(user.id as string, { role: "ADMIN" }), idCtx(user.id as string));
+    expect(promote.status).toBe(403);
+    expect((await envelope(promote)).error?.message).toMatch(/only the owner/i);
+    expect(user.role).toBe("USER");
+  });
+
+  it("nobody can change their own role or suspend themselves", async () => {
+    const me = await signInAs("OWNER");
+    const role = await patchAdmin(patchReq(me.id as string, { role: "USER" }), idCtx(me.id as string));
+    expect(role.status).toBe(400);
+    expect((await envelope(role)).error?.message).toMatch(/your own role/i);
+
+    const off = await patchAdmin(patchReq(me.id as string, { isActive: false }), idCtx(me.id as string));
+    expect(off.status).toBe(400);
+    expect(me.role).toBe("OWNER");
+    expect(me.isActive).toBe(true);
+  });
+
+  /**
+   * The invariant, rather than one guard: whichever way you come at it, the
+   * platform cannot be left with no active OWNER. The explicit "last active
+   * OWNER" check is the backstop; what actually holds is the self-edit block,
+   * because the only person allowed to demote an OWNER is another OWNER — who
+   * then still counts.
+   */
+  it("cannot be left without an active OWNER", async () => {
+    const actor = await signInAs("OWNER", { login: "owner-a" });
+    const second = seedAdmin({ login: "owner-b", role: "OWNER" });
+
+    // demoting the OTHER owner is allowed — one remains — but still needs an account
+    expect((await patchAdmin(patchReq(second.id as string, { role: "USER", accountIds: ["acc_x"] }), idCtx(second.id as string))).status).toBe(400);
+    seedAccount("acc_x");
+    expect((await patchAdmin(patchReq(second.id as string, { role: "USER", accountIds: ["acc_x"] }), idCtx(second.id as string))).status).toBe(200);
+    expect(second.role).toBe("USER");
+
+    // now the last one standing cannot remove themselves, by role, by suspension or by deletion
+    expect((await patchAdmin(patchReq(actor.id as string, { role: "ADMIN" }), idCtx(actor.id as string))).status).toBe(400);
+    expect((await patchAdmin(patchReq(actor.id as string, { isActive: false }), idCtx(actor.id as string))).status).toBe(400);
+    expect((await deleteAdmin(deleteReq(actor.id as string), idCtx(actor.id as string))).status).toBe(400);
+    expect(store.admins.filter((a) => a.role === "OWNER" && a.isActive)).toHaveLength(1);
+  });
+
+  it("promoting a USER to staff clears the now-meaningless account grants", async () => {
+    await signInAs("OWNER");
+    seedAccount("acc_a");
+    const user = seedAdmin({ login: "worker", role: "USER" });
+    store.accountAccess.push({ id: "aa_1", adminId: user.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+
+    const res = await patchAdmin(patchReq(user.id as string, { role: "ADMIN" }), idCtx(user.id as string));
+    expect(res.status).toBe(200);
+    expect(user.role).toBe("ADMIN");
+    expect(store.accountAccess.filter((g) => g.adminId === user.id)).toHaveLength(0);
+  });
+
+  it("refuses a demotion to USER that would leave them with no account at all", async () => {
+    await signInAs("OWNER");
+    const staff = seedAdmin({ login: "deputy", role: "ADMIN" });
+
+    const res = await patchAdmin(patchReq(staff.id as string, { role: "USER" }), idCtx(staff.id as string));
+    expect(res.status).toBe(400);
+    expect((await envelope(res)).error?.message).toMatch(/at least one Instagram account/i);
+    expect(staff.role).toBe("ADMIN");
+
+    const explicitlyEmpty = await patchAdmin(patchReq(staff.id as string, { role: "USER", accountIds: [] }), idCtx(staff.id as string));
+    expect(explicitlyEmpty.status).toBe(400);
+  });
+
+  it("replaces the granted account set exactly, adding and removing in one step", async () => {
+    await signInAs("OWNER");
+    for (const id of ["acc_a", "acc_b", "acc_c"]) seedAccount(id);
+    const user = seedAdmin({ login: "worker", role: "USER" });
+    store.accountAccess.push({ id: "aa_1", adminId: user.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+    const other = seedAdmin({ login: "bystander", role: "USER" });
+    store.accountAccess.push({ id: "aa_2", adminId: other.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+
+    const res = await patchAdmin(patchReq(user.id as string, { accountIds: ["acc_b", "acc_c", "acc_b"] }), idCtx(user.id as string));
+    expect(res.status).toBe(200);
+
+    const mine = store.accountAccess.filter((g) => g.adminId === user.id).map((g) => g.accountId).sort();
+    expect(mine).toEqual(["acc_b", "acc_c"]); // acc_a dropped, duplicates collapsed
+    // somebody else's grant on the same account is untouched
+    expect(store.accountAccess.filter((g) => g.adminId === other.id).map((g) => g.accountId)).toEqual(["acc_a"]);
+    expect(store.auditLogs.some((r) => r.action === "GRANTED_ACCOUNT_ACCESS")).toBe(true);
+
+    // and the new set is what the USER's own scope now resolves to
+    const { token } = await createSession(user.id as string);
+    cookieJar.value = token;
+    expect(await accountScope((await getAuth())!)).toEqual({ accountId: { in: ["acc_b", "acc_c"] } });
+  });
+
+  it("refuses a grant naming an account that does not exist, leaving the old set intact", async () => {
+    await signInAs("OWNER");
+    seedAccount("acc_a");
+    const user = seedAdmin({ login: "worker", role: "USER" });
+    store.accountAccess.push({ id: "aa_1", adminId: user.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+
+    const res = await patchAdmin(patchReq(user.id as string, { accountIds: ["acc_ghost"] }), idCtx(user.id as string));
+    expect(res.status).toBe(400);
+    expect(store.accountAccess.map((g) => g.accountId)).toEqual(["acc_a"]);
+  });
+
+  it("404s on an unknown id and refuses a login already taken by someone else", async () => {
+    await signInAs("OWNER");
+    seedAdmin({ login: "taken", role: "USER" });
+    const user = seedAdmin({ login: "worker", role: "USER" });
+
+    expect((await patchAdmin(patchReq("adm_nope", { name: "x" }), idCtx("adm_nope"))).status).toBe(404);
+
+    const clash = await patchAdmin(patchReq(user.id as string, { login: "TAKEN" }), idCtx(user.id as string));
+    expect(clash.status).toBe(400);
+    expect((await envelope(clash)).error?.message).toMatch(/already exists/i);
+    expect(user.login).toBe("worker");
+
+    // renaming to a case variant of their OWN login is not a clash
+    expect((await patchAdmin(patchReq(user.id as string, { login: "WORKER" }), idCtx(user.id as string))).status).toBe(200);
+    expect(user.login).toBe("worker");
+  });
+});
+
+describe("admin user management — a change that must end the target's sessions", () => {
+  async function actorAndVictim() {
+    const actor = await signInAs("OWNER");
+    const actorToken = cookieJar.value!;
+    const victim = seedAdmin({ login: "worker", role: "USER", passwordHash: await hashPassword("OldPass1word") });
+    const a = await createSession(victim.id as string);
+    const b = await createSession(victim.id as string);
+    cookieJar.value = actorToken;
+    return { actor, actorToken, victim, victimTokens: [a.token, b.token] };
+  }
+
+  const authenticatesAs = async (token: string) => {
+    cookieJar.value = token;
+    return (await getAuth())?.admin.login ?? null;
+  };
+
+  it("a password reset kills every existing session of that user and only that user", async () => {
+    const { actorToken, victim, victimTokens } = await actorAndVictim();
+    expect(await authenticatesAs(victimTokens[0]!)).toBe("worker");
+    cookieJar.value = actorToken;
+
+    const res = await patchAdmin(patchReq(victim.id as string, { password: "BrandNew1pass" }), idCtx(victim.id as string));
+    expect(res.status).toBe(200);
+
+    expect(await verifyPassword("BrandNew1pass", victim.passwordHash as string)).toBe(true);
+    expect(await verifyPassword("OldPass1word", victim.passwordHash as string)).toBe(false);
+    for (const token of victimTokens) expect(await authenticatesAs(token)).toBeNull();
+    expect(await authenticatesAs(actorToken)).toBe("owneruser"); // the actor stays signed in
+  });
+
+  it("rejects a weak reset password before touching the stored hash", async () => {
+    const { victim } = await actorAndVictim();
+    const before = victim.passwordHash;
+
+    const res = await patchAdmin(patchReq(victim.id as string, { password: "weak" }), idCtx(victim.id as string));
+    expect(res.status).toBe(400);
+    expect((await envelope(res)).error?.message).toMatch(/at least 8 characters/i);
+    expect(victim.passwordHash).toBe(before);
+    expect(store.sessions.filter((s) => s.adminId === victim.id && s.revokedAt === null)).toHaveLength(2);
+  });
+
+  it("a suspension signs them out immediately and audits it as SUSPENDED_USER", async () => {
+    const { actorToken, victim, victimTokens } = await actorAndVictim();
+
+    expect((await patchAdmin(patchReq(victim.id as string, { isActive: false }), idCtx(victim.id as string))).status).toBe(200);
+    expect(victim.isActive).toBe(false);
+    for (const token of victimTokens) expect(await authenticatesAs(token)).toBeNull();
+    expect(store.auditLogs.some((r) => r.action === "SUSPENDED_USER" && r.resourceId === victim.id)).toBe(true);
+
+    // reactivating is audited distinctly, and does NOT resurrect the dead sessions
+    cookieJar.value = actorToken;
+    expect((await patchAdmin(patchReq(victim.id as string, { isActive: true }), idCtx(victim.id as string))).status).toBe(200);
+    expect(store.auditLogs.some((r) => r.action === "REACTIVATED_USER")).toBe(true);
+    expect(await authenticatesAs(victimTokens[0]!)).toBeNull();
+  });
+
+  it("an innocuous edit does NOT sign the user out", async () => {
+    const { victim, victimTokens } = await actorAndVictim();
+
+    expect((await patchAdmin(patchReq(victim.id as string, { name: "Renamed Person" }), idCtx(victim.id as string))).status).toBe(200);
+    expect(victim.name).toBe("Renamed Person");
+    expect(await authenticatesAs(victimTokens[0]!)).toBe("worker");
+    expect(store.auditLogs.some((r) => r.action === "UPDATED_ADMIN")).toBe(true);
+  });
+
+  it("a role change signs them out, so the new role cannot be dodged by keeping the old tab open", async () => {
+    const { victim, victimTokens } = await actorAndVictim();
+    seedAccount("acc_a");
+    store.accountAccess.push({ id: "aa_1", adminId: victim.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+
+    expect((await patchAdmin(patchReq(victim.id as string, { role: "ADMIN" }), idCtx(victim.id as string))).status).toBe(200);
+    for (const token of victimTokens) expect(await authenticatesAs(token)).toBeNull();
+  });
+});
+
+describe("admin user management — removal", () => {
+  it("refuses to remove yourself, and refuses an ADMIN removing a staff record", async () => {
+    const actor = await signInAs("ADMIN");
+    const owner = seedAdmin({ login: "theowner", role: "OWNER" });
+    const peer = seedAdmin({ login: "peer", role: "ADMIN" });
+
+    const self = await deleteAdmin(deleteReq(actor.id as string), idCtx(actor.id as string));
+    expect(self.status).toBe(400);
+    expect((await envelope(self)).error?.message).toMatch(/your own account/i);
+
+    expect((await deleteAdmin(deleteReq(owner.id as string), idCtx(owner.id as string))).status).toBe(403);
+    expect((await deleteAdmin(deleteReq(peer.id as string), idCtx(peer.id as string))).status).toBe(403);
+    expect(store.admins).toHaveLength(3);
+  });
+
+  it("removes a USER, records it, and 404s for an id that is already gone", async () => {
+    const actor = await signInAs("OWNER");
+    const user = seedAdmin({ login: "worker", role: "USER" });
+
+    const res = await deleteAdmin(deleteReq(user.id as string), idCtx(user.id as string));
+    expect(res.status).toBe(200);
+    expect((await envelope(res)).data).toEqual({ deleted: true });
+    expect(store.admins.some((a) => a.id === user.id)).toBe(false);
+    expect(
+      store.auditLogs.some((r) => r.action === "REMOVED_USER" && r.resourceId === user.id && r.adminId === actor.id),
+    ).toBe(true);
+
+    expect((await deleteAdmin(deleteReq(user.id as string), idCtx(user.id as string))).status).toBe(404);
+  });
+});
+
+describe("admin user management — the per-actor write ceiling", () => {
+  it("stops one staff member at LIMITS.ADMIN_WRITE without touching another", async () => {
+    await signInAs("OWNER");
+    const target = seedAdmin({ login: "worker", role: "USER" });
+
+    for (let i = 0; i < LIMITS.ADMIN_WRITE.limit; i++) {
+      const res = await patchAdmin(patchReq(target.id as string, { name: `Name ${i}` }), idCtx(target.id as string));
+      expect(res.status, `edit ${i + 1}`).toBe(200);
+    }
+    const blocked = await patchAdmin(patchReq(target.id as string, { name: "one too many" }), idCtx(target.id as string));
+    expect(blocked.status).toBe(429);
+    expect((await envelope(blocked)).error?.code).toBe("RATE_LIMITED");
+    expect(target.name).toBe(`Name ${LIMITS.ADMIN_WRITE.limit - 1}`); // the blocked edit never landed
+
+    // a different staff member has their own bucket
+    const second = seedAdmin({ login: "deputy", role: "ADMIN" });
+    const { token } = await createSession(second.id as string);
+    cookieJar.value = token;
+    expect((await patchAdmin(patchReq(target.id as string, { name: "from deputy" }), idCtx(target.id as string))).status).toBe(200);
+  });
+
+  /**
+   * DEFECT (fixed): POST and PATCH were both capped at LIMITS.ADMIN_WRITE, but
+   * DELETE — the destructive one — was left on the blanket 120/min API_WRITE
+   * floor, so one staff session could remove twelve times as many accounts a
+   * minute as it could edit.
+   */
+  it("caps account removal at the same per-actor ceiling as creating and editing", async () => {
+    await signInAs("OWNER");
+    const victims = Array.from({ length: LIMITS.ADMIN_WRITE.limit + 1 }, (_, i) =>
+      seedAdmin({ login: `worker${i}`, role: "USER" }),
+    );
+
+    for (let i = 0; i < LIMITS.ADMIN_WRITE.limit; i++) {
+      const id = victims[i]!.id as string;
+      expect((await deleteAdmin(deleteReq(id), idCtx(id))).status, `removal ${i + 1}`).toBe(200);
+    }
+    const last = victims[LIMITS.ADMIN_WRITE.limit]!.id as string;
+    const blocked = await deleteAdmin(deleteReq(last), idCtx(last));
+    expect(blocked.status).toBe(429);
+    expect(store.admins.some((a) => a.id === last)).toBe(true); // it survived
+  });
+});
+
+describe("admin user management — the detail view", () => {
+  it("scopes a USER's reported reach to the accounts actually granted to them", async () => {
+    await signInAs("OWNER");
+    seedAccount("acc_a", "granted");
+    seedAccount("acc_b", "not_granted");
+    const user = seedAdmin({ login: "worker", role: "USER" });
+    store.accountAccess.push({ id: "aa_1", adminId: user.id, accountId: "acc_a", grantedById: null, createdAt: new Date() });
+    store.leads.push(
+      { id: "l1", accountId: "acc_a", status: "NEW" },
+      { id: "l2", accountId: "acc_a", status: "WON" },
+      { id: "l3", accountId: "acc_b", status: "WON" },
+    );
+    store.campaigns.push({ id: "c1", accountId: "acc_a", status: "ACTIVE" }, { id: "c2", accountId: "acc_b", status: "ACTIVE" });
+    await createSession(user.id as string);
+    store.sessions.push({
+      id: "dead",
+      adminId: user.id,
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + DAY),
+      lastSeenAt: new Date(),
+      tokenHash: "x",
+    });
+
+    const res = await adminDetail(apiRequest("GET", `/api/admin/admins/${user.id}`), idCtx(user.id as string));
+    expect(res.status).toBe(200);
+    const data = (await envelope(res)).data as {
+      admin: Record<string, unknown>;
+      accounts: Array<{ id: string; username: string }>;
+      stats: { leads: number; qualified: number; campaigns: number; activeCampaigns: number; activeSessions: number };
+    };
+
+    expect(Object.keys(data.admin)).not.toContain("passwordHash");
+    expect(data.accounts.map((a) => a.username)).toEqual(["granted"]);
+    expect(data.stats.leads).toBe(2); // acc_b's lead is invisible to them
+    expect(data.stats.qualified).toBe(1);
+    expect(data.stats.campaigns).toBe(1);
+    expect(data.stats.activeCampaigns).toBe(1);
+    expect(data.stats.activeSessions).toBe(1); // the revoked one does not count
+  });
+
+  it("reports staff as unrestricted rather than as holding zero accounts", async () => {
+    await signInAs("OWNER");
+    seedAccount("acc_a");
+    const staff = seedAdmin({ login: "deputy", role: "ADMIN" });
+    store.leads.push({ id: "l1", accountId: "acc_a", status: "NEW" }, { id: "l2", accountId: "acc_b", status: "NEW" });
+
+    const res = await adminDetail(apiRequest("GET", `/api/admin/admins/${staff.id}`), idCtx(staff.id as string));
+    const data = (await envelope(res)).data as { stats: { leads: number } };
+    expect(data.stats.leads).toBe(2);
+  });
+
+  it("404s for an id that does not exist", async () => {
+    await signInAs("OWNER");
+    expect((await adminDetail(apiRequest("GET", "/api/admin/admins/nope"), idCtx("nope"))).status).toBe(404);
+  });
+});
+
+describe("suspension and the cleared cookie, through the real /api/auth/me", () => {
+  it("stops answering the moment the account is suspended, mid-session", async () => {
+    const admin = seedAdmin({ login: "boss", role: "OWNER" });
+    await signIn(admin.id as string);
+    expect((await meRoute(new NextRequest("http://localhost:3000/api/auth/me"), ROUTE_CTX)).status).toBe(200);
+
+    admin.isActive = false;
+    const res = await meRoute(new NextRequest("http://localhost:3000/api/auth/me"), ROUTE_CTX);
+    expect(res.status).toBe(401);
+    expect((await envelope(res)).error?.code).toBe("UNAUTHORIZED");
+  });
+
+  it("treats an emptied cookie as anonymous rather than looking it up", async () => {
+    const admin = seedAdmin();
+    await signIn(admin.id as string);
+    cookieJar.value = "";
+    store.calls.length = 0;
+    expect(await getAuth()).toBeNull();
+    expect(store.calls.filter((c) => c.startsWith("session"))).toHaveLength(0);
+    expect((await meRoute(new NextRequest("http://localhost:3000/api/auth/me"), ROUTE_CTX)).status).toBe(401);
+  });
+});
+
+describe("middleware matcher (audit: the gate only runs where this says it does)", () => {
+  it("excludes only the static asset paths and still covers every page and api route", () => {
+    const [pattern] = config.matcher as string[];
+    expect(pattern).toBeTruthy();
+    const re = new RegExp(`^${pattern}$`);
+    for (const covered of ["/dashboard", "/api/admin/admins", "/leads/abc", "/", "/login"]) {
+      expect(re.test(covered), covered).toBe(true);
+    }
+    for (const skipped of ["/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
+      expect(re.test(skipped), skipped).toBe(false);
+    }
+  });
+});
+
+describe("page-level auth gate (audit: only the API side was proven)", () => {
+  it("the dashboard layout — the single gate in front of every page — calls requireAuthPage", () => {
+    const src = readFileSync(path.join(process.cwd(), "src", "app", "(dashboard)", "layout.tsx"), "utf8");
+    expect(src).toMatch(/import \{ requireAuthPage \}/);
+    expect(src).toMatch(/await requireAuthPage\(\)/);
   });
 });

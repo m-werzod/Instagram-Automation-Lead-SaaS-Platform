@@ -206,7 +206,7 @@ export async function createCampaignFeePayment(customer: PaymentCustomer, campai
     });
   }
 
-  const payment = await createPayment({
+  let payment = await createPayment({
     customer,
     kind: "CAMPAIGN_FEE",
     description: `Platform service fee — campaign "${campaign.name}"`,
@@ -214,6 +214,18 @@ export async function createCampaignFeePayment(customer: PaymentCustomer, campai
     idempotencyKey: `campaign-fee:${campaign.id}:${quote.totalCents}${quote.currency}`,
     campaignId: campaign.id,
   });
+  // The key carries the amount, so a price that is changed and then changed
+  // BACK lands on the row that was cancelled on the way past — and the unique
+  // key means no replacement can ever be created for it. The caller pays this
+  // row immediately, and a cancelled one cannot be collected, so the fee would
+  // become permanently unpayable (and the campaign permanently unbuildable).
+  // Re-open it instead: same price, same row, a fresh charge attempt.
+  if (payment.status === "CANCELED") {
+    payment = await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: "PENDING", canceledAt: null, failureCode: null, failureMessage: null, nextRetryAt: null },
+    });
+  }
   await prisma.campaign.update({ where: { id: campaignId }, data: { platformFeeCents: quote.totalCents } });
   return { payment, quote };
 }
@@ -224,7 +236,16 @@ export async function campaignFeeStatus(campaignId: string): Promise<{ required:
   if (!campaign) throw notFound("Campaign");
   const quote = computeCampaignQuote(campaign, await getPricing());
   if (quote.free) return { required: false, paid: true, payment: null, quote };
-  const payment = await prisma.payment.findFirst({ where: { campaignId, kind: "CAMPAIGN_FEE" }, orderBy: { createdAt: "desc" } });
+  // Newest-first, but a CANCELED row must never speak for the campaign: a price
+  // changed and changed back leaves a cancelled quote newer than the live one,
+  // and reading that as "the fee" would keep the gate shut even after the fee
+  // at the current price has actually been paid.
+  const payments = await prisma.payment.findMany({ where: { campaignId, kind: "CAMPAIGN_FEE" }, orderBy: { createdAt: "desc" } });
+  const payment =
+    payments.find((p) => p.status === "SUCCEEDED" && p.amountCents === quote.totalCents && p.currency === quote.currency) ??
+    payments.find((p) => p.status !== "CANCELED") ??
+    payments[0] ??
+    null;
   return { required: true, paid: payment?.status === "SUCCEEDED", payment, quote };
 }
 
@@ -260,11 +281,25 @@ export async function collectPayment(payment: Payment, customer: PaymentCustomer
   const base = coreEnv().APP_URL;
   const metadata = { paymentId: payment.id, customerId: customer.id, kind: payment.kind, ...(payment.campaignId ? { campaignId: payment.campaignId } : {}) };
 
+  // Stripe wants the cardholder to authenticate (3-D Secure). A second
+  // off-session charge cannot satisfy that — it only opens another intent for
+  // the same money, and if they then authenticate the first one they are
+  // charged twice. So read the existing intent (they may have completed it in
+  // Stripe's own flow) and otherwise send them to hosted Checkout, the only
+  // place authentication can actually happen.
+  let needsAuthentication = false;
+  if (payment.status === "REQUIRES_ACTION") {
+    const read = await syncPaymentFromProvider(payment);
+    if (read.status !== "REQUIRES_ACTION") return { payment: read, checkoutUrl: null };
+    payment = read;
+    needsAuthentication = true;
+  }
+
   const defaultMethod = customer.defaultPaymentMethodId
     ? await prisma.paymentMethod.findFirst({ where: { id: customer.defaultPaymentMethodId, removedAt: null } })
     : null;
 
-  const offSessionMethod = opts.allowOffSession && customer.autoPay ? defaultMethod : null;
+  const offSessionMethod = opts.allowOffSession && customer.autoPay && !needsAuthentication ? defaultMethod : null;
 
   // An attempt is in flight (or its answer was lost): the money may already be
   // gone, so starting a second payment for the same row is the one thing that
@@ -352,7 +387,27 @@ export async function applyIntent(paymentId: string, summary: StripeIntentSummar
   const updated = await prisma.payment.update({ where: { id: paymentId }, data });
   if (status === "SUCCEEDED" && payment.status !== "SUCCEEDED") await onPaymentSucceeded(updated, ctx.source);
   if (status === "FAILED" && payment.status !== "FAILED") await onPaymentFailed(updated, ctx.source);
+  if (status === "REQUIRES_ACTION" && payment.status !== "REQUIRES_ACTION") await onPaymentNeedsAuthentication(updated, ctx.source);
   return updated;
+}
+
+/**
+ * 3-D Secure on an off-session charge: no money moved, and no automatic job
+ * ever looks at this state again (reconcile watches PROCESSING, the retry
+ * ladder watches FAILED). Without a word to the admin the payment would simply
+ * go quiet, so it is audited and alerted like any other outcome.
+ */
+async function onPaymentNeedsAuthentication(payment: Payment, source: string): Promise<void> {
+  await audit({
+    action: "PAYMENT_REQUIRES_ACTION",
+    resourceType: "payment",
+    resourceId: payment.id,
+    after: { amountCents: payment.amountCents, currency: payment.currency, kind: payment.kind, source },
+  });
+  await queueAdminAlert(
+    `Payment needs authentication: ${(payment.amountCents / 100).toFixed(2)} ${payment.currency}`,
+    `${payment.description}\nThe bank asked the cardholder to authenticate this charge (3-D Secure), so nothing has been paid yet and no automatic retry will happen.\nOpen Billing and pay it again — that opens the hosted checkout page where the authentication can be completed.`,
+  ).catch(() => undefined);
 }
 
 async function onPaymentSucceeded(payment: Payment, source: string): Promise<void> {
@@ -631,8 +686,8 @@ async function paymentForIntent(obj: Record<string, unknown>, metadata: Record<s
 // ---- automatic payments (scheduler) ----
 
 /** Every ACTIVE schedule whose date has come: charge automatically, or create a PENDING payment and tell the customer. */
-export async function runDueSchedules(now: Date = new Date()): Promise<{ charged: number; pendingCreated: number; skipped: number }> {
-  const result = { charged: 0, pendingCreated: 0, skipped: 0 };
+export async function runDueSchedules(now: Date = new Date()): Promise<{ charged: number; declined: number; pendingCreated: number; skipped: number }> {
+  const result = { charged: 0, declined: 0, pendingCreated: 0, skipped: 0 };
   if (!paymentsConfigured()) return result;
   const due = await prisma.billingSchedule.findMany({ where: { status: "ACTIVE", nextBillingAt: { lte: now } }, include: { customer: true }, take: 100 });
   for (const schedule of due) {
@@ -662,8 +717,12 @@ export async function runDueSchedules(now: Date = new Date()): Promise<{ charged
         continue;
       }
       if (schedule.customer.autoPay && schedule.customer.defaultPaymentMethodId) {
-        await collectPayment(payment, schedule.customer, { allowOffSession: true });
-        result.charged++;
+        // "charged" has to mean money actually taken: a decline leaves the row
+        // FAILED for the retry ladder, and counting it as charged would make the
+        // run summary report income that never arrived.
+        const outcome = await collectPayment(payment, schedule.customer, { allowOffSession: true });
+        if (outcome.payment.status === "SUCCEEDED") result.charged++;
+        else result.declined++;
       } else {
         // manual mode: the payment waits; the customer is notified once
         result.pendingCreated++;

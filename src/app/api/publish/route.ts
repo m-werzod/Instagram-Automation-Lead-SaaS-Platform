@@ -11,6 +11,7 @@ import {
   assertCanPublish,
   fetchPublishingLimit,
   hostedMediaUrl,
+  isLocalMediaUrl,
   resolveItemKind,
   schedulePublishJob,
   validatePublishInput,
@@ -79,7 +80,7 @@ export const POST = route(async (req: NextRequest) => {
   if (problem) throw validationError(problem);
 
   // Hosted media on a non-public address can never be fetched by Meta.
-  if (items.some((i) => /localhost|127\.0\.0\.1|\.local(\/|$)/i.test(i.url))) {
+  if (items.some((i) => isLocalMediaUrl(i.url))) {
     throw validationError("Meta cannot download media from a local address", {
       hint: "Publish from the deployed (public https) site, or paste a public URL for the media.",
     });

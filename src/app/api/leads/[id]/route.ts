@@ -39,8 +39,24 @@ const updateSchema = z.object({
   /** "" is what an empty <select> posts — it is not an Admin id, it means "unassign". */
   assignedAdminId: z.union([z.string().min(1), z.literal(""), z.null()]).optional(),
   tags: z.array(z.string().max(MAX_LEAD_TAG_LENGTH)).max(MAX_LEAD_TAGS).optional(),
-  /** ISO date or date-time; null clears the reminder. */
-  followUpAt: z.coerce.date().nullable().optional(),
+  /**
+   * ISO date or date-time; null clears the reminder.
+   *
+   * The date is *coerced*, but only from a string — a bare `z.coerce.date()`
+   * runs `new Date(input)` on anything, so `true`, `0` and a raw epoch number
+   * all become 1970-01-01 and a malformed client silently sets a reminder at
+   * the epoch instead of getting a 400.
+   */
+  /**
+   * Strings and Dates only. `z.coerce.date()` on its own turns `true` and `0`
+   * into 1970-01-01, so a client sending a boolean silently booked a follow-up
+   * at the Unix epoch instead of being told its input was wrong.
+   */
+  followUpAt: z
+    .union([z.string().min(1), z.date()])
+    .pipe(z.coerce.date().refine((d) => !Number.isNaN(d.getTime()), "Not a valid date"))
+    .nullable()
+    .optional(),
   valueCents: z.number().int().min(0).max(1_000_000_000_000).nullable().optional(),
   valueCurrency: z
     .string()

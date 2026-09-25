@@ -32,15 +32,46 @@ export function isWithinMessagingWindow(lastUserMessageAt: Date | null | undefin
   return Date.now() - lastUserMessageAt.getTime() < MESSAGING_WINDOW_MS;
 }
 
-/** Truncate to the UTF-8 byte budget without splitting a code point. */
+/**
+ * Truncate to the UTF-8 byte budget without splitting a code point.
+ *
+ * Walks CODE POINTS forward, counting bytes as it goes. The two things that
+ * rules out, both of which the previous backwards `slice(0, -1)` loop did:
+ *
+ *  - Cutting an emoji in half. `slice(0, -1)` removes one UTF-16 CODE UNIT, and
+ *    an emoji is two of them. When the budget ran out between the halves the
+ *    loop stopped there and returned a string ending in a lone surrogate. That
+ *    is not text: the Send API body is written to the wire as UTF-8, where a
+ *    lone surrogate can only become U+FFFD, so the customer got "�" where the
+ *    emoji was. `for...of` iterates whole code points, so a character is either
+ *    wholly in or wholly out.
+ *
+ *  - Re-encoding the whole remaining string on every step, which made the cost
+ *    quadratic in the input. A 200 000-character message (an admin pasting a
+ *    document into a rule template, a runaway AI reply) blocked the event loop
+ *    for about a minute before one DM went out. Each character is now measured
+ *    once, and the walk stops at the budget instead of at the end of the text.
+ *
+ * Returns at most `maxBytes` bytes, ellipsis included — a budget too small for
+ * even the ellipsis yields "" rather than overshooting the limit it enforces.
+ */
 export function clampTextBytes(text: string, maxBytes = MAX_TEXT_BYTES): string {
   const enc = new TextEncoder();
   if (enc.encode(text).length <= maxBytes) return text;
-  let out = text;
-  while (enc.encode(out + "…").length > maxBytes && out.length > 0) {
-    out = out.slice(0, -1);
+
+  const ellipsis = "…";
+  const budget = maxBytes - enc.encode(ellipsis).length;
+  if (budget <= 0) return "";
+
+  let used = 0;
+  let out = "";
+  for (const ch of text) {
+    const size = enc.encode(ch).length;
+    if (used + size > budget) break;
+    used += size;
+    out += ch;
   }
-  return out + "…";
+  return out + ellipsis;
 }
 
 interface SendOpts {

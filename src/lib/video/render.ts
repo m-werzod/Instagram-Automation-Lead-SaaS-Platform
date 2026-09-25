@@ -15,7 +15,12 @@ export interface RenderInput {
   sourcePath: string;
   /** Absolute paths for each audio track, in the same order as params.audio.tracks. */
   audioPaths: string[];
-  /** Absolute path to a generated .ass file, when subtitles are burned in. */
+  /**
+   * The generated .ass file, when subtitles are burned in. The job layer passes
+   * a bare filename and runs FFmpeg from the workspace, because a filtergraph
+   * cannot express every absolute path (see RunOptions.cwd); an absolute path
+   * still works wherever one is expressible.
+   */
   subtitlePath?: string | null;
   outputPath: string;
   params: EditParams;
@@ -227,6 +232,28 @@ export function buildRenderArgs(input: RenderInput): BuiltGraph {
 
   // A looped or long music track must not extend the video past its own end.
   if (audioOut && params.audio.tracks.some((t) => t.loop)) args.push("-shortest");
+
+  /**
+   * Cap the render at the length of the picture.
+   *
+   * amix runs to its LONGEST input, so a fifteen-second clip with a
+   * three-minute song attached was muxed as a three-minute file: the picture
+   * froze on its last frame and the song played on over it. Instagram rejects
+   * the result and the operator is never told why.
+   *
+   * `-shortest` is the wrong tool for this. With the original muted and a
+   * two-second sting uploaded, the shortest stream is the AUDIO, and it would
+   * cut the picture down to two seconds — destroying the edit instead of
+   * trimming the overhang. The video's own expected length is the correct
+   * ceiling, and it is already computed for the progress bar.
+   *
+   * Only applied when an uploaded track is actually mapped: the source's own
+   * audio ends with the picture by construction, and a source whose duration
+   * was never probed has no ceiling to apply.
+   */
+  const hasUploadedTrack = params.audio.tracks.some((_, i) => Boolean(input.audioPaths[i]));
+  const capSec = source.durationSec ? effectiveDuration(params, source.durationSec) : null;
+  if (audioOut && hasUploadedTrack && capSec !== null && capSec > 0) args.push("-t", capSec.toFixed(3));
 
   // ---- encoder ----
   args.push("-c:v", "libx264", "-pix_fmt", "yuv420p");

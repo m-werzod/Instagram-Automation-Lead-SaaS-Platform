@@ -188,10 +188,20 @@ async function storeOutput(input: {
 
 // ---- subtitle rendering ----
 
+/** Filename of the generated ASS inside the workspace. */
+const SUBTITLE_FILENAME = "subtitles.ass";
+
 /**
  * Write the ASS file for a render. Word highlighting is silently downgraded
  * when the track has no word timings: inventing them would visibly desynchronise
  * from the speech.
+ *
+ * Returns the BARE FILENAME, not a path: it is the only string this product
+ * puts inside a filtergraph, and FFmpeg's option grammar cannot express every
+ * path (an apostrophe — which a Windows account like `O'Brien` puts into every
+ * temp path — has no accepted escaping inside `subtitles='…'`). The render runs
+ * with the workspace as its working directory instead, so the graph carries a
+ * name with nothing in it to escape.
  */
 async function prepareSubtitles(ws: Workspace, projectId: string, params: EditParams, size: { width: number; height: number }): Promise<string | null> {
   const trackId = params.subtitles.trackId;
@@ -223,7 +233,8 @@ async function prepareSubtitles(ws: Workspace, projectId: string, params: EditPa
   const effective = { ...style, wordHighlight: style.wordHighlight && hasWordTimings };
 
   const ass = buildAssFile(cues, { width: size.width, height: size.height, style: effective });
-  return ws.writeFile("subtitles.ass", ass);
+  await ws.writeFile(SUBTITLE_FILENAME, ass);
+  return SUBTITLE_FILENAME;
 }
 
 // ---- job kinds ----
@@ -305,6 +316,10 @@ async function runRenderJob(job: VideoJob, ws: Workspace, signal: AbortSignal, q
 
   await ffmpeg(built.args, {
     signal,
+    // The generated subtitle file is named relatively inside the filtergraph,
+    // so the encode has to run from the workspace. Every other path in the
+    // argument list is absolute and unaffected by this.
+    cwd: ws.directory(),
     timeoutMs: quality === "preview" ? 15 * 60_000 : 60 * 60_000,
     onStderr: (chunk) => {
       const at = parseProgressSeconds(chunk);

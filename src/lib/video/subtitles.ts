@@ -120,8 +120,22 @@ export function normalizeCues(cues: SubtitleCue[]): SubtitleCue[] {
   for (let i = 0; i < cleaned.length - 1; i++) {
     const cur = cleaned[i];
     const next = cleaned[i + 1];
-    if (cur && next && cur.end > next.start) {
+    if (!cur || !next || cur.end <= next.start) continue;
+    if (next.start > cur.start) {
       cleaned[i] = { ...cur, end: next.start };
+      continue;
+    }
+    /**
+     * Two cues starting at the same instant. Trimming the earlier one to the
+     * later one's start would give it zero length and the filter below would
+     * DELETE it — losing a line of the transcript with nothing said. Nudge the
+     * later cue instead so both survive; a hundredth of a second is below the
+     * resolution ASS timestamps carry anyway.
+     */
+    const nudged = Math.min(next.end - 0.01, cur.start + 0.01);
+    if (nudged > cur.start) {
+      cleaned[i] = { ...cur, end: nudged };
+      cleaned[i + 1] = { ...next, start: nudged };
     }
   }
   return cleaned.filter((c) => c.end > c.start);
@@ -256,6 +270,18 @@ function assEscape(text: string): string {
     .replace(/\r?\n/g, "\\N");
 }
 
+/**
+ * How close to the frame edge "bottom" sits, as a percentage of frame height.
+ *
+ * ASS bottom-aligns "lower-center" and "bottom" identically (alignment 2), so
+ * with one margin the two produced the SAME style line: a four-option control
+ * with three outcomes, where an operator who picked "bottom" saw the caption
+ * not move. "lower-center" is the social caption band, lifted clear of the
+ * edge; "bottom" is a broadcast subtitle sitting against it. An operator who
+ * has already asked for a smaller margin than this keeps theirs.
+ */
+const BOTTOM_EDGE_MARGIN_PCT = 3;
+
 /** ASS numeric alignment (numpad layout). */
 function alignmentCode(style: SubtitleStyle): number {
   const horizontal = style.alignment === "left" ? 1 : style.alignment === "right" ? 3 : 2;
@@ -281,7 +307,9 @@ export interface AssOptions {
 export function buildAssFile(cues: SubtitleCue[], opts: AssOptions): string {
   const { width, height, style } = opts;
   const fontPx = Math.max(12, Math.round((style.fontSizePct / 100) * height));
-  const marginV = Math.round((style.marginVerticalPct / 100) * height);
+  const marginPct =
+    style.position === "bottom" ? Math.min(style.marginVerticalPct, BOTTOM_EDGE_MARGIN_PCT) : style.marginVerticalPct;
+  const marginV = Math.round((marginPct / 100) * height);
   const marginH = Math.round(width * 0.06);
 
   // BorderStyle 3 draws an opaque box behind the text; 1 draws outline+shadow.
@@ -390,7 +418,12 @@ function insertBreaks(marked: string, plain: string, maxChars: number): string {
   const wrapped = wrapCueText(plain, maxChars);
   const breakAfter = new Set<number>();
   let count = 0;
-  for (const line of wrapped.split("\n")) {
+  // Every line BUT THE LAST earns a break after its final word. Including the
+  // last one appends a trailing `\N`, which libass renders as an empty line
+  // below the caption — lifting a wrapped, word-highlighted cue one line off
+  // the margin the operator set while an unwrapped one stays put, so the text
+  // jumps as the captions change.
+  for (const line of wrapped.split("\n").slice(0, -1)) {
     count += line.split(" ").length;
     breakAfter.add(count - 1);
   }

@@ -246,6 +246,10 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteCtx) => {
 export const DELETE = route(async (req: NextRequest, ctx: RouteCtx) => {
   assertSameOrigin(req);
   const auth = await requireStaff();
+  // Same ceiling as creating and editing: removing accounts is the most
+  // destructive of the three, so it must not be the only one left on the
+  // blanket 120/min API_WRITE floor.
+  enforceRateLimit(`admin-write:${auth.admin.id}`, LIMITS.ADMIN_WRITE.limit, LIMITS.ADMIN_WRITE.windowMs);
   const id = await pathParam(ctx, "id");
   const target = await prisma.admin.findUnique({ where: { id } });
   if (!target) throw notFound("User");

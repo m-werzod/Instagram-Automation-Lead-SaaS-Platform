@@ -11,6 +11,18 @@ import { LIMITS, LOGIN_LOCKOUT, loginLockout, resetRateLimit, type LoginFailures
 
 const log = createLogger("auth.login");
 
+/**
+ * A real cost-12 bcrypt digest (of a random string nobody holds), compared
+ * against when the login does not exist or is disabled.
+ *
+ * Without it `admin && admin.isActive && await verifyPassword(...)`
+ * short-circuits, so an unknown login answers in about a millisecond while a
+ * real one spends ~350 ms in bcrypt. The response bodies are deliberately
+ * identical, but that timing gap announces which logins exist just as clearly
+ * as a different message would, and it is measurable over the network.
+ */
+const ABSENT_ADMIN_PASSWORD_HASH = "$2a$12$G3Z98Da25BFs7XVBM1nwzej85qtfoLJONuLkIi9ZA5VNXth/HKeSe";
+
 const loginSchema = z.object({
   login: z.string().min(1, "Login is required").max(64),
   password: z.string().min(1, "Password is required").max(200),
@@ -30,11 +42,13 @@ async function recentLoginFailures(login: string, ip: string): Promise<LoginFail
   const byIp = ip !== "unknown";
   const rows = await prisma.auditLog.findMany({
     where: {
-      action: AuditActions.LOGIN_FAILED,
+      // Successes are read alongside the failures: one of them settles this
+      // login's count (see below).
+      action: { in: [AuditActions.LOGIN_FAILED, AuditActions.LOGIN] },
       createdAt: { gte: since },
       ...(byIp ? { OR: [{ ip }, { after: { path: ["login"], equals: login } }] } : { after: { path: ["login"], equals: login } }),
     },
-    select: { ip: true, after: true, createdAt: true },
+    select: { action: true, ip: true, after: true, createdAt: true },
     // Newest first, so that when `take` bites on a noisy installation it keeps
     // what just happened rather than what is about to expire — and so the row
     // that decides when the lock lifts (the threshold-th newest) is always in
@@ -44,8 +58,21 @@ async function recentLoginFailures(login: string, ip: string): Promise<LoginFail
   });
 
   const failures: LoginFailures = { forLogin: [], forIp: [] };
+  // Rows arrive newest first, so once a successful sign-in for this login is
+  // seen every remaining failure for it is OLDER than that success. Those were
+  // settled by someone proving they hold the password, exactly as
+  // resetRateLimit() settles the in-process bucket; counting them anyway locked
+  // an admin out of their own account minutes after they signed into it.
+  // The IP scope is deliberately NOT settled: one valid credential says nothing
+  // about the other logins that address has been trying.
+  let settled = false;
   for (const row of rows) {
-    if ((row.after as { login?: string } | null)?.login === login) failures.forLogin.push(row.createdAt);
+    const rowLogin = (row.after as { login?: string } | null)?.login;
+    if (row.action === AuditActions.LOGIN) {
+      if (rowLogin === login) settled = true;
+      continue;
+    }
+    if (!settled && rowLogin === login) failures.forLogin.push(row.createdAt);
     if (byIp && row.ip === ip) failures.forIp.push(row.createdAt);
   }
   return failures;
@@ -97,9 +124,11 @@ export const POST = route(async (req: NextRequest) => {
   }
 
   const admin = await prisma.admin.findUnique({ where: { login } });
-  const valid = admin && admin.isActive && (await verifyPassword(body.password, admin.passwordHash));
+  // Verified unconditionally — a missing account is compared against a stand-in
+  // digest so every outcome costs the same bcrypt work (see the constant above).
+  const passwordOk = await verifyPassword(body.password, admin?.passwordHash || ABSENT_ADMIN_PASSWORD_HASH);
 
-  if (!valid) {
+  if (!admin || !admin.isActive || !passwordOk) {
     await audit({
       action: AuditActions.LOGIN_FAILED,
       resourceType: "admin",
@@ -127,7 +156,9 @@ export const POST = route(async (req: NextRequest) => {
 
   const { token, session } = await createSession(admin.id, ip, req.headers.get("user-agent"));
   prisma.admin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }).catch(() => undefined);
-  await audit({ adminId: admin.id, action: AuditActions.LOGIN, ip });
+  // `after.login` is what lets the durable counter above recognise this success
+  // as settling the failures recorded against the same login.
+  await audit({ adminId: admin.id, action: AuditActions.LOGIN, ip, resourceType: "admin", resourceId: admin.id, after: { login } });
 
   const res = NextResponse.json({
     ok: true,

@@ -59,9 +59,16 @@ export class LocalDriver implements StorageDriver {
    */
   async putStream(key: string, body: ReadableStream<Uint8Array>, opts: PutStreamOptions): Promise<PutResult> {
     const full = this.pathFor(key);
+    // Checked before anything is opened: a caller that has already given up
+    // should not cause a file to be created at all.
+    if (opts.signal?.aborted) throw new StorageError("Upload cancelled");
     await mkdir(dirname(full), { recursive: true });
     const partial = `${full}.part`;
     const out = createWriteStream(partial);
+    // The cleanup path below waits for "close" rather than reacting to errors
+    // as they happen, so an error with no listener would otherwise be thrown
+    // as an uncaught exception and take the process down.
+    out.on("error", () => {});
 
     let written = 0;
     const reader = body.getReader();
@@ -75,22 +82,25 @@ export class LocalDriver implements StorageDriver {
         // Stop the moment the limit is passed: the remaining bytes are never
         // read, so an oversized upload costs one chunk of memory, not a file.
         if (written > opts.maxBytes) throw new UploadTooLargeError(opts.maxBytes);
-        if (!out.write(value)) {
-          await new Promise<void>((resolve, reject) => {
-            out.once("drain", resolve);
-            out.once("error", reject);
-          });
-        }
+        if (!out.write(value)) await drained(out);
       }
       await new Promise<void>((resolve, reject) => {
-        out.end(() => resolve());
         out.once("error", reject);
+        out.end(() => resolve());
       });
+      if (out.errored) throw out.errored;
       await rename(partial, full);
       return { key, publicUrl: null, sizeBytes: written };
     } catch (err) {
-      out.destroy();
       await reader.cancel().catch(() => {});
+      // Destroying is not enough to make the temporary removable. The
+      // descriptor is opened ASYNCHRONOUSLY, so on an early abort the unlink
+      // below can run before the open completes — the file then appears
+      // afterwards and nothing ever deletes it (measured: roughly two thirds
+      // of cancelled uploads left a zero-byte `.part` behind). Waiting for
+      // "close" settles the open and releases the handle, which Windows also
+      // requires before it will unlink at all.
+      await closed(out);
       await rm(partial, { force: true }).catch(() => {});
       throw err;
     }
@@ -132,4 +142,40 @@ export class LocalDriver implements StorageDriver {
     await mkdir(this.root, { recursive: true });
     return this.root;
   }
+}
+
+/**
+ * Wait out backpressure.
+ *
+ * Every listener is removed on the way out. Attaching a fresh `once("error")`
+ * per backpressure pause and never taking it off leaks one listener per pause,
+ * which on a large upload passes Node's ten-listener threshold and prints a
+ * MaxListenersExceededWarning that looks, in production logs, exactly like a
+ * real handle leak. "close" is awaited alongside the other two so a stream
+ * destroyed mid-pause rejects instead of hanging until the request times out.
+ */
+function drained(out: NodeJS.WritableStream & { destroyed: boolean }): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const done = (fn: () => void) => () => {
+      out.removeListener("drain", onDrain);
+      out.removeListener("error", onError);
+      out.removeListener("close", onClose);
+      fn();
+    };
+    const onDrain = done(resolve);
+    const onError = (err: Error) => done(() => reject(err))();
+    const onClose = done(() => reject(new StorageError("Upload stream closed early")));
+    out.on("drain", onDrain);
+    out.on("error", onError);
+    out.on("close", onClose);
+  });
+}
+
+/** Destroy a write stream and wait until its descriptor is really released. */
+function closed(out: { closed: boolean; destroy(): void; once(ev: string, fn: () => void): unknown }): Promise<void> {
+  if (out.closed) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    out.once("close", resolve);
+    out.destroy();
+  });
 }

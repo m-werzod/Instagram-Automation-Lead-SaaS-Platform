@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createLogger, errorFields } from "@/lib/logger";
 
 const log = createLogger("video.ffmpeg");
@@ -55,6 +56,18 @@ export class FfmpegMissingError extends Error {
 export interface RunOptions {
   /** Hard ceiling for this invocation. */
   timeoutMs?: number;
+  /**
+   * Working directory for the child.
+   *
+   * Filtergraphs are the one place a path cannot always be expressed: FFmpeg's
+   * option parser treats `:` as a separator and `'` as a quote, and a literal
+   * apostrophe in a path has NO escaping that the parser accepts — a Windows
+   * account named `O'Brien` puts one in every temp path. Running from the
+   * directory that holds the file and naming it by its bare filename sidesteps
+   * the whole grammar. Everything else FFmpeg reads is argv, which needs no
+   * escaping at all.
+   */
+  cwd?: string;
   /** Cancels the run (job cancelled, lease lost, worker shutting down). */
   signal?: AbortSignal;
   /** Called with each stderr chunk — FFmpeg reports progress there. */
@@ -84,6 +97,7 @@ export function run(bin: string, args: string[], opts: RunOptions = {}): Promise
       shell: false, // never a shell: argv only
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
     });
 
     let stdout = "";
@@ -122,7 +136,15 @@ export function run(bin: string, args: string[], opts: RunOptions = {}): Promise
     }
 
     child.on("error", (err: NodeJS.ErrnoException) => {
-      finish(() => reject(err.code === "ENOENT" ? new FfmpegMissingError(bin) : err));
+      finish(() => {
+        // A missing `cwd` raises the same ENOENT as a missing binary, and
+        // "FFmpeg is not installed" would send an admin after the wrong thing.
+        if (err.code === "ENOENT" && opts.cwd && !existsSync(opts.cwd)) {
+          reject(new Error(`${bin} could not start: its working directory ${opts.cwd} no longer exists`));
+          return;
+        }
+        reject(err.code === "ENOENT" ? new FfmpegMissingError(bin) : err);
+      });
     });
 
     child.on("close", (code) => {

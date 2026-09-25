@@ -396,7 +396,13 @@ export async function handleFlowAnswer(
   quickReplyPayload?: string | null,
 ): Promise<StepOutcome> {
   if (CANCEL_KEYWORDS.includes(rawInput.trim().toLowerCase())) {
-    await prisma.leadFlowSession.update({ where: { id: session.id }, data: { status: "CANCELLED" } });
+    // Only an ACTIVE session can be cancelled: a "stop" that arrives after the
+    // flow already completed must not reopen a finished session.
+    const cancelled = await prisma.leadFlowSession.updateMany({
+      where: { id: session.id, status: "ACTIVE" },
+      data: { status: "CANCELLED" },
+    });
+    if (cancelled.count === 0) return { messages: [], sessionStatus: "CANCELLED" };
     return {
       messages: [{ text: "No problem — the form was cancelled. Message us anytime to start again." }],
       sessionStatus: "CANCELLED",
@@ -424,18 +430,46 @@ export async function handleFlowAnswer(
     return { messages: [{ text: result.error ?? "Please try again." }], sessionStatus: "ACTIVE" };
   }
 
+  const next = questions[currentIdx + 1];
+
+  /**
+   * CLAIM the question before recording the answer — one statement that both
+   * checks the session is still sitting here and moves it on.
+   *
+   * `session` is a snapshot the caller read earlier, and two of the customer's
+   * messages can be in flight at once: every webhook delivery ends with
+   * after(() => drainNow()) and that drain takes no cross-invocation lock, so
+   * two workers pick up the two messages and both read the session before
+   * either writes. Both then believe the flow sits on question N. Without this
+   * claim the second message is upserted as the answer to the question the
+   * first one just answered — the phone number filed as the person's NAME —
+   * and on the LAST question completeSession() runs twice, putting a duplicate
+   * of the same person into the CRM with a duplicate CREATED event.
+   *
+   * On the last question the claim is made by clearing currentQuestionId, so
+   * only one caller can ever reach completeSession() for a given session.
+   */
+  const claim = await prisma.leadFlowSession.updateMany({
+    where: { id: session.id, status: "ACTIVE", currentQuestionId: current.id },
+    data: next ? { currentQuestionId: next.id, askedAt: new Date() } : { currentQuestionId: null },
+  });
+  if (claim.count === 0) {
+    // Someone else already moved this session on, or it was cancelled or
+    // completed between the read and the write. Write nothing, say nothing —
+    // re-asking a question the customer has already answered is worse than
+    // staying quiet, and the answer they are replying to is no longer current.
+    const fresh = await prisma.leadFlowSession.findUnique({ where: { id: session.id } });
+    log.info("flow answer ignored: session already moved on", { sessionId: session.id, status: fresh?.status });
+    return { messages: [], sessionStatus: fresh?.status === "ACTIVE" ? "ACTIVE" : fresh?.status === "COMPLETED" ? "COMPLETED" : "CANCELLED" };
+  }
+
   await prisma.leadAnswer.upsert({
     where: { sessionId_questionId: { sessionId: session.id, questionId: current.id } },
     create: { sessionId: session.id, questionId: current.id, value: result.value ?? "" },
     update: { value: result.value ?? "" },
   });
 
-  const next = questions[currentIdx + 1];
   if (next) {
-    await prisma.leadFlowSession.update({
-      where: { id: session.id },
-      data: { currentQuestionId: next.id, askedAt: new Date() },
-    });
     return { messages: [renderQuestion(next)], sessionStatus: "ACTIVE" };
   }
 

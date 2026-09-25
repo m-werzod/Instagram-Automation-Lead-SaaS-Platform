@@ -12,6 +12,19 @@ import { assertSafeKey, StorageError, UploadTooLargeError, type PutOptions, type
 
 const API = "https://blob.vercel-storage.com";
 
+/**
+ * Recover the error a streamed request body actually threw.
+ *
+ * Only unwraps the errors this module raises deliberately — a genuine network
+ * failure must stay the TypeError it is, rather than being re-labelled as
+ * something a caller might treat as the client's fault.
+ */
+function unwrapCause(err: unknown): unknown {
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  if (cause instanceof UploadTooLargeError || cause instanceof StorageError) return cause;
+  return err;
+}
+
 function token(): string {
   const t = process.env.BLOB_READ_WRITE_TOKEN?.trim();
   if (!t) {
@@ -95,7 +108,13 @@ export class VercelBlobDriver implements StorageDriver {
     }).catch(async (err) => {
       // A rejected count aborts the fetch; make sure no partial object survives.
       await this.delete(key).catch(() => {});
-      throw err;
+      // fetch does NOT propagate the body stream's own error: undici reports a
+      // failed request body as `TypeError: fetch failed` and hides the real
+      // reason on `.cause`. The upload route decides between 413 and 500 with
+      // `err instanceof UploadTooLargeError`, so without this unwrapping an
+      // over-long upload to Blob answered 500 while the identical upload to the
+      // local driver answered 413.
+      throw unwrapCause(err);
     });
 
     if (!res.ok) {

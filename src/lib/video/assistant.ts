@@ -49,13 +49,31 @@ export interface AssistantTurn {
  * Cyrillic implies Russian; the Uzbek Latin markers (oʻ, gʻ, sh/ch digraphs and
  * common function words) separate Uzbek from English.
  */
+/**
+ * Uzbek stems that no English word begins with, so a prefix match is safe on
+ * an agglutinative language ("ovoz" must also catch "ovozni", "ovozini").
+ *
+ * The bare fragments this list used to carry — `bo`, `qo`, and `video` — made
+ * the detector answer an English operator in Uzbek: `bo\w*` matches "bold",
+ * "bottom", "box" and "boost", and "video" is the same word in all three
+ * languages, so "make the video 2x faster" was read as Uzbek. A marker earns a
+ * place here only if it cannot begin an English word.
+ */
+const UZ_STEMS =
+  /\b(qil|qoʻsh|qo'sh|qosh|ovoz|tovush|musiqa|matn|saqla|kerak|uchun|bilan|lekin|faqat|tezroq|sekinroq|sekin|katta|kichik|pastki|yuqori|subtitr|baland|qisqartir|boshla|tayyorla|oʻzgartir|ozgartir)\w*/g;
+
+/**
+ * Markers whose suffixed forms collide with English ("asl" + `\w*` catches
+ * "also"), so these must match as whole words.
+ */
+const UZ_EXACT = /\b(asl|asli|qism|qismi|pastga|tepaga)\b/g;
+
 export function detectLanguage(text: string): AssistantLanguage {
   if (/[Ѐ-ӿ]/.test(text)) return "ru";
   const t = text.toLowerCase();
-  if (/[ʻʼ‘’]/.test(text) && /(o|g)[ʻʼ‘’]/i.test(text)) return "uz";
-  const uzWords = /\b(qil|qo|bo|ovoz|musiqa|video|matn|qo'sh|qosh|saqla|kerak|uchun|bilan|lekin|faqat|tezroq|sekin|katta|kichik|pastki|yuqori|subtitr|balandlik|asl)\w*/g;
-  const hits = t.match(uzWords);
-  return hits && hits.length >= 1 ? "uz" : "en";
+  if (/(o|g)[ʻʼ‘’]/i.test(text)) return "uz";
+  const hits = (t.match(UZ_STEMS)?.length ?? 0) + (t.match(UZ_EXACT)?.length ?? 0);
+  return hits >= 1 ? "uz" : "en";
 }
 
 const SYSTEM_BY_LANG: Record<AssistantLanguage, string> = {
@@ -69,16 +87,29 @@ const SYSTEM_BY_LANG: Record<AssistantLanguage, string> = {
  * edit model rather than the full zod schema: every field is optional, so the
  * model can express "only change the music volume" without restating the rest.
  */
+/**
+ * EVERY level is `.strict()`, not just the outermost one.
+ *
+ * zod strips unknown keys by default, and `.strict()` applies only to the
+ * object it is called on. With the nested sections left permissive, a proposal
+ * like `{ video: { greenScreen: true }, audio: { originalVolume: 20 } }` had
+ * `greenScreen` quietly deleted and the REST applied — so the operator was
+ * shown "Remove the background and drop the voice to 20%", accepted it, and
+ * got only the volume change. A parameter this editor does not have must be
+ * refused out loud (the model is told to call `explain_unsupported` instead),
+ * never silently dropped out of a proposal the operator is about to confirm.
+ */
 const patchSchema = z
   .object({
     video: z
       .object({
-        trim: z.object({ startSec: z.number().min(0), endSec: z.number().min(0).optional() }).optional(),
+        trim: z.object({ startSec: z.number().min(0), endSec: z.number().min(0).optional() }).strict().optional(),
         speed: z.number().min(0.25).max(4).optional(),
         aspect: z.enum(["original", "9:16", "1:1", "4:5", "16:9"]).optional(),
         fit: z.enum(["cover", "contain"]).optional(),
         maxHeight: z.number().int().min(240).max(2160).optional(),
       })
+      .strict()
       .optional(),
     audio: z
       .object({
@@ -86,20 +117,23 @@ const patchSchema = z
         muteOriginal: z.boolean().optional(),
         tracks: z
           .array(
-            z.object({
-              assetId: z.string().min(1),
-              volume: z.number().int().min(0).max(200).optional(),
-              startSec: z.number().min(0).optional(),
-              trimStartSec: z.number().min(0).optional(),
-              trimEndSec: z.number().min(0).optional(),
-              fadeInSec: z.number().min(0).max(60).optional(),
-              fadeOutSec: z.number().min(0).max(60).optional(),
-              loop: z.boolean().optional(),
-              duckUnderSpeech: z.boolean().optional(),
-            }),
+            z
+              .object({
+                assetId: z.string().min(1),
+                volume: z.number().int().min(0).max(200).optional(),
+                startSec: z.number().min(0).optional(),
+                trimStartSec: z.number().min(0).optional(),
+                trimEndSec: z.number().min(0).optional(),
+                fadeInSec: z.number().min(0).max(60).optional(),
+                fadeOutSec: z.number().min(0).max(60).optional(),
+                loop: z.boolean().optional(),
+                duckUnderSpeech: z.boolean().optional(),
+              })
+              .strict(),
           )
           .optional(),
       })
+      .strict()
       .optional(),
     look: z
       .object({
@@ -108,6 +142,7 @@ const patchSchema = z
         contrast: z.number().min(0.5).max(2).optional(),
         saturation: z.number().min(0).max(3).optional(),
       })
+      .strict()
       .optional(),
     subtitles: z
       .object({
@@ -128,8 +163,10 @@ const patchSchema = z
             uppercase: z.boolean().optional(),
             wordHighlight: z.boolean().optional(),
           })
+          .strict()
           .optional(),
       })
+      .strict()
       .optional(),
   })
   .strict();
@@ -288,6 +325,34 @@ export async function runAssistantTurn(input: AssistantInput): Promise<Assistant
   }
 
   if (replyParts.length === 0 && proposal) replyParts.push(proposal.summary);
+
+  /**
+   * Never hand the chat an empty bubble.
+   *
+   * A model that answers with a tool call and no prose is normal, and so is a
+   * proposal that turns out to change nothing — combine the two (or an
+   * `explain_unsupported` whose explanation came back blank) and `reply` was
+   * the empty string. The operator saw their message land and absolutely
+   * nothing come back, with no way to tell a silent success from a crash.
+   */
+  if (replyParts.length === 0 && unsupported.length > 0) {
+    replyParts.push(
+      lang === "uz"
+        ? `Bu muharrir buni qila olmaydi: ${unsupported.join(", ")}.`
+        : lang === "ru"
+          ? `Этот редактор не умеет: ${unsupported.join(", ")}.`
+          : `This editor cannot do: ${unsupported.join(", ")}.`,
+    );
+  }
+  if (replyParts.length === 0) {
+    replyParts.push(
+      lang === "uz"
+        ? "Hech narsani oʻzgartirish kerak boʻlmadi — parametrlar avvalgidek qoldi."
+        : lang === "ru"
+          ? "Менять ничего не потребовалось — параметры остались прежними."
+          : "No change was needed — the parameters are already as you describe.",
+    );
+  }
 
   await recordUsage({
     accountId: input.context.accountId,

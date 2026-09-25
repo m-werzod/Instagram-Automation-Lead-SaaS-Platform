@@ -36,6 +36,16 @@ export class Workspace {
     return this.storage;
   }
 
+  /**
+   * The scratch directory itself. Used as FFmpeg's working directory so a
+   * generated file can be named inside a filtergraph by its bare filename —
+   * see RunOptions.cwd for why an absolute path is not always expressible.
+   */
+  directory(): string {
+    if (!this.dir) throw new Error("Workspace is not open");
+    return this.dir;
+  }
+
   path(name: string): string {
     if (!this.dir) throw new Error("Workspace is not open");
     // Names are produced by this module, never by a user; the sanitiser is a

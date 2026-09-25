@@ -257,6 +257,39 @@ export interface LongLivedToken {
   expiresInSec: number;
 }
 
+/**
+ * A 200 is not by itself a token.
+ *
+ * Meta can answer a token exchange with HTTP 200 and a body that carries no
+ * access_token (an app left in the wrong state, a grant revoked mid-exchange),
+ * and `expires_in` is documented as optional on the Facebook endpoints. Every
+ * caller feeds this result straight into
+ * `new Date(Date.now() + expiresInSec * 1000)` (accounts.ts:45, :164, :441), so
+ * an undefined token used to be encrypted as `undefined` and an undefined
+ * expiry became `NaN` → Invalid Date on InstagramAccount.expiresAt. The nightly
+ * refresh does that for every account it walks, which turns one malformed reply
+ * into a connection that reads as permanently expired. Fail the exchange loudly
+ * instead; the reconnect path already knows how to handle a failed exchange.
+ *
+ * igExchangeCode does its own richer check (it also needs user_id) and keeps it.
+ */
+function requireToken(json: { access_token?: string; expires_in?: unknown }, fallbackExpiresSec: number): LongLivedToken {
+  if (!json.access_token) {
+    throw new AppError("META_AUTH_FAILED", "Token exchange returned no access token", {
+      reason: "Meta answered the token exchange with HTTP 200 but no access_token.",
+      fix: "Reconnect the account. If it repeats, check the app's status and the Instagram/Facebook credentials in the App Dashboard.",
+    });
+  }
+  const expires = Number(json.expires_in);
+  return {
+    accessToken: json.access_token,
+    expiresInSec: Number.isFinite(expires) && expires > 0 ? expires : fallbackExpiresSec,
+  };
+}
+
+/** Meta's long-lived tokens are ~60 days; used when a reply omits expires_in. */
+const SIXTY_DAYS_SEC = 60 * 24 * 3600;
+
 /** Mode A step 2: short-lived → long-lived (~60 days). */
 export async function igExchangeLongLived(shortToken: string): Promise<LongLivedToken> {
   const { appSecret } = instagramAppCredentials();
@@ -264,8 +297,8 @@ export async function igExchangeLongLived(shortToken: string): Promise<LongLived
   url.searchParams.set("grant_type", "ig_exchange_token");
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("access_token", shortToken);
-  const json = await getJson<{ access_token: string; expires_in: number }>(url);
-  return { accessToken: json.access_token, expiresInSec: json.expires_in };
+  const json = await getJson<{ access_token?: string; expires_in?: number }>(url);
+  return requireToken(json, SIXTY_DAYS_SEC);
 }
 
 /** Mode A refresh: long-lived token ≥24h old → fresh 60-day token. */
@@ -273,8 +306,8 @@ export async function igRefreshLongLived(longToken: string): Promise<LongLivedTo
   const url = new URL("https://graph.instagram.com/refresh_access_token");
   url.searchParams.set("grant_type", "ig_refresh_token");
   url.searchParams.set("access_token", longToken);
-  const json = await getJson<{ access_token: string; expires_in: number }>(url);
-  return { accessToken: json.access_token, expiresInSec: json.expires_in };
+  const json = await getJson<{ access_token?: string; expires_in?: number }>(url);
+  return requireToken(json, SIXTY_DAYS_SEC);
 }
 
 /** Mode B step 1: code → user token. */
@@ -285,8 +318,8 @@ export async function fbExchangeCode(code: string): Promise<LongLivedToken> {
   url.searchParams.set("client_secret", env.META_APP_SECRET);
   url.searchParams.set("redirect_uri", env.META_REDIRECT_URI);
   url.searchParams.set("code", code);
-  const json = await getJson<{ access_token: string; expires_in?: number }>(url);
-  return { accessToken: json.access_token, expiresInSec: json.expires_in ?? 3600 };
+  const json = await getJson<{ access_token?: string; expires_in?: number }>(url);
+  return requireToken(json, 3600);
 }
 
 /** Mode B step 2: short user token → long-lived (~60 days). */
@@ -297,6 +330,6 @@ export async function fbExchangeLongLived(shortToken: string): Promise<LongLived
   url.searchParams.set("client_id", env.META_APP_ID);
   url.searchParams.set("client_secret", env.META_APP_SECRET);
   url.searchParams.set("fb_exchange_token", shortToken);
-  const json = await getJson<{ access_token: string; expires_in?: number }>(url);
-  return { accessToken: json.access_token, expiresInSec: json.expires_in ?? 60 * 24 * 3600 };
+  const json = await getJson<{ access_token?: string; expires_in?: number }>(url);
+  return requireToken(json, SIXTY_DAYS_SEC);
 }

@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InstagramAccount, Job } from "@prisma/client";
+import { NextRequest } from "next/server";
 import {
   assertCanPublish,
   buildContainerParams,
+  CAPTION_MAX,
   describePublishError,
   EARLY_WAKE_MARGIN_MS,
   extensionFor,
   fetchPublishingLimit,
   hostedMediaUrl,
   isJpeg,
+  isLocalMediaUrl,
   kindFromUrl,
   kindFromUrlOrNull,
   MAX_POLL_ATTEMPTS,
+  MAX_UPLOAD_BYTES,
   parseContainerStatus,
   parsePublishingLimit,
   POLL_DELAY_MS,
@@ -42,6 +46,7 @@ import { MetaApiError } from "@/lib/meta/client";
 import { AppError, metaPermissionMissing, tokenExpired } from "@/lib/errors";
 import {
   HEARTBEAT_INTERVAL_MS,
+  JobTimeoutError,
   backoffMs,
   claimNextJob,
   completeJob,
@@ -50,10 +55,13 @@ import {
   failJob,
   getHandler,
   heartbeatJob,
+  isVideoWorkerOnline,
   jobTimeoutMs,
   laneForType,
+  liveWorkers,
   processJob,
   queueDepth,
+  recordWorkerHeartbeat,
   recoverStaleJobs,
   registerHandler,
 } from "@/lib/queue";
@@ -86,13 +94,21 @@ interface GraphOpts {
  *    is recorded and asserted (method, path, body), so the protocol order
  *    (container → status → media_publish) is proven, not assumed.
  */
-const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock } = vi.hoisted(() => {
+const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock, afterMock, auditMock } = vi.hoisted(() => {
   const store = {
     publishJobs: [] as Row[],
     jobs: [] as Row[],
     contentItems: [] as Row[],
     accountUpdates: [] as Row[],
     workerHeartbeats: [] as Row[],
+    commentResources: [] as Row[],
+    mediaAssets: [] as Row[],
+    accounts: [] as Row[],
+    /** Set by a test to make requireAdmin/assertAccountAccess refuse. */
+    auth: null as Row | null,
+    forbiddenAccountIds: [] as string[],
+    afterCallbacks: [] as Array<() => unknown>,
+    auditEntries: [] as Row[],
     rawQueries: [] as Array<{ sql: string; values: unknown[] }>,
     graphCalls: [] as GraphOpts[],
     seq: 0,
@@ -134,6 +150,11 @@ const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock } = vi.h
       if (!row) return null;
       return decorate ? decorate({ ...row }, args) : { ...row };
     },
+    findUniqueOrThrow: async ({ where, ...args }: { where: Row } & Row) => {
+      const row = rows.find((r) => matches(r, where));
+      if (!row) throw Object.assign(new Error("No record was found for a query."), { code: "P2025" });
+      return decorate ? decorate({ ...row }, args) : { ...row };
+    },
     findFirst: async ({ where, orderBy }: { where?: Row; orderBy?: Row } = {}) => {
       let hit = rows.filter((r) => matches(r, where));
       if (orderBy && "runAt" in orderBy) {
@@ -159,6 +180,12 @@ const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock } = vi.h
       const hit = rows.filter((r) => matches(r, where));
       for (const row of hit) rows.splice(rows.indexOf(row), 1);
       return { count: hit.length };
+    },
+    delete: async ({ where }: { where: Row }) => {
+      const row = rows.find((r) => matches(r, where));
+      if (!row) throw Object.assign(new Error("No record was found for a delete."), { code: "P2025" });
+      rows.splice(rows.indexOf(row), 1);
+      return { ...row };
     },
   });
 
@@ -203,6 +230,12 @@ const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock } = vi.h
 
   return {
     store,
+    afterMock: vi.fn((cb: () => unknown) => {
+      store.afterCallbacks.push(cb);
+    }),
+    auditMock: vi.fn(async (entry: Row) => {
+      store.auditEntries.push(entry);
+    }),
     graphMock: vi.fn(async (opts: GraphOpts) => {
       store.graphCalls.push(opts);
       return store.graph(opts);
@@ -215,7 +248,28 @@ const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock } = vi.h
     prismaMock: {
       publishJob: table(
         store.publishJobs,
-        (data) => ({ id: `pj${++store.seq}`, attempts: 0, childContainerIds: [], ...data }),
+        // Every nullable column of model PublishJob defaults to null, exactly as
+        // Postgres returns it. A created row that simply LACKED the key made
+        // `where: { startedAt: null }` miss — so a post created through the API
+        // could never be claimed by a pass, which is a bug in the stand-in, not
+        // in the product, and the kind that hides real ones.
+        (data) => ({
+          id: `pj${++store.seq}`,
+          status: "SCHEDULED",
+          caption: null,
+          shareToFeed: null,
+          coverUrl: null,
+          startedAt: null,
+          publishedAt: null,
+          containerId: null,
+          publishedMediaId: null,
+          permalink: null,
+          lastError: null,
+          createdByAdminId: null,
+          attempts: 0,
+          childContainerIds: [],
+          ...data,
+        }),
         (row, args) =>
           (args.include as Row | undefined)?.account
             ? { ...row, account: { id: "acc1", igUserId: "ig1", isDemo: false, connectionMode: "INSTAGRAM_LOGIN" } }
@@ -258,22 +312,70 @@ const { store, prismaMock, graphMock, graphPagedMock, resolveAccessMock } = vi.h
       instagramAccount: {
         update: async ({ where, data }: { where: Row; data: Row }) => {
           store.accountUpdates.push({ where, data });
+          const row = store.accounts.find((r) => matches(r, where));
+          if (row) Object.assign(row, data);
           return { ...where, ...data };
         },
+        findUnique: async ({ where }: { where: Row }) => {
+          const row = store.accounts.find((r) => matches(r, where));
+          return row ? { ...row } : null;
+        },
       },
+      /**
+       * `where` is honoured here on purpose: isVideoWorkerOnline's whole job is
+       * the filter (ffmpeg AND the video lane AND seen recently), so a stand-in
+       * that ignored `where` would answer "yes, a renderer is online" for any
+       * heartbeat at all and the test would be agreeing with itself.
+       */
       workerHeartbeat: {
         upsert: async ({ where, create, update }: { where: Row; create: Row; update: Row }) => {
           const existing = store.workerHeartbeats.find((r) => r.id === where.id);
           if (existing) {
-            Object.assign(existing, update);
+            for (const [key, value] of Object.entries(update)) {
+              if (value !== null && typeof value === "object" && !(value instanceof Date) && "increment" in (value as Row)) {
+                existing[key] = Number(existing[key] ?? 0) + Number((value as Row).increment);
+              } else {
+                existing[key] = value;
+              }
+            }
             return { ...existing };
           }
           const row: Row = { ...create };
           store.workerHeartbeats.push(row);
           return { ...row };
         },
-        findMany: async () => store.workerHeartbeats.map((r) => ({ ...r })),
-        count: async () => store.workerHeartbeats.length,
+        findMany: async ({ where, orderBy }: { where?: Row; orderBy?: Row } = {}) => {
+          let hit = store.workerHeartbeats.filter((r) => matches(r, where));
+          if (orderBy && "lastSeenAt" in orderBy) {
+            hit = [...hit].sort((a, b) => (b.lastSeenAt as Date).getTime() - (a.lastSeenAt as Date).getTime());
+            if (orderBy.lastSeenAt === "asc") hit.reverse();
+          }
+          return hit.map((r) => ({ ...r }));
+        },
+        count: async ({ where }: { where?: Row } = {}) => store.workerHeartbeats.filter((r) => matches(r, where)).length,
+      },
+      commentResource: {
+        findUnique: async ({ where }: { where: Row }) => {
+          const row = store.commentResources.find((r) => matches(r, where));
+          return row ? { ...row } : null;
+        },
+      },
+      mediaAsset: {
+        findUnique: async ({ where }: { where: Row }) => {
+          const row = store.mediaAssets.find((r) => matches(r, where));
+          return row ? { ...row } : null;
+        },
+        // the upload route scopes the lookup to the account on purpose
+        findFirst: async ({ where }: { where?: Row } = {}) => {
+          const row = store.mediaAssets.find((r) => matches(r, where));
+          return row ? { ...row } : null;
+        },
+        create: async ({ data, select }: { data: Row; select?: Row }) => {
+          const row: Row = { id: `asset${++store.seq}`, externalUrl: null, ...data };
+          store.mediaAssets.push(row);
+          if (!select) return { ...row };
+          return Object.fromEntries(Object.keys(select).map((k) => [k, row[k]]));
+        },
       },
       $queryRaw: async (strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
@@ -299,17 +401,74 @@ vi.mock("@/lib/meta/tokens", async (importOriginal) => ({
   resolveAccess: resolveAccessMock,
 }));
 
+/**
+ * The API routes below are exercised for real — their zod schema, their guards,
+ * their ordering and the AppError they raise. Only the three things a route test
+ * cannot have stand in: the signed-in admin, the audit write, and Next's
+ * `after()` (which needs a live request scope). `after` is recorded rather than
+ * swallowed, so "publish now asks for an immediate drain" is still assertable.
+ */
+vi.mock("@/lib/auth/guard", () => ({
+  requireAdmin: async () => {
+    if (!store.auth) {
+      const { unauthorized } = await import("@/lib/errors");
+      throw unauthorized();
+    }
+    return store.auth;
+  },
+}));
+
+vi.mock("@/lib/auth/access", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/auth/access")>()),
+  assertAccountAccess: async (_auth: unknown, accountId: string) => {
+    if (store.forbiddenAccountIds.includes(accountId)) {
+      const { forbidden } = await import("@/lib/errors");
+      throw forbidden("You do not have access to this Instagram account");
+    }
+  },
+  accountScope: async () => ({}),
+}));
+
+vi.mock("@/lib/audit", () => ({ audit: auditMock }));
+
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: afterMock,
+}));
+
 const DB_NOW = Date.parse("2026-10-01T09:00:00Z");
 
+/**
+ * AUDIT FINDING (fixed here): the developer's own .env sets QUEUE_INLINE=true and
+ * Vitest loads .env into process.env, so every enqueue() in this suite was firing
+ * kickInlineWorker — a setImmediate that imports the REAL handler registry and
+ * runs drainOnce against the shared in-memory store, at a moment no test
+ * controls. It is what made the abort-checkpoint test below look like a double
+ * publish (the successor pass had already run). Inline mode is real product
+ * behaviour and gets its own test at the end of this file; everywhere else the
+ * queue is driven explicitly so a test observes only what it asked for.
+ */
+const REAL_QUEUE_INLINE = process.env.QUEUE_INLINE;
+
 beforeEach(() => {
+  process.env.QUEUE_INLINE = "false";
   store.publishJobs.length = 0;
   store.jobs.length = 0;
   store.contentItems.length = 0;
   store.accountUpdates.length = 0;
   store.workerHeartbeats.length = 0;
+  store.commentResources.length = 0;
+  store.mediaAssets.length = 0;
+  store.accounts.length = 0;
+  store.forbiddenAccountIds.length = 0;
+  store.afterCallbacks.length = 0;
+  store.auditEntries.length = 0;
+  store.auth = { admin: { id: "adm1", login: "owner", email: "o@x.uz", name: "Owner", role: "OWNER" }, session: { id: "s1", expiresAt: new Date(Date.now() + 3600_000) } };
   store.rawQueries.length = 0;
   store.graphCalls.length = 0;
   store.seq = 0;
+  afterMock.mockClear();
+  auditMock.mockClear();
   store.dbNow = DB_NOW;
   store.graph = async () => ({});
   store.paged = async () => [];
@@ -321,6 +480,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  if (REAL_QUEUE_INLINE === undefined) delete process.env.QUEUE_INLINE;
+  else process.env.QUEUE_INLINE = REAL_QUEUE_INLINE;
 });
 
 // ---------------------------------------------------------------- helpers
@@ -825,6 +986,50 @@ describe("one pass at a time", () => {
     expect(job.startedAt).toBe(heldSince);
     expect(pendingPasses()).toHaveLength(1);
     expect((pendingPasses()[0]!.runAt as Date).getTime()).toBe(heldSince.getTime() + PUBLISH_PASS_LEASE_MS);
+  });
+
+  /**
+   * The narrow window the guard after a failed claim exists for: the job was
+   * live when this pass read it, the claim then lost to the lease holder, and by
+   * the re-read the job has settled. Parking another pass here queues work for a
+   * job that is already over — and for a cancelled one, keeps re-queueing it.
+   */
+  it("stops instead of queueing another pass when the job settled while the claim was losing", async () => {
+    const job = seedPublishJob({ status: "PROCESSING", startedAt: new Date(DB_NOW - 1_000), containerId: "c1" });
+    store.graph = graphScript({});
+
+    // The admin's cancel lands between the failed claim and the re-read.
+    const realUpdateMany = prismaMock.publishJob.updateMany;
+    const spy = vi.spyOn(prismaMock.publishJob, "updateMany").mockImplementationOnce(async (args: { where: Row; data: Row }) => {
+      const res = await realUpdateMany(args);
+      job.status = "CANCELLED";
+      return res;
+    });
+
+    await runPublishJob(job.id as string);
+
+    expect(store.graphCalls).toHaveLength(0);
+    expect(pendingPasses()).toHaveLength(0);
+    expect(job.status).toBe("CANCELLED");
+    spy.mockRestore();
+  });
+
+  it("stops instead of queueing another pass when the job row disappeared under it", async () => {
+    const job = seedPublishJob({ status: "PROCESSING", startedAt: new Date(DB_NOW - 1_000), containerId: "c1" });
+    store.graph = graphScript({});
+
+    const realUpdateMany = prismaMock.publishJob.updateMany;
+    const spy = vi.spyOn(prismaMock.publishJob, "updateMany").mockImplementationOnce(async (args: { where: Row; data: Row }) => {
+      const res = await realUpdateMany(args);
+      store.publishJobs.splice(store.publishJobs.indexOf(job), 1);
+      return res;
+    });
+
+    await runPublishJob(job.id as string);
+
+    expect(store.graphCalls).toHaveLength(0);
+    expect(pendingPasses()).toHaveLength(0);
+    spy.mockRestore();
   });
 
   it("takes over once the holder's lease has lapsed", async () => {
@@ -1424,11 +1629,17 @@ describe("leases and heartbeats", () => {
   });
 
   it("failJob backs off, then dead-letters once the attempts are spent", async () => {
-    const retrying = seedQueueRow({ status: "RUNNING", lockedBy: "w1", attempts: 1, maxAttempts: 3 });
+    // seeded in the real past for the same reason as recoverStaleJobs above —
+    // the default runAt comes off the mocked DB clock and is already in the
+    // future, which made "backed off" true before the product did anything.
+    const retrying = seedQueueRow({ status: "RUNNING", lockedBy: "w1", attempts: 1, maxAttempts: 3, runAt: new Date(Date.now() - 60_000) });
+    const before = Date.now();
     expect(await failJob(retrying as unknown as Job, new Error("boom"), "w1")).toBe(true);
     expect(retrying.status).toBe("FAILED");
     expect(String(retrying.lastError)).toBe("Error: boom");
-    expect((retrying.runAt as Date).getTime()).toBeGreaterThanOrEqual(Date.now() + 30_000);
+    const waited = (retrying.runAt as Date).getTime() - before;
+    expect(waited).toBeGreaterThanOrEqual(30_000);
+    expect(waited).toBeLessThanOrEqual(36_000);
 
     const spent = seedQueueRow({ status: "RUNNING", lockedBy: "w1", attempts: 3, maxAttempts: 3 });
     const runAtBefore = spent.runAt;
@@ -1447,8 +1658,26 @@ describe("leases and heartbeats", () => {
 });
 
 describe("recovering jobs whose worker died", () => {
+  /**
+   * AUDIT FINDING (fixed here): this assertion used to read
+   * `runAt > Date.now() + 25_000` against seedQueueRow's DEFAULT runAt, which is
+   * derived from the mocked database clock (2026-10-01) and therefore already
+   * days ahead of this process's clock. It passed without the product writing
+   * anything at all: deleting the `runAt: backoffMs(...)` line from
+   * recoverStaleJobs left the whole suite green. The row is now seeded in the
+   * real past and the wait is measured, so only a real backoff passes.
+   */
   it("revives a lapsed lease with backoff, not instantly", async () => {
-    const row = seedQueueRow({ status: "RUNNING", lockedBy: "dead-worker", attempts: 1, maxAttempts: 5, leaseExpiresAt: new Date(Date.now() - 1000) });
+    const seededRunAt = new Date(Date.now() - 60_000); // due now, before recovery touches it
+    const row = seedQueueRow({
+      status: "RUNNING",
+      lockedBy: "dead-worker",
+      attempts: 1,
+      maxAttempts: 5,
+      runAt: seededRunAt,
+      leaseExpiresAt: new Date(Date.now() - 1000),
+    });
+    const before = Date.now();
 
     expect(await recoverStaleJobs()).toBe(1);
 
@@ -1456,7 +1685,10 @@ describe("recovering jobs whose worker died", () => {
     expect(row.lockedBy).toBeNull();
     expect(row.leaseExpiresAt).toBeNull();
     expect(String(row.lastError)).toMatch(/lock expired/i);
-    expect((row.runAt as Date).getTime()).toBeGreaterThan(Date.now() + 25_000); // real backoff
+    expect(row.runAt).not.toBe(seededRunAt); // it was actually rescheduled
+    const waited = (row.runAt as Date).getTime() - before;
+    expect(waited).toBeGreaterThanOrEqual(30_000); // backoffMs(1) — never "immediately claimable again"
+    expect(waited).toBeLessThanOrEqual(36_000);
   });
 
   it("dead-letters a recovered job that has no attempts left", async () => {
@@ -1702,9 +1934,17 @@ describe("the queue and publishing together", () => {
   });
 
   it("the worker's own handler registry really contains publish.run", async () => {
+    // Earlier tests in this file register their own publish.run stub, so the
+    // registry alone proves nothing until the real module has overwritten it.
+    registerHandler("publish.run", async () => {
+      throw new Error("this is the test's stub — queue/handlers.ts never registered its own");
+    });
+    const stub = getHandler("publish.run");
+
     await import("@/lib/queue/handlers");
     const handler = getHandler("publish.run");
     expect(handler).toBeTypeOf("function");
+    expect(handler).not.toBe(stub);
 
     const job = seedPublishJob({ containerId: "c1" });
     store.graph = graphScript({ mediaId: "m_real" });
@@ -1712,5 +1952,996 @@ describe("the queue and publishing together", () => {
 
     expect(job.status).toBe("PUBLISHED");
     expect(job.publishedMediaId).toBe("m_real");
+  });
+});
+
+// ======================================================= AUDIT ADDITIONS ===
+//
+// Everything below closes a gap the first pass over this group left open. Each
+// one is a path a real admin reaches, and each was unproven before: the queue's
+// abort wiring as the REAL publish.run handler sees it, the worker-liveness
+// filter that decides whether a render may be accepted at all, the publish
+// read-back failure, the /r/{id} response the Content-Disposition helper exists
+// for, and the Graph pager syncMedia delegates its paging to.
+
+describe("the real publish.run handler, driven by the real queue", () => {
+  it("stops at its abort checkpoint when the queue walks away, and hands the post to a fresh pass", async () => {
+    await import("@/lib/queue/handlers");
+    vi.useFakeTimers();
+
+    const job = seedPublishJob({ containerId: "c1" });
+    let releaseStatus: (() => void) | undefined;
+    const instagramIsSlow = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    store.graph = async (o) => {
+      if (o.method === "POST" && o.path.endsWith("/media_publish")) return { id: "m_double" };
+      await instagramIsSlow; // the status poll outlives the handler's budget
+      return { status_code: "FINISHED" };
+    };
+    const row = seedQueueRow({ type: "publish.run", payload: { publishJobId: job.id }, status: "RUNNING", lockedBy: "w1", attempts: 1 });
+
+    const run = processJob(row as unknown as Job, "w1");
+    await vi.advanceTimersByTimeAsync(jobTimeoutMs("default") + 10);
+    await run; // the queue has stopped waiting; the handler is still in flight
+
+    releaseStatus?.();
+    await vi.advanceTimersByTimeAsync(10);
+
+    // The point: the handler passes no signal of its own — runPublishJob reads
+    // it out of the queue's AsyncLocalStorage. If that wiring breaks, this pass
+    // publishes behind the pass that replaces it and the post goes out twice.
+    expect(posted("ig1/media_publish")).toHaveLength(0);
+    expect(job.status).toBe("PROCESSING");
+    expect(job.status).not.toBe("PUBLISHED");
+    expect(job.startedAt).toBeNull(); // lease released for the successor
+    const parked = pendingPasses();
+    expect(parked).toHaveLength(1);
+    expect(String(parked[0]!.idempotencyKey)).toContain("abandoned:");
+  });
+
+  it("the abandoned pass's successor then publishes, exactly once", async () => {
+    await import("@/lib/queue/handlers");
+    const job = seedPublishJob({ containerId: "c1", status: "PROCESSING", startedAt: null });
+    store.graph = graphScript({ mediaId: "m_after" });
+
+    await getHandler("publish.run")!({ publishJobId: job.id }, seedQueueRow() as unknown as Job, new AbortController().signal);
+
+    expect(job.status).toBe("PUBLISHED");
+    expect(job.publishedMediaId).toBe("m_after");
+    expect(posted("ig1/media_publish")).toHaveLength(1);
+  });
+
+  it("a pass with no publishJobId in its payload does nothing rather than throwing", async () => {
+    await import("@/lib/queue/handlers");
+    await expect(getHandler("publish.run")!({}, seedQueueRow() as unknown as Job, new AbortController().signal)).resolves.toBeUndefined();
+    expect(store.graphCalls).toHaveLength(0);
+  });
+});
+
+describe("worker liveness (can a render be accepted at all)", () => {
+  it("only says a video worker is online for one that beats, serves the lane AND has ffmpeg", async () => {
+    await recordWorkerHeartbeat({ workerId: "cron-1", lanes: ["default"], ffmpeg: false, kind: "cron" });
+    expect(await isVideoWorkerOnline()).toBe(false);
+
+    // serves the lane, but cannot actually encode
+    await recordWorkerHeartbeat({ workerId: "no-ffmpeg", lanes: ["default", "video"], ffmpeg: false });
+    expect(await isVideoWorkerOnline()).toBe(false);
+
+    // can encode, but never claims the lane
+    await recordWorkerHeartbeat({ workerId: "wrong-lane", lanes: ["default"], ffmpeg: true });
+    expect(await isVideoWorkerOnline()).toBe(false);
+
+    await recordWorkerHeartbeat({ workerId: "render-1", lanes: ["default", "video"], ffmpeg: true });
+    expect(await isVideoWorkerOnline()).toBe(true);
+  });
+
+  it("stops counting a worker that went quiet, and totals its jobs across beats", async () => {
+    await recordWorkerHeartbeat({ workerId: "render-1", lanes: ["video"], ffmpeg: true, jobsDone: 2 });
+    await recordWorkerHeartbeat({ workerId: "render-1", lanes: ["video"], ffmpeg: true, jobsDone: 3 });
+
+    const live = await liveWorkers();
+    expect(live).toHaveLength(1);
+    expect(live[0]!.jobsDone).toBe(5);
+    expect(await isVideoWorkerOnline()).toBe(true);
+
+    store.workerHeartbeats[0]!.lastSeenAt = new Date(Date.now() - 6 * 60_000);
+    expect(await liveWorkers()).toHaveLength(0);
+    expect(await isVideoWorkerOnline()).toBe(false); // a dead renderer must not look available
+  });
+
+  it("newest worker first, and a heartbeat write that fails never breaks the drain", async () => {
+    await recordWorkerHeartbeat({ workerId: "old", lanes: ["default"] });
+    store.workerHeartbeats[0]!.lastSeenAt = new Date(Date.now() - 60_000);
+    await recordWorkerHeartbeat({ workerId: "new", lanes: ["default"] });
+    expect((await liveWorkers()).map((w) => w.id)).toEqual(["new", "old"]);
+
+    const spy = vi.spyOn(prismaMock.workerHeartbeat, "upsert").mockRejectedValueOnce(new Error("db down"));
+    await expect(recordWorkerHeartbeat({ workerId: "w", lanes: ["default"] })).resolves.toBeUndefined();
+    spy.mockRestore();
+  });
+});
+
+describe("what the queue does with a handler that fails", () => {
+  it("records the handler's own error and backs the job off for a retry", async () => {
+    registerHandler("email.send", async () => {
+      throw new Error("SMTP refused the message");
+    });
+    const row = seedQueueRow({ type: "email.send", status: "RUNNING", lockedBy: "w1", attempts: 1, maxAttempts: 3, runAt: new Date(Date.now() - 60_000) });
+    const before = Date.now();
+
+    await processJob(row as unknown as Job, "w1");
+
+    expect(row.status).toBe("FAILED");
+    expect(String(row.lastError)).toContain("SMTP refused the message");
+    expect(row.lockedBy).toBeNull();
+    expect(row.leaseExpiresAt).toBeNull();
+    const waited = (row.runAt as Date).getTime() - before;
+    expect(waited).toBeGreaterThanOrEqual(30_000);
+    expect(waited).toBeLessThanOrEqual(36_000);
+  });
+
+  it("dead-letters instead of retrying once the handler has used the last attempt", async () => {
+    registerHandler("email.send", async () => {
+      throw new Error("still refused");
+    });
+    const row = seedQueueRow({ type: "email.send", status: "RUNNING", lockedBy: "w1", attempts: 3, maxAttempts: 3 });
+
+    await processJob(row as unknown as Job, "w1");
+
+    expect(row.status).toBe("DEAD");
+  });
+
+  it("a handler raising its OWN timeout error is failed, not mistaken for an abandoned run", async () => {
+    // processJob compares by identity, not `instanceof`, precisely so this case
+    // is a handler failure. Treated as an abandonment it would be left RUNNING on
+    // a lease nobody renews, and nothing would run it again until recovery.
+    registerHandler("email.send", async () => {
+      throw new JobTimeoutError(1_000);
+    });
+    const row = seedQueueRow({ type: "email.send", status: "RUNNING", lockedBy: "w1", attempts: 1, maxAttempts: 3 });
+
+    await processJob(row as unknown as Job, "w1");
+
+    expect(row.status).toBe("FAILED");
+    expect(row.status).not.toBe("RUNNING");
+    expect(String(row.lastError)).toMatch(/JobTimeoutError/);
+    expect(row.lockedBy).toBeNull();
+  });
+});
+
+describe("enqueueing, the edges", () => {
+  it("a real database failure is raised, not swallowed as 'already queued'", async () => {
+    const spy = vi
+      .spyOn(prismaMock.job, "create")
+      .mockRejectedValueOnce(Object.assign(new Error("deadlock detected"), { code: "P2034" }));
+
+    await expect(enqueue("telegram.send", { leadId: "l1" })).rejects.toThrow(/deadlock detected/);
+    expect(store.jobs).toHaveLength(0); // and nothing was silently dropped either
+    spy.mockRestore();
+  });
+
+  it("a drain stops at its batch size and leaves the rest for the next one", async () => {
+    let ran = 0;
+    registerHandler("telegram.send", async () => {
+      ran++;
+    });
+    for (let i = 0; i < 5; i++) seedQueueRow({ id: `t${i}`, type: "telegram.send" });
+
+    expect(await drainOnce("w1", 2)).toBe(2);
+    expect(ran).toBe(2);
+    expect(store.jobs.filter((j) => j.status === "PENDING")).toHaveLength(3);
+  });
+
+  it("a drain that names no lane at all still claims the default one", async () => {
+    const row = seedQueueRow({ lane: "default" });
+    const claimed = await claimNextJob("w1", []);
+    expect(claimed!.id).toBe(row.id);
+    expect(store.rawQueries.at(-1)!.values[2]).toEqual(["default"]);
+  });
+
+  it("reports no oldest-pending age when nothing is waiting", async () => {
+    seedQueueRow({ status: "COMPLETED" });
+    expect((await queueDepth()).oldestPendingAgeSec).toBeNull();
+  });
+});
+
+describe("publishing: what happens after Instagram already has the post", () => {
+  it("records a post Instagram accepted even when reading it back fails", async () => {
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = async (o) => {
+      if (o.method === "POST" && o.path.endsWith("/media_publish")) return { id: "m_live" };
+      if (o.path === "m_live") throw new MetaApiError({ message: "Unsupported get request", code: 100 }, 400);
+      return { status_code: "FINISHED" };
+    };
+
+    await runPublishJob(job.id as string);
+
+    // The read-back is decoration. Letting its failure reach the outer catch
+    // would FAIL a post that is live — and a FAILED row is one the admin can
+    // retry, which posts it a second time.
+    expect(job.status).toBe("PUBLISHED");
+    expect(job.publishedMediaId).toBe("m_live");
+    expect(job.permalink).toBeNull();
+    expect(job.lastError).toBeNull();
+    expect(store.contentItems).toHaveLength(0);
+  });
+
+  it("a pass that lost the lease cannot declare the job FAILED under its successor", async () => {
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = async () => {
+      job.startedAt = new Date(DB_NOW + 5_000); // a later pass took the lease over
+      throw new MetaApiError({ message: "Invalid parameter", code: 100 }, 400);
+    };
+
+    await runPublishJob(job.id as string);
+
+    expect(job.status).toBe("PROCESSING");
+    expect(job.status).not.toBe("FAILED");
+    expect(job.lastError).toBeNull(); // the pass that owns it decides, not this one
+  });
+
+  it("a long Meta message is stored, but truncated to what the column takes", async () => {
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = graphScript({ status: { status_code: "ERROR", status: "x".repeat(5_000) } });
+
+    await runPublishJob(job.id as string);
+
+    expect(job.status).toBe("FAILED");
+    expect(String(job.lastError)).toHaveLength(2_000);
+  });
+});
+
+describe("what is refused before Meta is ever called, continued", () => {
+  const img = { url: "https://cdn.example.com/a.jpg", kind: "IMAGE" as const };
+
+  it("refuses the item counts each media type cannot take", () => {
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [img, img] })).toMatch(/Exactly one/);
+    expect(validatePublishInput({ mediaType: "STORIES", items: [] })).toMatch(/Exactly one/);
+    expect(validatePublishInput({ mediaType: "REELS", items: [] })).toMatch(/Exactly one/);
+    expect(validatePublishInput({ mediaType: "CAROUSEL", items: Array.from({ length: 11 }, () => img) })).toMatch(/2–10/);
+    expect(validatePublishInput({ mediaType: "CAROUSEL", items: [img, img] })).toBeNull();
+    expect(validatePublishInput({ mediaType: "CAROUSEL", items: Array.from({ length: 10 }, () => img) })).toBeNull();
+  });
+
+  it("accepts the exact caption limit and a 'publish now' whose timestamp is already a few seconds old", () => {
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [img], caption: "x".repeat(CAPTION_MAX) })).toBeNull();
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [img], caption: "x".repeat(CAPTION_MAX + 1) })).toMatch(/2200/);
+
+    const now = new Date("2026-09-12T12:00:00Z");
+    // the composer stamps scheduledAt client-side, so "now" always arrives late
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [img], scheduledAt: new Date(now.getTime() - 30_000), now })).toBeNull();
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [img], scheduledAt: new Date(now.getTime() - 61_000), now })).toMatch(/past/);
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [img], scheduledAt: new Date(now.getTime() + 75 * 86400_000 - 1_000), now })).toBeNull();
+  });
+
+  it("refuses a non-https media URL whatever its case, including the carousel members", () => {
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [{ url: "HTTPS://cdn.example.com/a.jpg", kind: "IMAGE" }] })).toBeNull();
+    expect(validatePublishInput({ mediaType: "IMAGE", items: [{ url: "ftp://cdn.example.com/a.jpg", kind: "IMAGE" }] })).toMatch(/https/);
+    expect(
+      validatePublishInput({ mediaType: "CAROUSEL", items: [img, { url: "http://cdn.example.com/b.jpg", kind: "IMAGE" }] }),
+    ).toMatch(/https/);
+  });
+});
+
+describe("the public /r/{id} endpoint the Content-Disposition helper exists for", () => {
+  it("answers 200 with a valid header for a Cyrillic file name, extension in the URL ignored", async () => {
+    const { GET } = await import("@/app/r/[id]/route");
+    const name = "Прайс-лист 2026.pdf";
+    const body = Buffer.from("%PDF-1.4 price list");
+    store.commentResources.push({ id: "res_1", name, mimeType: "application/pdf", data: body });
+
+    const res = await GET(null as never, { params: Promise.resolve({ id: "res_1.pdf" }) });
+
+    // the 500 this whole helper exists to prevent
+    expect(res.status).toBe(200);
+    const header = res.headers.get("content-disposition")!;
+    expect(header).toMatch(/^[\x20-\x7e]*$/);
+    expect(decodeURIComponent(header.split("filename*=UTF-8''")[1]!)).toBe(name);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-length")).toBe(String(body.byteLength));
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("%PDF-1.4 price list");
+  });
+
+  it("404s for an unknown id and for a row whose bytes are gone", async () => {
+    const { GET } = await import("@/app/r/[id]/route");
+    store.commentResources.push({ id: "res_empty", name: "x.pdf", mimeType: "application/pdf", data: null });
+
+    expect((await GET(null as never, { params: Promise.resolve({ id: "nope" }) })).status).toBe(404);
+    expect((await GET(null as never, { params: Promise.resolve({ id: "res_empty.pdf" }) })).status).toBe(404);
+  });
+
+  it("/m/{id} serves publish media the same way, so Meta can fetch it", async () => {
+    const { GET } = await import("@/app/m/[id]/route");
+    const body = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+    store.mediaAssets.push({ id: "asset_1", mimeType: "image/jpeg", data: body });
+
+    const res = await GET(null as never, { params: Promise.resolve({ id: "asset_1.jpg" }) });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array(body));
+    // the URL publishing hands Meta resolves to exactly this row
+    expect(hostedMediaUrl("asset_1", "image/jpeg")).toBe("http://localhost:3000/m/asset_1.jpg");
+  });
+});
+
+describe("the Graph pager syncMedia delegates its paging to", () => {
+  /** The real client, not the mock this file installs for everything else. */
+  const realClient = () => vi.importActual<typeof import("@/lib/meta/client")>("@/lib/meta/client");
+
+  it("follows paging.next to the end and never returns more than it was asked for", async () => {
+    const { graphCallPaged } = await realClient();
+    const urls: string[] = [];
+    const pages: unknown[] = [
+      { data: [{ id: "a" }, { id: "b" }], paging: { next: "https://graph.instagram.com/v25.0/ig1/media?after=p2" } },
+      { data: [{ id: "c" }, { id: "d" }] },
+    ];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: unknown) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(pages.shift() ?? { data: [] }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const all = await graphCallPaged<{ id: string }>(
+        { host: "graph.instagram.com", path: "ig1/media", accessToken: "tok", params: { limit: 2 } },
+        10,
+      );
+      expect(all.map((i) => i.id)).toEqual(["a", "b", "c", "d"]);
+      expect(urls).toHaveLength(2);
+      expect(urls[0]).toContain("/v25.0/ig1/media?");
+      expect(urls[0]).toContain("limit=2");
+      expect(urls[1]).toBe("https://graph.instagram.com/v25.0/ig1/media?after=p2");
+
+      // and it stops the moment it has what the caller asked for
+      pages.push({ data: [{ id: "e" }, { id: "f" }], paging: { next: "https://graph.instagram.com/should-not-be-fetched" } });
+      urls.length = 0;
+      const capped = await graphCallPaged<{ id: string }>({ host: "graph.instagram.com", path: "ig1/media", accessToken: "tok" }, 1);
+      expect(capped.map((i) => i.id)).toEqual(["e"]);
+      expect(urls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("raises a Meta error returned by a later page instead of returning a short list", async () => {
+    const { graphCallPaged } = await realClient();
+    const pages: unknown[] = [
+      { data: [{ id: "a" }], paging: { next: "https://graph.instagram.com/v25.0/ig1/media?after=p2" } },
+      { error: { message: "Session expired", code: 190 } },
+    ];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const first = pages.length === 2;
+      return new Response(JSON.stringify(pages.shift()), { status: first ? 200 : 401 });
+    }) as typeof fetch;
+
+    try {
+      await expect(graphCallPaged({ host: "graph.instagram.com", path: "ig1/media", accessToken: "tok" }, 100)).rejects.toThrow(/expired/i);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("syncMedia asks the pager for exactly the ceiling it was given", async () => {
+    let askedFor = -1;
+    store.paged = async (_o, maxItems) => {
+      askedFor = maxItems;
+      return [];
+    };
+
+    expect(await syncMedia(account(), 37)).toBe(0);
+
+    expect(askedFor).toBe(37);
+    expect(store.graphCalls[0]!.params!.limit).toBe(50); // page size, not the ceiling
+    expect(store.accountUpdates).toHaveLength(1); // an empty sync still stamps lastSyncAt
+  });
+});
+
+// ==================================================== SECOND-PASS AUDIT ===
+//
+// Everything below was added by the audit of this group. Each entry is either a
+// guard a mutation proved nothing was testing, an assertion that was passing
+// without the product doing anything, or a user-facing path (the publish API and
+// the media upload) that had no test at all.
+
+describe("the cancel that lands between reading the job and claiming it", () => {
+  /**
+   * AUDIT GAP (was untested): claimPass refuses to claim a job whose status has
+   * become CANCELLED/PUBLISHED/FAILED since the read at the top of
+   * runPublishJob. Deleting that `status: { notIn: [...] }` clause left all 123
+   * tests green — and it is the guard that stops the claim writing PROCESSING
+   * over a cancel, which erases the cancel entirely: every later checkpoint then
+   * sees a live job and the post goes out anyway.
+   */
+  it("does not overwrite the cancel with PROCESSING, and the post never goes out", async () => {
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = graphScript({ mediaId: "m_should_not_exist" });
+
+    // the admin cancels in the window between the read and the claim
+    const realFindUnique = prismaMock.publishJob.findUnique;
+    const spy = vi
+      .spyOn(prismaMock.publishJob, "findUnique")
+      .mockImplementationOnce(async (args: { where: Row } & Row) => {
+        const res = await realFindUnique(args);
+        job.status = "CANCELLED";
+        return res;
+      });
+
+    await runPublishJob(job.id as string);
+
+    expect(posted("ig1/media_publish")).toHaveLength(0);
+    expect(store.graphCalls).toHaveLength(0);
+    expect(job.status).toBe("CANCELLED");
+    expect(job.status).not.toBe("PROCESSING");
+    expect(job.startedAt).toBeNull(); // never claimed
+    expect(job.publishedMediaId).toBeNull();
+    expect(pendingPasses()).toHaveLength(0); // and nothing is left spinning on it
+    spy.mockRestore();
+  });
+
+  it("does not claim a job another worker already finished in that same window", async () => {
+    const job = seedPublishJob({ containerId: "c1" });
+    store.graph = graphScript({ mediaId: "m_dup" });
+
+    const realFindUnique = prismaMock.publishJob.findUnique;
+    const spy = vi
+      .spyOn(prismaMock.publishJob, "findUnique")
+      .mockImplementationOnce(async (args: { where: Row } & Row) => {
+        const res = await realFindUnique(args);
+        Object.assign(job, { status: "PUBLISHED", publishedMediaId: "m_first" });
+        return res;
+      });
+
+    await runPublishJob(job.id as string);
+
+    expect(posted("ig1/media_publish")).toHaveLength(0);
+    expect(job.publishedMediaId).toBe("m_first"); // the first pass's result, untouched
+    expect(job.status).toBe("PUBLISHED");
+    spy.mockRestore();
+  });
+});
+
+describe("an address Meta cannot download from", () => {
+  /**
+   * DEFECT (fixed): the publish route tested the WHOLE url with a substring
+   * match. That is wrong in both directions — it refused a public CDN link whose
+   * path merely contains the word "localhost", and it let every private LAN
+   * address through, so a self-hosted install queued media Meta could never
+   * fetch and the job died at Instagram minutes later with an opaque error.
+   * isLocalMediaUrl matches the parsed hostname instead.
+   */
+  it("recognises the addresses Instagram's servers cannot reach", () => {
+    for (const url of [
+      "http://localhost:3000/m/a.jpg",
+      "https://127.0.0.1/a.jpg",
+      "https://192.168.1.50/a.jpg",
+      "https://10.0.0.7/clip.mp4",
+      "https://172.20.5.4/a.jpg",
+      "https://169.254.1.1/a.jpg",
+      "https://[::1]/a.jpg",
+      "https://nas.local/a.jpg",
+      "https://box.internal/a.jpg",
+    ]) {
+      expect(isLocalMediaUrl(url), url).toBe(true);
+    }
+  });
+
+  it("does not refuse a public URL that merely contains the word", () => {
+    for (const url of [
+      "https://cdn.example.com/localhost-demo.jpg",
+      "https://files.example.uz/photos/my.local.copy.jpg",
+      "https://my-localhost-cdn.net/a.jpg",
+      "https://172.15.0.1/a.jpg", // just outside the private 172.16-31 block
+      "https://8.8.8.8/a.jpg",
+      "https://cdn.example.com/a.jpg",
+    ]) {
+      expect(isLocalMediaUrl(url), url).toBe(false);
+    }
+  });
+});
+
+// ======================================================= THE PUBLISH API ===
+//
+// The library above is what the worker runs. THIS is what the admin touches:
+// creating a post, retrying one, cancelling one, deleting one, uploading a file.
+// None of it had a test.
+
+function seedAccount(over: Row = {}): Row {
+  const row: Row = {
+    id: "acc1",
+    igUserId: "ig1",
+    username: "shop",
+    isDemo: false,
+    connectionMode: "INSTAGRAM_LOGIN",
+    permissions: [],
+    tokens: [{ kind: "user", status: "ACTIVE", scopes: ["instagram_business_content_publish"], expiresAt: null, issuedAt: new Date() }],
+    ...over,
+  };
+  store.accounts.push(row);
+  return row;
+}
+
+function jsonReq(url: string, body: unknown, method = "POST"): NextRequest {
+  return new NextRequest(url, { method, body: JSON.stringify(body), headers: { "content-type": "application/json" } });
+}
+
+const publishRoute = () => import("@/app/api/publish/route");
+const publishItemRoute = () => import("@/app/api/publish/[id]/route");
+const mediaRoute = () => import("@/app/api/media/route");
+const ctxOf = (id: string) => ({ params: Promise.resolve({ id }) });
+
+async function readJson(res: Response): Promise<{ ok: boolean; data?: Row; error?: Row }> {
+  return (await res.json()) as { ok: boolean; data?: Row; error?: Row };
+}
+
+describe("POST /api/publish — creating a post", () => {
+  const url = "http://localhost:3000/api/publish";
+
+  it("creates a SCHEDULED job, queues its pass, and asks for an immediate drain when publishing now", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+
+    const res = await POST(
+      jsonReq(url, {
+        accountId: "acc1",
+        mediaType: "IMAGE",
+        caption: "  Yangi mahsulot  ",
+        items: [{ url: "https://cdn.example.com/a.jpg" }],
+      }),
+      ctxOf("x"),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await readJson(res);
+    const job = body.data!.job as Row;
+    expect(job.status).toBe("SCHEDULED");
+    expect(job.caption).toBe("Yangi mahsulot"); // trimmed
+    expect(job.items).toEqual([{ url: "https://cdn.example.com/a.jpg", kind: "IMAGE" }]);
+    expect(job.shareToFeed).toBeNull(); // only a Reel carries it
+
+    // the pass really is queued, under the schedule key the worker de-duplicates on
+    expect(passes()).toHaveLength(1);
+    expect(passes()[0]!.idempotencyKey).toBe(scheduleKey({ id: job.id as string, scheduledAt: new Date(job.scheduledAt as string) }));
+    // "publish now" must not wait for the 5-minute cron
+    expect(afterMock).toHaveBeenCalledTimes(1);
+    expect(store.auditEntries[0]).toMatchObject({ action: "CREATED_PUBLISH_JOB", resourceId: job.id });
+  });
+
+  it("a scheduled post is queued for its time and does NOT trigger a drain now", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+    const when = new Date(Date.now() + 6 * 3600_000);
+
+    const res = await POST(
+      jsonReq(url, {
+        accountId: "acc1",
+        mediaType: "REELS",
+        items: [{ url: "https://cdn.example.com/clip.mp4" }],
+        scheduledAt: when.toISOString(),
+      }),
+      ctxOf("x"),
+    );
+
+    expect(res.status).toBe(200);
+    const job = (await readJson(res)).data!.job as Row;
+    expect(new Date(job.scheduledAt as string).getTime()).toBe(when.getTime());
+    expect(job.shareToFeed).toBe(true); // a Reel defaults to sharing to the feed
+    expect((job.items as Row[])[0]!.kind).toBe("VIDEO");
+    expect((passes()[0]!.runAt as Date).getTime()).toBe(when.getTime());
+    expect(afterMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a media type the items do not match, before anything is created", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+
+    const res = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://cdn.example.com/clip.mp4" }] }),
+      ctxOf("x"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(String((await readJson(res)).error!.message)).toMatch(/photo post needs an image/i);
+    expect(store.publishJobs).toHaveLength(0);
+    expect(passes()).toHaveLength(0);
+  });
+
+  it("refuses a private-network URL Meta could never fetch, and accepts a public one containing the word 'localhost'", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+
+    const refused = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://192.168.1.50/a.jpg" }] }),
+      ctxOf("x"),
+    );
+    expect(refused.status).toBe(400);
+    expect(String((await readJson(refused)).error!.message)).toMatch(/local address/i);
+    expect(store.publishJobs).toHaveLength(0);
+
+    const accepted = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://cdn.example.com/localhost-demo.jpg" }] }),
+      ctxOf("x"),
+    );
+    expect(accepted.status).toBe(200);
+    expect(store.publishJobs).toHaveLength(1);
+  });
+
+  it("refuses to accept the post at all when the 24-hour publishing limit is already spent", async () => {
+    seedAccount();
+    store.graph = graphScript({ limit: { data: [{ quota_usage: 100, config: { quota_total: 100 } }] } });
+    const { POST } = await publishRoute();
+
+    const res = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://cdn.example.com/a.jpg" }] }),
+      ctxOf("x"),
+    );
+
+    expect(res.status).toBe(429);
+    const err = (await readJson(res)).error!;
+    expect(err.code).toBe("META_RATE_LIMITED");
+    expect(String(err.reason)).toContain("100/100");
+    expect(store.publishJobs).toHaveLength(0); // nothing queued to fail later
+  });
+
+  it("resolves an uploaded asset to the URL Meta will fetch, and refuses one from another account", async () => {
+    seedAccount();
+    store.mediaAssets.push({ id: "asset_mine", accountId: "acc1", kind: "VIDEO", mimeType: "video/mp4", externalUrl: "https://cdn.example.com/up.mp4" });
+    store.mediaAssets.push({ id: "asset_theirs", accountId: "acc2", kind: "IMAGE", mimeType: "image/jpeg", externalUrl: "https://cdn.example.com/theirs.jpg" });
+    const { POST } = await publishRoute();
+
+    const good = await POST(jsonReq(url, { accountId: "acc1", mediaType: "REELS", items: [{ assetId: "asset_mine" }] }), ctxOf("x"));
+    expect(good.status).toBe(200);
+    expect(((await readJson(good)).data!.job as Row).items).toEqual([{ url: "https://cdn.example.com/up.mp4", kind: "VIDEO" }]);
+
+    const stolen = await POST(jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ assetId: "asset_theirs" }] }), ctxOf("x"));
+    expect(stolen.status).toBe(400);
+    expect(String((await readJson(stolen)).error!.message)).toMatch(/not found for this account/i);
+    expect(store.publishJobs).toHaveLength(1); // only the legitimate one
+  });
+
+  it("an asset with no external URL is served from this app — and refused while that address is local", async () => {
+    seedAccount();
+    store.mediaAssets.push({ id: "asset_hosted", accountId: "acc1", kind: "IMAGE", mimeType: "image/jpeg", externalUrl: null });
+    const { POST } = await publishRoute();
+
+    const res = await POST(jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ assetId: "asset_hosted" }] }), ctxOf("x"));
+
+    // APP_URL here is http://localhost:3000, so the asset resolves to an address
+    // Meta can neither reach NOR trust. The https rule fires first (it is checked
+    // before the local-address guard), which is the honest answer either way: the
+    // post is refused up front instead of being queued to die at Instagram.
+    // A deployment on https that is still private is caught by the local-address
+    // guard instead — the 192.168 case above.
+    expect(hostedMediaUrl("asset_hosted", "image/jpeg")).toBe("http://localhost:3000/m/asset_hosted.jpg");
+    expect(res.status).toBe(400);
+    expect(String((await readJson(res)).error!.message)).toMatch(/public https:\/\/ URL/i);
+    expect(store.publishJobs).toHaveLength(0);
+    expect(passes()).toHaveLength(0);
+  });
+
+  it("refuses a demo account and an account without the publishing permission", async () => {
+    seedAccount({ id: "acc_demo", isDemo: true });
+    seedAccount({ id: "acc_noscope", tokens: [{ kind: "user", status: "ACTIVE", scopes: [], expiresAt: null, issuedAt: new Date() }] });
+    const { POST } = await publishRoute();
+    const item = { url: "https://cdn.example.com/a.jpg" };
+
+    const demo = await POST(jsonReq(url, { accountId: "acc_demo", mediaType: "IMAGE", items: [item] }), ctxOf("x"));
+    expect(demo.status).toBe(422);
+    expect(String((await readJson(demo)).error!.message)).toMatch(/Demo account cannot publish/i);
+
+    const noScope = await POST(jsonReq(url, { accountId: "acc_noscope", mediaType: "IMAGE", items: [item] }), ctxOf("x"));
+    expect(noScope.status).toBe(403);
+    expect(String((await readJson(noScope)).error!.message)).toContain("instagram_business_content_publish");
+    expect(store.publishJobs).toHaveLength(0);
+  });
+
+  it("refuses an anonymous caller, an unknown account, and an account this admin may not touch", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+    const payload = { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://cdn.example.com/a.jpg" }] };
+
+    store.auth = null;
+    expect((await POST(jsonReq(url, payload), ctxOf("x"))).status).toBe(401);
+
+    store.auth = { admin: { id: "adm2", login: "staff", email: "s@x.uz", name: "Staff", role: "STAFF" }, session: { id: "s2", expiresAt: new Date() } };
+    expect((await POST(jsonReq(url, { ...payload, accountId: "acc_missing" }), ctxOf("x"))).status).toBe(404);
+
+    store.forbiddenAccountIds.push("acc1");
+    expect((await POST(jsonReq(url, payload), ctxOf("x"))).status).toBe(403);
+    expect(store.publishJobs).toHaveLength(0);
+  });
+
+  it("rejects a body the schema refuses (no item source, both sources, too many items, bad datetime)", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+
+    const noSource = await POST(jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{}] }), ctxOf("x"));
+    expect(noSource.status).toBe(400);
+
+    const bothSources = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ assetId: "a", url: "https://cdn.example.com/a.jpg" }] }),
+      ctxOf("x"),
+    );
+    expect(bothSources.status).toBe(400);
+
+    const tooMany = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "CAROUSEL", items: Array.from({ length: 11 }, () => ({ url: "https://cdn.example.com/a.jpg" })) }),
+      ctxOf("x"),
+    );
+    expect(tooMany.status).toBe(400);
+
+    const badDate = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://cdn.example.com/a.jpg" }], scheduledAt: "tomorrow" }),
+      ctxOf("x"),
+    );
+    expect(badDate.status).toBe(400);
+    expect(store.publishJobs).toHaveLength(0);
+  });
+
+  it("a post created through the API then actually publishes when its pass is drained", async () => {
+    seedAccount();
+    const { POST } = await publishRoute();
+    registerHandler("publish.run", async (payload) => {
+      await runPublishJob(String(payload.publishJobId));
+    });
+
+    const res = await POST(
+      jsonReq(url, { accountId: "acc1", mediaType: "IMAGE", items: [{ url: "https://cdn.example.com/a.jpg" }] }),
+      ctxOf("x"),
+    );
+    const job = (await readJson(res)).data!.job as Row;
+
+    store.graph = graphScript({ containers: ["c_api"], mediaId: "m_api" });
+    expect(await drainOnce("worker-1", 5)).toBe(1);
+
+    const row = store.publishJobs.find((r) => r.id === job.id)!;
+    expect(row.status).toBe("PUBLISHED");
+    expect(row.publishedMediaId).toBe("m_api");
+    expect(posted("ig1/media_publish")).toHaveLength(1);
+  });
+});
+
+describe("POST /api/publish/[id] — retry and cancel", () => {
+  const url = "http://localhost:3000/api/publish/pj-1";
+
+  it("retry clears the spent containers and queues a fresh pass", async () => {
+    const job = seedPublishJob({ status: "FAILED", containerId: "c_old", childContainerIds: ["ch1"], attempts: 7, lastError: "Instagram rejected the media" });
+    const { POST } = await publishItemRoute();
+
+    const res = await POST(jsonReq(url, { action: "retry" }), ctxOf(job.id as string));
+
+    expect(res.status).toBe(200);
+    expect(job.status).toBe("SCHEDULED");
+    expect(job.containerId).toBeNull(); // a spent container would publish nothing
+    expect(job.childContainerIds).toEqual([]);
+    expect(job.attempts).toBe(0);
+    expect(job.lastError).toBeNull();
+    expect(job.startedAt).toBeNull();
+    expect(passes()).toHaveLength(1);
+    expect(afterMock).toHaveBeenCalledTimes(1);
+    expect(store.auditEntries[0]).toMatchObject({ action: "RETRIED_PUBLISH_JOB" });
+  });
+
+  it("refuses to retry a publication that already reached Instagram", async () => {
+    // the cancel-too-late row: CANCELLED, but live on Instagram. Retrying posts twice.
+    const job = seedPublishJob({ status: "CANCELLED", publishedMediaId: "m_live", lastError: "Cancelled too late" });
+    const { POST } = await publishItemRoute();
+
+    const res = await POST(jsonReq(url, { action: "retry" }), ctxOf(job.id as string));
+
+    expect(res.status).toBe(400);
+    expect(String((await readJson(res)).error!.message)).toMatch(/would post a duplicate/i);
+    expect(job.status).toBe("CANCELLED"); // untouched
+    expect(passes()).toHaveLength(0);
+  });
+
+  it("refuses to retry a publication that is still on its way out", async () => {
+    const { POST } = await publishItemRoute();
+    for (const status of ["SCHEDULED", "PROCESSING", "PUBLISHED"]) {
+      store.publishJobs.length = 0;
+      const job = seedPublishJob({ status });
+      const res = await POST(jsonReq(url, { action: "retry" }), ctxOf(job.id as string));
+      expect(res.status, status).toBe(400);
+      expect(String((await readJson(res)).error!.message)).toContain(status);
+      expect(job.status).toBe(status);
+    }
+    expect(passes()).toHaveLength(0);
+  });
+
+  it("cancel marks the row cancelled, and cancelling twice is not an error", async () => {
+    const job = seedPublishJob({ status: "SCHEDULED" });
+    const { POST } = await publishItemRoute();
+
+    expect((await POST(jsonReq(url, { action: "cancel" }), ctxOf(job.id as string))).status).toBe(200);
+    expect(job.status).toBe("CANCELLED");
+    expect(store.auditEntries).toHaveLength(1);
+
+    const again = await POST(jsonReq(url, { action: "cancel" }), ctxOf(job.id as string));
+    expect(again.status).toBe(200);
+    expect(store.auditEntries).toHaveLength(1); // no second audit entry for a no-op
+  });
+
+  it("cancelling something already on Instagram is refused with the only honest advice", async () => {
+    const job = seedPublishJob({ status: "PUBLISHED", publishedMediaId: "m1" });
+    const { POST } = await publishItemRoute();
+
+    const res = await POST(jsonReq(url, { action: "cancel" }), ctxOf(job.id as string));
+
+    expect(res.status).toBe(400);
+    expect(String((await readJson(res)).error!.message)).toMatch(/delete it in the Instagram app/i);
+    expect(job.status).toBe("PUBLISHED");
+  });
+
+  it("the cancel race: a post that goes live between the read and the write is not shown as cancelled", async () => {
+    const job = seedPublishJob({ status: "PROCESSING" });
+    const { POST } = await publishItemRoute();
+
+    // the worker's pass finishes while this request is in flight
+    const realUpdateMany = prismaMock.publishJob.updateMany;
+    const spy = vi.spyOn(prismaMock.publishJob, "updateMany").mockImplementationOnce(async (args: { where: Row; data: Row }) => {
+      Object.assign(job, { status: "PUBLISHED", publishedMediaId: "m_live" });
+      return realUpdateMany(args);
+    });
+
+    const res = await POST(jsonReq(url, { action: "cancel" }), ctxOf(job.id as string));
+
+    expect(res.status).toBe(400);
+    expect(String((await readJson(res)).error!.message)).toMatch(/published this post while the cancel was in flight/i);
+    expect(job.status).toBe("PUBLISHED"); // not overwritten with CANCELLED
+    expect(store.auditEntries).toHaveLength(0);
+    spy.mockRestore();
+  });
+
+  it("404s for a publication that does not exist, and 403s for one on another admin's account", async () => {
+    const job = seedPublishJob({ status: "FAILED", accountId: "acc_other" });
+    const { POST } = await publishItemRoute();
+
+    expect((await POST(jsonReq(url, { action: "cancel" }), ctxOf("nope"))).status).toBe(404);
+
+    store.forbiddenAccountIds.push("acc_other");
+    expect((await POST(jsonReq(url, { action: "cancel" }), ctxOf(job.id as string))).status).toBe(403);
+    expect(job.status).toBe("FAILED");
+  });
+});
+
+describe("DELETE /api/publish/[id]", () => {
+  const url = "http://localhost:3000/api/publish/pj-1";
+
+  it("removes a finished record but refuses to delete one mid-flight", async () => {
+    const processing = seedPublishJob({ id: "pj-processing", status: "PROCESSING" });
+    const done = seedPublishJob({ id: "pj-done", status: "PUBLISHED", publishedMediaId: "m1" });
+    const { DELETE } = await publishItemRoute();
+
+    const refused = await DELETE(jsonReq(url, {}, "DELETE"), ctxOf(processing.id as string));
+    expect(refused.status).toBe(400);
+    expect(String((await readJson(refused)).error!.message)).toMatch(/Wait for processing/i);
+    expect(store.publishJobs).toHaveLength(2);
+
+    const gone = await DELETE(jsonReq(url, {}, "DELETE"), ctxOf(done.id as string));
+    expect(gone.status).toBe(200);
+    expect(store.publishJobs.map((r) => r.id)).toEqual(["pj-processing"]);
+    // deleting the record never touches the post on Instagram
+    expect(store.graphCalls).toHaveLength(0);
+  });
+});
+
+describe("POST /api/media — the upload Meta will download from", () => {
+  const url = "http://localhost:3000/api/media";
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+
+  function upload(file: File | null, accountId: string | null = "acc1"): NextRequest {
+    const form = new FormData();
+    if (file) form.set("file", file);
+    if (accountId !== null) form.set("accountId", accountId);
+    return new NextRequest(url, { method: "POST", body: form });
+  }
+
+  it("stores a real JPEG and hands back the public URL publishing will use", async () => {
+    seedAccount();
+    const { POST } = await mediaRoute();
+
+    const res = await POST(upload(new File([JPEG], "photo.jpg", { type: "image/jpeg" })), ctxOf("x"));
+
+    expect(res.status).toBe(200);
+    const asset = (await readJson(res)).data!.asset as Row;
+    expect(asset.kind).toBe("IMAGE");
+    expect(asset.sizeBytes).toBe(JPEG.byteLength);
+    expect(asset.url).toBe(hostedMediaUrl(asset.id as string, "image/jpeg"));
+    expect(store.mediaAssets).toHaveLength(1);
+    expect(store.mediaAssets[0]!.accountId).toBe("acc1");
+  });
+
+  it("refuses a PNG with the reason Instagram actually has, and an executable with the other one", async () => {
+    seedAccount();
+    const { POST } = await mediaRoute();
+
+    const png = await POST(upload(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "a.png", { type: "image/png" })), ctxOf("x"));
+    expect(png.status).toBe(400);
+    expect(String((await readJson(png)).error!.message)).toMatch(/JPEG images only/i);
+
+    const exe = await POST(upload(new File([new Uint8Array([1, 2, 3])], "a.exe", { type: "application/x-msdownload" })), ctxOf("x"));
+    expect(exe.status).toBe(400);
+    expect(String((await readJson(exe)).error!.message)).toMatch(/Unsupported file type/i);
+    expect(store.mediaAssets).toHaveLength(0);
+  });
+
+  it("refuses a renamed file whose bytes are not really a JPEG", async () => {
+    seedAccount();
+    const { POST } = await mediaRoute();
+
+    const res = await POST(upload(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d])], "fake.jpg", { type: "image/jpeg" })), ctxOf("x"));
+
+    expect(res.status).toBe(400);
+    expect(String((await readJson(res)).error!.message)).toMatch(/not a real JPEG/i);
+    expect(store.mediaAssets).toHaveLength(0);
+  });
+
+  it("refuses a file this hosting cannot receive, and says what to do instead", async () => {
+    seedAccount();
+    const { POST } = await mediaRoute();
+    const tooBig = new File([new Uint8Array(MAX_UPLOAD_BYTES + 1)], "big.mp4", { type: "video/mp4" });
+
+    const res = await POST(upload(tooBig), ctxOf("x"));
+
+    expect(res.status).toBe(400);
+    const err = (await readJson(res)).error!;
+    expect(String(err.message)).toMatch(/larger than 4 MB/i);
+    expect(JSON.stringify(err.details ?? "")).toMatch(/public https/i);
+    expect(store.mediaAssets).toHaveLength(0);
+  });
+
+  it("refuses a missing file, a missing account, and an account this admin may not touch", async () => {
+    seedAccount();
+    const { POST } = await mediaRoute();
+    const file = () => new File([JPEG], "photo.jpg", { type: "image/jpeg" });
+
+    expect((await POST(upload(null), ctxOf("x"))).status).toBe(400);
+    expect((await POST(upload(file(), null), ctxOf("x"))).status).toBe(400);
+    expect((await POST(upload(file(), "acc_missing"), ctxOf("x"))).status).toBe(404);
+
+    store.forbiddenAccountIds.push("acc1");
+    expect((await POST(upload(file()), ctxOf("x"))).status).toBe(403);
+    expect(store.mediaAssets).toHaveLength(0);
+  });
+});
+
+describe("inline queue mode (QUEUE_INLINE=true, the dev default in .env)", () => {
+  /**
+   * Untested before, and it is why the abort-checkpoint test above looked like a
+   * double publish: with QUEUE_INLINE=true every enqueue() schedules a real
+   * background drain of the shared queue. Proven here deliberately, and switched
+   * off for every other test in this file so nothing else races it.
+   */
+  it("an enqueue drains the queue in this same process, without a worker", async () => {
+    process.env.QUEUE_INLINE = "true";
+    const ran: string[] = [];
+    registerHandler("telegram.send", async (payload) => {
+      ran.push(String(payload.leadId));
+    });
+
+    await enqueue("telegram.send", { leadId: "l1" });
+    expect(ran).toEqual([]); // not synchronously — it is scheduled, not inlined
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(ran).toEqual(["l1"]);
+    expect(store.jobs[0]!.status).toBe("COMPLETED");
+  });
+
+  it("leaves the queue alone when inline mode is off", async () => {
+    process.env.QUEUE_INLINE = "false";
+    const ran: string[] = [];
+    registerHandler("telegram.send", async () => {
+      ran.push("x");
+    });
+
+    await enqueue("telegram.send", { leadId: "l1" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(ran).toEqual([]);
+    expect(store.jobs[0]!.status).toBe("PENDING");
   });
 });

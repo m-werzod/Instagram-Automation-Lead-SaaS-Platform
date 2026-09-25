@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { createLogger } from "@/lib/logger";
 import { coreEnv } from "@/lib/env";
 
@@ -145,8 +145,11 @@ export function verifyAssetToken(token: string): { assetId: string } | null {
 }
 
 function hmac(body: string): string {
+  // A plain hash of secret-then-message is not an HMAC, and reasoning about
+  // whether the truncation happens to save it is not worth doing when the
+  // correct primitive is one call away.
   const secret = process.env.SESSION_SECRET ?? "";
-  return createHash("sha256").update(`${secret}:asset:${body}`).digest("hex").slice(0, 32);
+  return createHmac("sha256", secret).update(`asset:${body}`).digest("hex").slice(0, 32);
 }
 
 // ---- driver selection ----

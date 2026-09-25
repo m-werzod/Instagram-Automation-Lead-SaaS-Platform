@@ -53,6 +53,21 @@ export const MAX_LEAD_TAG_LENGTH = 40;
 /** Lead.valueCents is a Postgres INTEGER — a larger amount cannot be stored at all. */
 export const MAX_LEAD_VALUE_CENTS = 2_147_483_647;
 
+/**
+ * Cut to at most MAX_LEAD_TAG_LENGTH *characters*.
+ *
+ * `String.slice` counts UTF-16 units, so it happily cuts a 4-byte character
+ * (emoji, and every astral-plane script) in half and leaves a lone surrogate
+ * behind. PostgreSQL refuses a lone surrogate as invalid UTF-8, so that
+ * half-character does not merely render as a box — it fails the query it is
+ * written into. `Array.from` iterates by code point, so a character is either
+ * kept whole or dropped.
+ */
+function clipTag(tag: string): string {
+  if (tag.length <= MAX_LEAD_TAG_LENGTH) return tag; // fast path: no astral char can fit
+  return Array.from(tag).slice(0, MAX_LEAD_TAG_LENGTH).join("");
+}
+
 /** Trim, drop blanks, de-duplicate case-insensitively (first spelling wins), cap the list. */
 export function normalizeLeadTags(tags: string[]): string[] {
   const normalized: string[] = [];
@@ -61,7 +76,7 @@ export function normalizeLeadTags(tags: string[]): string[] {
     // The second trim matters: slicing mid-word can leave a trailing space, and
     // "vip " would then be stored as a tag distinct from "vip" — two board
     // columns' worth of near-duplicates from one truncation.
-    const tag = raw.trim().replace(/\s+/g, " ").slice(0, MAX_LEAD_TAG_LENGTH).trim();
+    const tag = clipTag(raw.trim().replace(/\s+/g, " ")).trim();
     if (!tag) continue;
     const key = tag.toLowerCase();
     if (seen.has(key)) continue;

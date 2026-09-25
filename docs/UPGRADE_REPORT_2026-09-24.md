@@ -4,7 +4,7 @@ Covers the seven-functionality upgrade: an audit of the six existing modules, th
 produced, and the new **AI Video Editor**.
 
 Baseline at start (`8b98b81`): 268 tests, typecheck and lint clean.
-State now (`2dcb6d5`): **594 tests, typecheck clean, lint clean, production build clean.**
+State now (`900e141`, deployed): **1938 tests, typecheck clean, lint clean, production build clean.**
 
 ---
 
@@ -112,7 +112,7 @@ and always failed while the UI reported success.
 
 | Suite | Result |
 | --- | --- |
-| Full unit/integration suite | **594 pass**, 0 fail (was 268) |
+| Full unit/integration suite | **1938 pass**, 0 fail (was 268) |
 | New video suites | 167 tests across params, render, subtitles, storage, job lifecycle, UI wording |
 | `tsc --noEmit` | Clean |
 | `eslint` | Clean, 0 warnings |
@@ -203,6 +203,46 @@ its own assumption (a synthetic clip had 2 scene cuts where the assertion expect
 emit a pacing item); the product logic was correct and the check was replaced by proper repo tests.
 
 ---
+
+## 4b. Functional QA pass (2026-09-25)
+
+Seven suites were written that drive the real product code against an in-memory
+database stand-in, with the video suite executing real FFmpeg. **66 defects found,
+55 fixed.** Two were critical:
+
+- **A campaign fee became permanently unpayable** if a price was changed and then
+  changed back: a stale quote kept the Meta gate shut with no way to clear it.
+- **Subtitle burn-in failed outright on any path containing an apostrophe.**
+  FFmpeg's filtergraph parser has no escape sequence for one, so a Windows account
+  named `O'Brien` could never burn in a caption. Renders now run from the directory
+  holding the file and name it bare, sidestepping the grammar entirely.
+
+Selected high-severity findings, all fixed: the webhook fallback timestamp stayed
+in seconds and placed affected events in 1970, closing the 24-hour messaging window
+on live customers; lead-flow keywords matched as bare substrings and fired the whole
+question flow on innocent words; a replayed final answer created a duplicate lead; a
+customer's second message was filed as the answer to the question their first had
+just answered; `clampTextBytes` cut emoji in half and was quadratic in the message
+length; a 3-D Secure charge was silent, unrecoverable and re-chargeable; `chunkText`
+hung forever when overlap met or exceeded the chunk size; and the agent's knowledge
+tool passed raw document text to the model with no untrusted-data envelope.
+
+### Eleven findings left open on purpose
+
+These need a product decision rather than a patch, and guessing would be worse than
+asking. Each has a test pinning the current behaviour, so none can drift unnoticed.
+
+| Area | Question for the owner |
+| --- | --- |
+| Landing page | Should a double submit be de-duplicated? A visitor correcting a typo must still be able to resubmit. |
+| CRM board | Tag filtering is case-sensitive while de-duplication is not, so a filtered view can hide leads. Store tags case-folded, or filter case-insensitively? |
+| Billing schedules | One exhausted failed occurrence stalls a recurring schedule silently. Cancel it, step the period, or alert and hold? |
+| Comment replies | The hourly cap is account-wide and counts failed turns. Count only successful sends, and add a separate per-commenter cap? |
+| Lead flow | TEXT answers over 1000 characters are silently truncated. Reject with a message, or raise the cap? |
+| Agent runtime | On hitting the tool-iteration cap the model's last interim words are sent. Substitute the fallback instead? |
+| Knowledge | `retrieveKnowledgeDetailed(agentId: null)` reads account-wide by design, but the signature invites a mistake. Require an explicit flag? |
+| Validation | Tag length is measured in UTF-16 units by the route and in code points by the normalizer. |
+| Lead button | A degree-3 open-ended repeat chain costs ~360 ms of CPU per public submission — a deliberate, documented bound. |
 
 ## 5. Blocked by external dependencies, or deliberately not done
 

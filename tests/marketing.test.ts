@@ -252,11 +252,21 @@ describe("ad account billing status (Path 1 — Meta bills the ad account direct
     const ok = parseAdAccountBillingStatus("act_1", { account_status: 1, funding_source_details: { display_string: "Visa ****1234" } });
     expect(ok).toEqual({
       adAccountId: "act_1",
+      name: null,
       statusCode: 1,
       statusLabel: "Active",
       readyToSpend: true,
       fundingSourceDisplay: "Visa ****1234",
+      fundingType: null,
       disableReason: null,
+      // Meta reported no money fields in this response, and absent must stay
+      // absent — a zero here would read as "nothing spent, no balance owed".
+      currency: null,
+      balanceMinor: null,
+      amountSpentMinor: null,
+      spendCapMinor: null,
+      isPrepay: null,
+      spendCapRemainingMinor: null,
     });
   });
   it("is NOT ready when active but no funding source is on file yet", () => {
@@ -308,5 +318,65 @@ describe("resolveCtaAndUrl", () => {
 
   it("falls back to the campaign's own ctaType/destination for whichever half the link doesn't specify", () => {
     expect(resolveCtaAndUrl(campaign, { ctaType: null, url: null, landingSlug: null })).toEqual(campaign);
+  });
+});
+
+describe("ad-account money: what Meta reports, and what we may change", () => {
+  it("parses the full billing picture Meta returns", () => {
+    const s = parseAdAccountBillingStatus("act_1", {
+      name: "Agency ad account",
+      account_status: 1,
+      currency: "USD",
+      funding_source_details: { display_string: "Visa ****4242", type: 1 },
+      balance: "1250",
+      amount_spent: "8400",
+      spend_cap: "50000",
+      is_prepay_account: false,
+    });
+    expect(s.readyToSpend).toBe(true);
+    expect(s.name).toBe("Agency ad account");
+    expect(s.fundingSourceDisplay).toBe("Visa ****4242");
+    expect(s.currency).toBe("USD");
+    expect(s.balanceMinor).toBe(1250);
+    expect(s.amountSpentMinor).toBe(8400);
+    expect(s.spendCapMinor).toBe(50000);
+    // What is left before Meta pauses everything — the number an operator acts on.
+    expect(s.spendCapRemainingMinor).toBe(41600);
+  });
+
+  it("treats Meta's spend_cap of 0 as NO cap, not a cap of nothing", () => {
+    const s = parseAdAccountBillingStatus("act_1", { account_status: 1, spend_cap: "0", amount_spent: "500" });
+    expect(s.spendCapMinor).toBeNull();
+    expect(s.spendCapRemainingMinor).toBeNull();
+  });
+
+  it("leaves an omitted amount null rather than showing zero", () => {
+    const s = parseAdAccountBillingStatus("act_1", { account_status: 1 });
+    expect(s.balanceMinor).toBeNull();
+    expect(s.amountSpentMinor).toBeNull();
+    expect(s.spendCapMinor).toBeNull();
+    expect(s.currency).toBeNull();
+    expect(s.isPrepay).toBeNull();
+  });
+
+  it("never reports ready to spend without a funding source, whatever the status", () => {
+    expect(parseAdAccountBillingStatus("act_1", { account_status: 1 }).readyToSpend).toBe(false);
+    expect(
+      parseAdAccountBillingStatus("act_1", { account_status: 3, funding_source_details: { display_string: "Visa ****1" } })
+        .readyToSpend,
+    ).toBe(false);
+  });
+
+  it("names every payment-problem status Meta can return", () => {
+    for (const code of [2, 3, 8, 9, 100, 101]) {
+      const s = parseAdAccountBillingStatus("act_1", { account_status: code });
+      expect(s.statusLabel).not.toMatch(/^Meta status/);
+      expect(s.readyToSpend).toBe(false);
+    }
+  });
+
+  it("clamps the remaining cap at zero once spending has passed it", () => {
+    const s = parseAdAccountBillingStatus("act_1", { account_status: 1, spend_cap: "1000", amount_spent: "2500" });
+    expect(s.spendCapRemainingMinor).toBe(0);
   });
 });

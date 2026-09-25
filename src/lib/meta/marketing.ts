@@ -980,6 +980,8 @@ export const AD_ACCOUNT_STATUS_LABELS: Record<number, string> = {
 
 export interface AdAccountBillingStatus {
   adAccountId: string;
+  /** Ad account name as Meta holds it, so the operator knows which one they are looking at. */
+  name: string | null;
   /** Meta's raw account_status code; null when Meta returned nothing usable. */
   statusCode: number | null;
   statusLabel: string;
@@ -987,23 +989,71 @@ export interface AdAccountBillingStatus {
   readyToSpend: boolean;
   /** Display string for the card/method on file (e.g. "Visa ****1234"), when Meta returns one. */
   fundingSourceDisplay: string | null;
+  /** Meta's funding type (CREDIT_CARD, EXTENDED_CREDIT, …) when it reports one. */
+  fundingType: string | null;
   disableReason: string | null;
+  /** The ad account's own currency — every amount below is in it. */
+  currency: string | null;
+  /**
+   * Money, in minor units of `currency`. Meta returns these as strings of minor
+   * units; they are parsed here and left null when Meta omits them rather than
+   * shown as zero, because "no cap set" and "cap of 0" mean opposite things.
+   */
+  balanceMinor: number | null;
+  amountSpentMinor: number | null;
+  spendCapMinor: number | null;
+  /** Prepaid accounts are topped up in advance instead of billed in arrears. */
+  isPrepay: boolean | null;
+  /** How much of the spend cap is left, when a cap is actually set. */
+  spendCapRemainingMinor: number | null;
+}
+
+/** Reads Meta's own words on whether this ad account is a real place to spend money — never guessed locally. */
+/**
+ * Meta returns money as decimal STRINGS in the account's currency ("12.34"), and
+ * omits a field entirely rather than sending 0 when it does not apply. Both
+ * matter: parsing to minor units keeps arithmetic exact, and preserving the
+ * difference between "absent" and "zero" is what stops the UI claiming a spend
+ * cap of nothing on an account that simply has no cap.
+ */
+function parseMoneyMinor(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(String(value));
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n);
 }
 
 /** Reads Meta's own words on whether this ad account is a real place to spend money — never guessed locally. */
 export function parseAdAccountBillingStatus(adAccountId: string, json: Record<string, unknown>): AdAccountBillingStatus {
   const rawStatus = json.account_status;
   const statusCode = typeof rawStatus === "number" ? rawStatus : Number.isFinite(Number(rawStatus)) ? Number(rawStatus) : null;
-  const funding = json.funding_source_details as { display_string?: string } | undefined;
+  const funding = json.funding_source_details as { display_string?: string; type?: unknown } | undefined;
   const fundingSourceDisplay = typeof funding?.display_string === "string" && funding.display_string.trim() ? funding.display_string.trim() : null;
   const disableReasonCode = json.disable_reason;
+
+  // Meta reports these already in minor units (cents), unlike the decimal
+  // strings it uses elsewhere — hence no scaling here.
+  const balanceMinor = parseMoneyMinor(json.balance);
+  const amountSpentMinor = parseMoneyMinor(json.amount_spent);
+  const spendCapMinor = parseMoneyMinor(json.spend_cap);
+  // Meta sends spend_cap "0" to mean no cap at all, not a cap of nothing.
+  const cap = spendCapMinor !== null && spendCapMinor > 0 ? spendCapMinor : null;
+
   return {
     adAccountId,
+    name: typeof json.name === "string" && json.name.trim() ? json.name.trim() : null,
     statusCode,
     statusLabel: statusCode !== null ? (AD_ACCOUNT_STATUS_LABELS[statusCode] ?? `Meta status ${statusCode}`) : "Unknown — Meta did not report a status",
     readyToSpend: statusCode === 1 && fundingSourceDisplay !== null,
     fundingSourceDisplay,
+    fundingType: funding?.type !== undefined && funding.type !== null ? String(funding.type) : null,
     disableReason: disableReasonCode !== undefined && disableReasonCode !== null && disableReasonCode !== 0 ? String(disableReasonCode) : null,
+    currency: typeof json.currency === "string" && json.currency.trim() ? json.currency.trim() : null,
+    balanceMinor,
+    amountSpentMinor,
+    spendCapMinor: cap,
+    isPrepay: typeof json.is_prepay_account === "boolean" ? json.is_prepay_account : null,
+    spendCapRemainingMinor: cap !== null && amountSpentMinor !== null ? Math.max(0, cap - amountSpentMinor) : null,
   };
 }
 
@@ -1023,7 +1073,10 @@ export async function fetchAdAccountBillingStatus(account: InstagramAccount): Pr
       host: "graph.facebook.com",
       path: account.adAccountId,
       accessToken: access.accessToken,
-      params: { fields: "account_status,disable_reason,funding_source_details" },
+      params: {
+        fields:
+          "name,account_status,disable_reason,funding_source_details,currency,balance,amount_spent,spend_cap,is_prepay_account",
+      },
     });
     return parseAdAccountBillingStatus(account.adAccountId, json);
   } catch (err) {
@@ -1034,3 +1087,59 @@ export async function fetchAdAccountBillingStatus(account: InstagramAccount): Pr
 
 /** Meta's own billing page. There is no query parameter Meta guarantees will preselect one ad account across every Business Manager version, so the UI shows the account name/id next to this link instead of pretending one exists. */
 export const META_BILLING_HUB_URL = "https://business.facebook.com/billing_hub/payment_settings";
+
+
+/**
+ * Set, raise, lower or remove the ad account's spend cap — the one money
+ * control Meta genuinely exposes to the API, and therefore the one an operator
+ * can work from inside this platform.
+ *
+ * Meta pauses every campaign on the account once `amount_spent` reaches the
+ * cap, which makes this a real hard stop rather than a reminder. `spend_cap` is
+ * sent in the account's own currency (whole units, not minor), and the two
+ * actions Meta accepts are kept explicit:
+ *   reset  — put amount_spent back to 0, so the existing cap starts again
+ *   remove — delete the cap entirely (Meta's own word for it is "delete")
+ */
+export type SpendCapChange =
+  | { kind: "set"; amountMinor: number }
+  | { kind: "reset" }
+  | { kind: "remove" };
+
+export async function updateAdAccountSpendCap(account: InstagramAccount, change: SpendCapChange): Promise<void> {
+  if (!account.adAccountId) {
+    throw metaUnsupported(
+      "Spend cap control",
+      "This Instagram account has no linked Meta ad account.",
+      "Use Connect Facebook (for ads) on the account card first.",
+    );
+  }
+  if (account.isDemo) {
+    throw metaUnsupported(
+      "Spend cap control",
+      "Demo accounts never reach the Meta API, so their spend cap cannot be changed.",
+      "Connect a real Instagram account.",
+    );
+  }
+  const access = await resolveAdsAccess(account);
+
+  const params: Record<string, string> = {};
+  if (change.kind === "set") {
+    if (!Number.isFinite(change.amountMinor) || change.amountMinor <= 0) {
+      throw new AppError("VALIDATION", "A spend cap must be a positive amount");
+    }
+    // Meta takes the cap in whole currency units on write, while it reports it
+    // in minor units on read — an asymmetry worth stating rather than hiding.
+    params.spend_cap = String(Math.round(change.amountMinor) / 100);
+  } else {
+    params.spend_cap_action = change.kind === "reset" ? "reset" : "delete";
+  }
+
+  await graphCall<Record<string, unknown>>({
+    host: "graph.facebook.com",
+    path: account.adAccountId,
+    method: "POST",
+    accessToken: access.accessToken,
+    params,
+  });
+}

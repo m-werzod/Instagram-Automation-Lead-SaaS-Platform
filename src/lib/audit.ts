@@ -66,6 +66,7 @@ export const AuditActions = {
   CANCELLED_VIDEO_JOB: "CANCELLED_VIDEO_JOB",
   APPLIED_AI_VIDEO_EDIT: "APPLIED_AI_VIDEO_EDIT",
   EXPORTED_VIDEO_TO_INSTAGRAM: "EXPORTED_VIDEO_TO_INSTAGRAM",
+  CHANGED_AD_SPEND_CAP: "CHANGED_AD_SPEND_CAP",
 } as const;
 
 export type AuditAction = (typeof AuditActions)[keyof typeof AuditActions];

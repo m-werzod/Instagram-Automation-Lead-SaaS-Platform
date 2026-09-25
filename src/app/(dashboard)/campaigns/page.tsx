@@ -39,6 +39,7 @@ import { Field, Input } from "@/components/ui/input";
 import { centsToMoney, formatDate, timeAgo, truncate } from "@/lib/utils";
 import { CampaignWizard, type ContentOption, type WizardInitial, type WizardOptions } from "@/components/campaigns/campaign-wizard";
 import { AdBillingBanner, type AdBillingStatus } from "@/components/campaigns/ad-billing-status";
+import { AdMoneyPanel } from "@/components/campaigns/ad-money-panel";
 import { campaignQuoteOrProblem, type Pricing } from "@/lib/billing/pricing";
 
 /**
@@ -194,13 +195,21 @@ function CampaignsInner() {
   }, [selected?.id, selected?.adAccountId, selected]);
 
   // Whether Meta will actually let this ad account spend — read-only, never a card entry.
+  const accountId = selected?.id ?? null;
+  const loadBilling = React.useCallback(async () => {
+    if (!accountId) return;
+    try {
+      setBillingStatus(await api<AdBillingStatus>(`/api/instagram/accounts/${accountId}/ad-billing-status`, { silent: true }));
+    } catch {
+      // A billing read that fails must not blank the page; the panel simply
+      // stays hidden and the campaigns below remain usable.
+    }
+  }, [accountId]);
+
   React.useEffect(() => {
-    if (!selected) return;
     setBillingStatus(null);
-    api<AdBillingStatus>(`/api/instagram/accounts/${selected.id}/ad-billing-status`, { silent: true })
-      .then(setBillingStatus)
-      .catch(() => undefined);
-  }, [selected?.id, selected]);
+    void loadBilling();
+  }, [loadBilling]);
 
   async function run(c: CampaignRow, label: string, fn: () => Promise<unknown>, successMessage?: string) {
     setBusy(`${c.id}:${label}`);
@@ -266,6 +275,12 @@ function CampaignsInner() {
       )}
 
       {selected.adAccountId && <AdBillingBanner status={billingStatus} />}
+
+      {/* The money itself: what Meta holds, what it has taken, and the one
+          control it lets us change — so a budget never needs Ads Manager. */}
+      {selected.adAccountId && (
+        <AdMoneyPanel status={billingStatus} accountId={selected.id} onChanged={loadBilling} />
+      )}
 
       <Card className="overflow-hidden">
         <CardBody className="flex flex-wrap items-center justify-between gap-3 py-3">

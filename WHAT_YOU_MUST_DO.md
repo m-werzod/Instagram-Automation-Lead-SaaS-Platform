@@ -192,62 +192,83 @@ Add in Vercel:
 
 ---
 
-## STEP 7 — Payments (30 minutes) — only if you charge for the platform
+## STEP 7 — Platform billing: NOT NEEDED (skip)
 
-> **Read this first.** There are two completely separate kinds of money in this product, and only one
-> of them can go through Stripe:
->
-> - **Meta advertising spend** — Meta bills the ad account's own card. **This platform cannot pay
->   Meta on your behalf, and does not pretend to.** See step 8.
-> - **Your platform service fee** — what *you* charge *your* customers for using this software. That
->   is what Stripe is for.
->
-> If you are the only user, you do not need Stripe at all. Skip this step.
+You said you are not charging other people to use the platform. Nothing needs doing here.
 
-**Where:** https://dashboard.stripe.com/register
+Stripe is already inert: every price in the configuration defaults to zero, so a campaign fee is
+never required and the platform never asks anyone to pay it. There is no gate in front of creating,
+launching or managing a campaign. Leave `PAYMENT_SECRET_KEY` unset and the Billing page simply stays
+empty.
 
-1. Create the account and complete business verification (Stripe requires this before live payments).
-2. **Developers → API keys**: https://dashboard.stripe.com/apikeys
-   Copy the **Secret key** (`sk_live_…`, or `sk_test_…` while testing).
-3. **Developers → Webhooks** → **Add endpoint**: https://dashboard.stripe.com/webhooks
-   - Endpoint URL: `https://instagramaileads.vercel.app/api/webhooks/stripe`
-   - Events to send: `checkout.session.completed`, `payment_intent.succeeded`,
-     `payment_intent.payment_failed`, `charge.refunded`
-   - After creating it, click **Reveal** under *Signing secret* and copy the `whsec_…` value.
-
-Add in Vercel:
-
-| Key | Value |
-| --- | --- |
-| `PAYMENT_SECRET_KEY` | `sk_live_…` or `sk_test_…` |
-| `PAYMENT_WEBHOOK_SECRET` | `whsec_…` |
-| `PAYMENT_PROVIDER` | `stripe` |
-
-Card numbers never reach this application — Stripe's own hosted checkout page collects them, and only
-the brand and last four digits are stored here.
-
-**How to check it worked:** **To‘lovlar** page loads with a working **Add card** button, and the
-Stripe dashboard shows the webhook endpoint as *Enabled* with a successful test delivery.
+If you ever do decide to charge clients for using the platform, tell me and I will walk you through
+enabling it. Until then, ignore it.
 
 ---
 
-## STEP 8 — Advertising: connect Facebook and add a card **to Meta** (20 minutes)
+## STEP 8 — Paying Meta for ads (20 minutes, once) ⭐ THE ONE THING THAT HAPPENS AT META
 
-Campaigns are always created **PAUSED**, and activating one requires typing the campaign name plus an
-explicit spend acknowledgement. Nothing spends money without that.
+This is the step that answers "everything must be payable through the platform". Here is the exact
+truth, so you can plan around it rather than discover it later.
+
+### What Meta allows, and what it does not
+
+Meta bills **the ad account's own payment method**. There is no Marketing API endpoint that lets
+another platform add a card, or charge a card and pay Meta on an advertiser's behalf — I checked the
+current API reference while building this, not from memory. Adding a payment method happens on
+Meta's own page, for the same reason your bank will not let a third-party app type in your card
+number: Meta keeps that inside its own compliance boundary.
+
+So any tool that claims to "pay Meta from inside our dashboard" is either taking your money into
+*their* account and running the ads on *their* ad account, or it is not telling you the truth. This
+platform does not pretend.
+
+### What that means in practice — and it is better than it sounds
+
+**The card is a one-time setup, not a per-campaign step.** You attach it once to the ad account.
+After that, Meta charges it automatically as spend accrues, and **every single thing a targetolog
+does is inside this platform**: choose the Reel, set the audience, country, age, gender, interests,
+budget, schedule, placements, launch, pause, resume, stop, watch spend and results, and set a hard
+spend ceiling. Nobody opens Ads Manager again in normal work.
+
+### The agency setup you want
+
+Because you are running this for clients as an SMM/targeting service, use **one ad account that you
+own**, with **your** card on it:
 
 1. **Business Manager:** https://business.facebook.com/settings
-   - **Accounts → Ad accounts** → create or add one. Note the id (`act_…`).
-   - **Accounts → Pages** → make sure the Facebook Page linked to your Instagram account is there.
-2. **Add the card — this is done at Meta, not here:**
-   https://business.facebook.com/settings → **Accounts → Ad accounts** → select yours →
-   **Payment methods** → **Add payment method**.
-3. In the App Dashboard (https://developers.facebook.com/apps) add the **Marketing API** product and
-   **Facebook Login for Business**.
-4. In this platform: **Instagram** → your account's card → **Connect Facebook (for ads)**.
+   - **Accounts → Ad accounts** → create one (or use yours). Note the id, `act_…`.
+   - **Accounts → Pages** → add each client's Facebook Page (they grant you partner access; they
+     never give you their card).
+   - **Users → Partners** → clients share their Page and Instagram with your Business Manager.
+2. **Add your card, once:** **Accounts → Ad accounts** → select yours → **Payment methods** →
+   **Add payment method**.
+   Direct link: https://business.facebook.com/billing_hub/payment_settings
+3. **In this platform:** **Instagram** → the account card → **Connect Facebook (for ads)**, and pick
+   that ad account.
 
-**How to check it worked:** the account card shows the ad-account picker with your real ad accounts,
-and the billing status Meta reports back.
+You then bill your clients however you already do — cash, transfer, invoice. That is between you and
+them; the platform does not need to be involved, which is exactly what you asked for.
+
+### What you now control from inside the platform
+
+The **Target** page shows a live **Advertising money** panel, read straight from Meta:
+
+| Shown | Meaning |
+| --- | --- |
+| Payment method | The card Meta holds, e.g. "Visa ****4242" |
+| Spent so far | What Meta has already charged |
+| Outstanding balance | What is currently owed |
+| Spend cap | A hard ceiling — **and you can set, change, restart or remove it from here** |
+| Account status | Meta's own words, including any payment problem |
+
+The spend cap is a real stop, not a reminder: when spending reaches it, Meta pauses every campaign on
+that ad account. It is the one money control Meta exposes to the API, and it is wired into the
+platform so you never have to leave to protect a budget.
+
+**How to check it worked:** open **Target**. The panel names your ad account and shows the card. If
+Meta reports a payment problem it says so in Meta's own words, with a link to the one page that fixes
+it.
 
 ---
 
@@ -281,8 +302,8 @@ a missing-permission reason.
 | 4 | Step 9 | Publishing the result to Instagram |
 | 5 | Step 2 + 5 | Style analysis and automatic subtitles |
 | 6 | Step 6 | Lead emails |
-| 7 | Step 8 | Advertising |
-| 8 | Step 7 | Only if you charge other people |
+| 7 | Step 8 | Advertising — the one-time card setup at Meta |
+| — | Step 7 | Skip: you are not charging your users |
 
 ---
 

@@ -18,11 +18,19 @@ export interface AdBillingStatus {
   billingUrl: string;
   status: {
     adAccountId: string;
+    name: string | null;
     statusCode: number | null;
     statusLabel: string;
     readyToSpend: boolean;
     fundingSourceDisplay: string | null;
+    fundingType: string | null;
     disableReason: string | null;
+    currency: string | null;
+    balanceMinor: number | null;
+    amountSpentMinor: number | null;
+    spendCapMinor: number | null;
+    isPrepay: boolean | null;
+    spendCapRemainingMinor: number | null;
   } | null;
 }
 
